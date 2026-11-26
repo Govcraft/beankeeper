@@ -19,10 +19,13 @@ pub use host::{HostTool, HostToolEffect, HostToolHandler};
 pub use http::{
     HttpLedgerTargets, LEDGER_TARGET_HEADER, http_router, http_router_with_host_tools,
     http_router_with_ledger_targets, http_router_with_passphrase, serve_http,
+    serve_http_with_targets,
 };
 /// Transport options for the HTTP router factories, including host rules and cancellation.
 pub use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
-pub use targets::{DetachedLedger, HostOwnedTarget, LEDGER_TARGET_META_KEY, LedgerTargets};
+pub use targets::{
+    DetachedLedger, HostOwnedTarget, LEDGER_TARGET_META_KEY, LEDGER_UPGRADE_META_KEY, LedgerTargets,
+};
 
 use crate::operation::Operation;
 
@@ -38,7 +41,7 @@ use serde_json::json;
 
 use crate::cli::Cli;
 use crate::db::{
-    Actor, ActorLabel,
+    Actor, ActorLabel, LedgerUpgrade,
     connection::{Db, ReadConn},
 };
 use crate::error::CliError;
@@ -124,7 +127,7 @@ impl LedgerServer {
         Self::with_backend(
             access.into(),
             Backend::Stdio {
-                ledger: OpenedLedger::new(LedgerTarget::default(), db),
+                ledger: OpenedLedger::new(LedgerTarget::default(), db, None),
                 token: None,
             },
             ActorLabel::configured(None),
@@ -221,13 +224,13 @@ impl LedgerServer {
         }
     }
 
-    fn result_target<'a>(
+    fn result_ledger<'a>(
         &'a self,
         context: &'a RequestContext<RoleServer>,
-    ) -> Option<&'a NamedLedgerTarget> {
+    ) -> Option<&'a OpenedLedger> {
         match &self.backend {
-            Backend::Stdio { ledger, .. } => ledger.named(),
-            Backend::Http => http::authenticated_ledger(context).ok()?.ledger().named(),
+            Backend::Stdio { ledger, .. } => Some(ledger),
+            Backend::Http => Some(http::authenticated_ledger(context).ok()?.ledger()),
         }
     }
 }
@@ -275,13 +278,16 @@ impl ServerHandler for LedgerServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
-        let target = self.result_target(&context).cloned();
+        let ledger = self.result_ledger(&context).cloned();
         let mut response = self
             .tool_router
             .call(ToolCallContext::new(self, request, context))
             .await?;
-        if let CallToolResponse::Complete(result) = &mut response {
-            targets::mark_result(target.as_ref(), &mut result.meta);
+        if let (Some(ledger), CallToolResponse::Complete(result)) = (ledger, &mut response) {
+            targets::mark_result(ledger.named(), &mut result.meta);
+            if result.is_error != Some(true) {
+                ledger.mark_upgrade(&mut result.meta);
+            }
         }
         Ok(response)
     }
@@ -321,7 +327,10 @@ impl ServerHandler for LedgerServer {
             tools,
             ..Default::default()
         };
-        targets::mark_result(self.result_target(&context), &mut result.meta);
+        targets::mark_result(
+            self.result_ledger(&context).and_then(OpenedLedger::named),
+            &mut result.meta,
+        );
         Ok(result)
     }
 
@@ -352,8 +361,28 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
         cli.passphrase.passphrase_file.as_deref(),
         false,
     )?;
-    let db = Db::open_existing(cli.db_path()?, passphrase.as_ref())?;
+    let (db, upgrade) = cli.open_standalone_ledger(cli.db_path()?, passphrase.as_ref())?;
     drop(passphrase);
+    serve_stdio(cli, db, read_only, upgrade)
+}
+
+/// Serve MCP over stdio with a ledger opened by the host.
+///
+/// The connection determines the ledger. CLI actor and token configuration
+/// still apply, and a configured ledger target is retained in response metadata.
+///
+/// # Errors
+/// Returns an error for failed authentication or transport startup.
+pub fn serve_with_db(cli: &Cli, db: Db, read_only: bool) -> Result<(), CliError> {
+    serve_stdio(cli, db, read_only, None)
+}
+
+fn serve_stdio(
+    cli: &Cli,
+    db: Db,
+    read_only: bool,
+    upgrade: Option<LedgerUpgrade>,
+) -> Result<(), CliError> {
     let identity = if let Some(token) = &cli.agent_token {
         Some(crate::identity::verify(db.read(), token.expose_secret())?)
     } else {
@@ -368,7 +397,7 @@ pub fn serve(cli: &Cli, read_only: bool) -> Result<(), CliError> {
     let mut server = LedgerServer::with_backend(
         read_only.into(),
         Backend::Stdio {
-            ledger: OpenedLedger::new(cli.ledger_target(), db),
+            ledger: OpenedLedger::new(cli.ledger_target(), db, upgrade),
             token: cli.agent_token.clone(),
         },
         ActorLabel::configured(cli.actor.as_deref()),

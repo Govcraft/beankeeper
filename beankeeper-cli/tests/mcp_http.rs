@@ -16,6 +16,9 @@ use secrecy::SecretString;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
+#[path = "support/legacy_schema.rs"]
+mod legacy_schema;
+
 #[path = "support/mcp_host_owned.rs"]
 mod host_owned;
 
@@ -106,6 +109,13 @@ impl Ledger {
         Ok(Db::open_existing(&self.path, Some(&PASSPHRASE.into()))?)
     }
 
+    fn rewind_before_restore(&self) -> TestResult {
+        let raw = rusqlite::Connection::open(&self.path)?;
+        raw.pragma_update(None, "key", PASSPHRASE)?;
+        legacy_schema::before_restore(&raw)?;
+        Ok(())
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("bk"));
         command
@@ -133,6 +143,55 @@ impl Ledger {
         })?;
         Ok(())
     }
+}
+
+#[test]
+fn http_startup_publishes_an_encrypted_backup_before_upgrading() -> TestResult {
+    let ledger = Ledger::new()?;
+    ledger.rewind_before_restore()?;
+
+    let mut server = Server::start(&ledger, true, None)?;
+    let reader = Some(token(&ledger.reader)?);
+    server.initialize(reader, "schema upgrade")?;
+    let response = server.call("company_list", json!({}), reader)?;
+    assert!(response.get("error").is_none(), "{response}");
+    let upgrade = &response["result"]["_meta"][beankeeper_cli::mcp::LEDGER_UPGRADE_META_KEY];
+    assert_eq!(
+        db::get_schema_version(ledger.db()?.read())?,
+        i64::from(db::current_schema_version())
+    );
+
+    let backup_dir = ledger
+        .dir
+        .path()
+        .read_dir()?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".bk-pre-migration-")
+        })
+        .ok_or("missing pre-migration backup")?;
+    let backup_path = backup_dir.path().join("books.bk-backup");
+    assert_eq!(
+        upgrade,
+        &json!({"from": 37, "to": db::current_schema_version(),
+                "backup": backup_path.canonicalize()?})
+    );
+    let response = server.call("company_list", json!({}), reader)?;
+    assert_eq!(
+        response["result"]["_meta"][beankeeper_cli::mcp::LEDGER_UPGRADE_META_KEY],
+        *upgrade
+    );
+    let key = SecretString::from(PASSPHRASE);
+    assert!(Db::open_snapshot(&backup_path, None).is_err());
+    assert!(matches!(
+        Db::open_snapshot(&backup_path, Some(&key)),
+        Err(beankeeper_cli::error::CliError::SchemaMismatch { stored, .. })
+        if i64::from(stored) == 37
+    ));
+    Ok(())
 }
 
 struct Server {
@@ -197,11 +256,18 @@ impl Server {
             }
         });
         server.diagnostics = receiver;
-        let startup = server.diagnostics.recv_timeout(Duration::from_secs(20))?;
-        server.endpoint = startup
-            .strip_prefix("MCP Streamable HTTP listening on ")
-            .ok_or("missing bound address")?
-            .to_string();
+        let mut startup_log = Vec::new();
+        while server.endpoint.is_empty() {
+            let line = server
+                .diagnostics
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|error| format!("HTTP startup failed ({error}): {startup_log:?}"))?;
+            if let Some(endpoint) = line.strip_prefix("MCP Streamable HTTP listening on ") {
+                server.endpoint = endpoint.to_string();
+            } else {
+                startup_log.push(line);
+            }
+        }
         assert!(!server.endpoint.ends_with(":0/mcp"));
         // Reach a wildcard listener through the local IPv4 interface.
         server.endpoint = server.endpoint.replace("0.0.0.0:", "127.0.0.1:");
@@ -1675,10 +1741,13 @@ fn cli_selects_a_named_ledger_and_rejects_unknown_targets() -> TestResult {
 
 #[test]
 fn cli_http_registrations_keep_the_read_only_ceiling() -> TestResult {
-    use beankeeper_cli::mcp::LEDGER_TARGET_HEADER;
+    use beankeeper_cli::mcp::{
+        LEDGER_TARGET_HEADER, LEDGER_TARGET_META_KEY, LEDGER_UPGRADE_META_KEY,
+    };
 
     let startup = Ledger::new()?;
     let demo = Ledger::new()?;
+    demo.rewind_before_restore()?;
     let startup_token = token(&startup.writer)?;
     let demo_token = token(&demo.writer)?;
     let mut command = startup.command();
@@ -1694,6 +1763,13 @@ fn cli_http_registrations_keep_the_read_only_ceiling() -> TestResult {
     ]);
     let mut server = Server::spawn(command)?;
     server.initialize(Some(startup_token), "Named ledger client")?;
+    let result = server.call("company_list", json!({}), Some(startup_token))?;
+    assert!(result.get("error").is_none(), "{result}");
+    assert!(
+        result["result"]["_meta"]
+            .get(LEDGER_UPGRADE_META_KEY)
+            .is_none()
+    );
     let session = TargetSession {
         client: &server.client,
         endpoint: &server.endpoint,
@@ -1706,6 +1782,15 @@ fn cli_http_registrations_keep_the_read_only_ceiling() -> TestResult {
     let tools = listed["result"]["tools"].as_array().ok_or("tools")?;
     assert!(tools.iter().any(|tool| tool["name"] == "txn_list"));
     assert!(!tools.iter().any(|tool| tool["name"] == "txn_post"));
+    let result = session.call("company_list", &json!({}), Some(demo_token))?;
+    let meta = &result["result"]["_meta"];
+    assert_eq!(meta[LEDGER_TARGET_META_KEY], "demo");
+    let upgrade = &meta[LEDGER_UPGRADE_META_KEY];
+    assert_eq!(upgrade["from"], 37);
+    assert_eq!(upgrade["to"], json!(db::current_schema_version()));
+    let backup = PathBuf::from(upgrade["backup"].as_str().ok_or("missing backup path")?);
+    assert!(backup.starts_with(demo.dir.path().canonicalize()?));
+    assert!(backup.is_file());
     let result = session.call("txn_post", &posting("blocked"), Some(demo_token))?;
     assert!(result.get("error").is_some() || result["result"]["isError"] == true);
     server.finish(&[startup_token, demo_token])

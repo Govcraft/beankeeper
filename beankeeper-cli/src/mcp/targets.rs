@@ -5,14 +5,17 @@ use rmcp::model::MetaObject;
 use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::oneshot;
 
-use crate::db::Db;
 use crate::db::connection::ConnectionId;
+use crate::db::{Db, LedgerUpgrade};
 use crate::error::CliError;
 use crate::identity::{StartupAuthority, VerifiedAgent};
 use crate::ledger_target::{LedgerTarget, NamedLedgerTarget, NamedTargets};
 
 /// MCP result metadata key naming the non-startup ledger that served the request.
 pub const LEDGER_TARGET_META_KEY: &str = "beankeeper/ledgerTarget";
+
+/// MCP result metadata key for the selected ledger's standalone startup upgrade.
+pub const LEDGER_UPGRADE_META_KEY: &str = "beankeeper/ledgerUpgrade";
 
 /// Explicit host authorization to use the startup ledger's signed grants on a named target.
 ///
@@ -66,9 +69,13 @@ impl LedgerTargets {
     /// Make this opened database the endpoint's startup ledger.
     #[must_use]
     pub fn new(startup: Db) -> Self {
+        Self::with_upgrade(startup, None)
+    }
+
+    pub(super) fn with_upgrade(startup: Db, upgrade: Option<LedgerUpgrade>) -> Self {
         Self {
             startup_path: startup.file_path(),
-            startup: OpenedLedger::new(LedgerTarget::default(), startup),
+            startup: OpenedLedger::new(LedgerTarget::default(), startup, upgrade),
             named: Arc::default(),
         }
     }
@@ -78,7 +85,16 @@ impl LedgerTargets {
     /// # Errors
     /// Returns an error if the name is reserved, already used, or the registry is unavailable.
     pub fn register(&self, target: LedgerTarget, db: Db) -> Result<(), CliError> {
-        self.register_named(target.try_into()?, db, Authority::Selected)
+        self.register_with_upgrade(target.try_into()?, db, None)
+    }
+
+    pub(super) fn register_with_upgrade(
+        &self,
+        target: NamedLedgerTarget,
+        db: Db,
+        upgrade: Option<LedgerUpgrade>,
+    ) -> Result<(), CliError> {
+        self.register_named(target, db, Authority::Selected, upgrade)
     }
 
     /// Register a separate ledger that accepts the startup ledger's bearer.
@@ -93,7 +109,7 @@ impl LedgerTargets {
             startup: StartupAuthority::new(self.startup.lease.db.clone()),
             target: db.id().clone(),
         };
-        self.register_named(target.0, db, authority)
+        self.register_named(target.0, db, authority, None)
     }
 
     fn register_named(
@@ -101,6 +117,7 @@ impl LedgerTargets {
         target: NamedLedgerTarget,
         db: Db,
         authority: Authority,
+        upgrade: Option<LedgerUpgrade>,
     ) -> Result<(), CliError> {
         if self.startup_path.is_some() && self.startup_path == db.file_path() {
             return Err(CliError::Validation(
@@ -113,6 +130,7 @@ impl LedgerTargets {
             lease: Arc::new(LedgerLease {
                 db: Arc::new(Mutex::new(db)),
                 authority,
+                upgrade,
                 _drain_signal: Some(closed),
             }),
         };
@@ -193,6 +211,7 @@ pub(super) struct OpenedLedger {
 struct LedgerLease {
     db: Arc<Mutex<Db>>,
     authority: Authority,
+    upgrade: Option<LedgerUpgrade>,
     // Drop last so detach can acquire the only remaining connection reference.
     _drain_signal: Option<oneshot::Sender<()>>,
 }
@@ -206,12 +225,13 @@ enum Authority {
 }
 
 impl OpenedLedger {
-    pub(super) fn new(target: LedgerTarget, db: Db) -> Self {
+    pub(super) fn new(target: LedgerTarget, db: Db, upgrade: Option<LedgerUpgrade>) -> Self {
         Self {
             target,
             lease: Arc::new(LedgerLease {
                 db: Arc::new(Mutex::new(db)),
                 authority: Authority::Selected,
+                upgrade,
                 _drain_signal: None,
             }),
         }
@@ -223,6 +243,14 @@ impl OpenedLedger {
 
     pub(super) const fn named(&self) -> Option<&NamedLedgerTarget> {
         self.target.named()
+    }
+
+    pub(super) fn mark_upgrade(&self, meta: &mut Option<MetaObject>) {
+        if let Some(upgrade) = &self.lease.upgrade {
+            meta.get_or_insert_with(MetaObject::default)
+                .0
+                .insert(LEDGER_UPGRADE_META_KEY.into(), serde_json::json!(upgrade));
+        }
     }
 
     pub(super) fn verify(&self, token: &SecretString) -> Result<VerifiedAgent, CliError> {

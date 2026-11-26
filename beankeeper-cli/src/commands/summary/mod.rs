@@ -458,12 +458,15 @@ impl SummaryResponse {
 
     /// The shared summary envelope, including the verified caller if available.
     pub fn envelope(&self, actor: &Actor) -> impl Serialize + '_ {
-        let mut meta = crate::output::json::meta(Operation::Summary, Some(self.company.as_str()))
-            .with_currency(self.report.currency);
+        let mut meta = crate::output::json::meta(Operation::Summary, Some(self.company.as_str()));
         meta.agent = actor.agent_uri().map(str::to_owned);
+        self.envelope_with_meta(meta)
+    }
+
+    fn envelope_with_meta(&self, meta: crate::output::json::Meta) -> impl Serialize + '_ {
         Envelope {
             ok: true,
-            meta,
+            meta: meta.with_currency(self.report.currency),
             data: Some(WithChart {
                 report: self.report.json(),
                 chart: self.chart.as_ref(),
@@ -478,8 +481,10 @@ impl SummaryResponse {
     /// Returns output or serialization errors.
     pub fn render(&self, cli: &Cli) -> Result<(), CliError> {
         let rendered = match resolve_format(None, cli) {
-            OutputFormat::Json => serde_json::to_string_pretty(&self.envelope(&cli.principal()))
-                .map_err(|error| CliError::General(error.to_string()))?,
+            OutputFormat::Json => serde_json::to_string_pretty(
+                &self.envelope_with_meta(cli.meta(Operation::Summary, Some(self.company.as_str()))),
+            )
+            .map_err(|error| CliError::General(error.to_string()))?,
             OutputFormat::Table => model::plain(&self.report),
             OutputFormat::Csv => model::csv(&self.report)?,
         };
@@ -693,7 +698,7 @@ pub fn run(cli: &Cli, company: &str, args: &SummaryArgs) -> Result<(), CliError>
     chart.validate_cli(cli)?;
     let company = company.parse()?;
     let request = SummaryRequest::try_from((&company, args, chart))?;
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     crate::request::LedgerRequest::Summary(request)
         .execute(&db, &cli.principal())?
         .render(cli, None)

@@ -19,7 +19,7 @@ use super::{
     companies::{Company, CompanySlug},
     connection::ReadConn,
     ids::TransactionId,
-    schema::{FX_SCHEMA_VERSION, get_schema_version},
+    schema::FX_SCHEMA_VERSION,
     transactions::{self, PostEntryParams, PostTransactionParams},
 };
 use crate::{
@@ -48,14 +48,14 @@ struct ForeignAccount {
 }
 
 pub(super) fn enabled(reader: ReadConn<'_>) -> Result<bool, CliError> {
-    Ok(get_schema_version(reader)? >= FX_SCHEMA_VERSION)
+    Ok(reader.schema_version()? >= FX_SCHEMA_VERSION)
 }
 
 pub(crate) fn functional_currency(
     reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<Option<Currency>, CliError> {
-    if get_schema_version(reader)? < super::schema::BOOK_PROFILE_SCHEMA_VERSION {
+    if reader.schema_version()? < super::schema::BOOK_PROFILE_SCHEMA_VERSION {
         return Ok(None);
     }
     Ok(find_profile(reader, company)?.map(|profile| profile.settings.base_currency))

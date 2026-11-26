@@ -6,13 +6,49 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use secrecy::SecretString;
 
-use super::connection::{Db, ReadConn, open_keyed, require_existing_file, tighten_permissions};
+use super::connection::{Db, ReadConn, open_existing_keyed, open_keyed, require_existing_file};
 use super::policy::LedgerPolicy;
 use super::schema::{self, SchemaVersion};
 use super::verification::VerifiedLedger;
 use crate::error::CliError;
 
 pub(crate) mod files;
+
+/// Evidence of a completed standalone upgrade and its retained backup.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LedgerUpgrade {
+    from: SchemaVersion,
+    to: SchemaVersion,
+    #[serde(serialize_with = "serialize_backup_path")]
+    backup: PathBuf,
+}
+
+fn serialize_backup_path<S: serde::Serializer>(
+    path: &Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&path.display())
+}
+
+impl LedgerUpgrade {
+    /// Schema version preserved in the verified backup.
+    #[must_use]
+    pub const fn from(&self) -> SchemaVersion {
+        self.from
+    }
+
+    /// Schema version reached by the upgrade.
+    #[must_use]
+    pub const fn to(&self) -> SchemaVersion {
+        self.to
+    }
+
+    /// Local path to the retained pre-upgrade backup.
+    #[must_use]
+    pub fn backup(&self) -> &Path {
+        &self.backup
+    }
+}
 
 /// Whether publication may replace an existing backup file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -179,6 +215,28 @@ impl VerifiedSnapshot {
         }
         Ok(())
     }
+
+    pub(super) fn verify_migration_source(
+        &self,
+        tx: &Transaction<'_>,
+    ) -> Result<SchemaVersion, CliError> {
+        self.require_published_copy()?;
+        let version = self.schema_version();
+        let source = &self.source;
+        let same_source = tx
+            .path()
+            .and_then(|path| fs::metadata(path).ok())
+            .is_some_and(|metadata| same_file(&metadata, &source.metadata));
+        if !same_source
+            || data_version(&source.connection)? != source.data_version
+            || schema::stored_schema(ReadConn::physical(tx))? != version
+        {
+            return Err(CliError::Database(
+                "the ledger changed; take a new verified snapshot before migrating".into(),
+            ));
+        }
+        Ok(version)
+    }
 }
 
 impl Db {
@@ -187,6 +245,13 @@ impl Db {
     /// Create a fresh snapshot if another SQLite connection has written to the
     /// ledger since the copy began. Hosts must coordinate any out-of-band file
     /// moves or replacements while taking a snapshot and opening the ledger.
+    ///
+    /// ```compile_fail
+    /// use beankeeper_cli::db::Db;
+    /// use std::path::Path;
+    /// let _ = Db::open_after_snapshot(Path::new("books.db"), None);
+    /// ```
+    ///
     /// # Errors
     /// Returns an error if the snapshot or ledger has changed, opening the ledger
     /// fails, or a migration fails. The published snapshot remains available.
@@ -194,36 +259,53 @@ impl Db {
         snapshot: VerifiedSnapshot,
         passphrase: Option<&SecretString>,
     ) -> Result<Self, CliError> {
-        snapshot.require_published_copy()?;
-        let version = snapshot.schema_version();
-        let source = snapshot.source;
-        let connection = open_keyed(
-            &source.path,
-            passphrase,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        let path = snapshot.source.path.clone();
+        let connection = open_existing_keyed(&path, passphrase)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
 
         let transaction = Transaction::new_unchecked(&connection, TransactionBehavior::Immediate)?;
-        if !same_file(&fs::metadata(&source.path)?, &source.metadata)
-            || data_version(&source.connection)? != source.data_version
-            || schema::get_schema_version(ReadConn::physical(&transaction))? != i64::from(version)
-        {
-            return Err(CliError::Database(
-                "the ledger changed; take a new verified snapshot before migrating".into(),
-            ));
-        }
-        schema::migrate_verified(&transaction, version)?;
-        transaction.commit()?;
+        schema::migrate_verified(transaction, snapshot)?;
+        Self::finish_file_open(connection, &path, passphrase)
+    }
 
-        source.connection.close().map_err(|(_, error)| error)?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        tighten_permissions(&source.path);
-        Ok(Self::from_keyed_connection(
-            connection,
-            passphrase,
-            schema::current_schema_version(),
-        ))
+    pub(crate) fn open_standalone(
+        path: &Path,
+        passphrase: Option<&SecretString>,
+    ) -> Result<(Self, Option<LedgerUpgrade>), CliError> {
+        match Self::open_existing(path, passphrase) {
+            Err(CliError::SchemaMismatch { .. }) => {
+                let source = path.canonicalize()?;
+                let parent = source
+                    .parent()
+                    .ok_or_else(|| CliError::Usage("ledger must be in a directory".into()))?;
+                let backup = tempfile::Builder::new()
+                    .prefix(".bk-pre-migration-")
+                    .tempdir_in(parent)?;
+                let snapshot = VerifiedSnapshot::create(
+                    &source,
+                    passphrase,
+                    &backup.path().join("books.bk-backup"),
+                    SnapshotOverwrite::Refuse,
+                )?;
+                let from = snapshot.schema_version();
+                if from == schema::current_schema_version() {
+                    // Another process finished the upgrade before this snapshot began.
+                    return Self::open_existing(&source, passphrase).map(|db| (db, None));
+                }
+                let backup_path = snapshot.path().to_owned();
+                files::sync_directory(parent)?;
+                // Retain the published copy even if migration fails or is interrupted.
+                let _ = backup.keep();
+                let db = Self::open_after_snapshot(snapshot, passphrase)?;
+                let upgrade = LedgerUpgrade {
+                    from,
+                    to: db.schema_version(),
+                    backup: backup_path,
+                };
+                Ok((db, Some(upgrade)))
+            }
+            result => result.map(|db| (db, None)),
+        }
     }
 }
 

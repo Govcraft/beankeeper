@@ -208,7 +208,8 @@ impl AuditResponse {
 /// # Errors
 /// Returns validation, database or rendering errors.
 pub fn run(cli: &Cli, args: &AuditLogArgs) -> Result<(), CliError> {
-    AuditQuery::from(args).execute(&cli.open_db()?)?.render(cli)
+    let db = cli.command_db()?;
+    AuditQuery::from(args).execute(&db)?.render(cli)
 }
 
 /// Minimal CSV field escaping: quote when the value contains a comma, quote, or

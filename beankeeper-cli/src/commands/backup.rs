@@ -31,9 +31,15 @@ struct SnapshotInfo<'a> {
 /// # Errors
 /// Returns an error for an unsafe destination, failed snapshot or invalid ledger.
 pub fn backup(cli: &Cli, output: &Path, overwrite: SnapshotOverwrite) -> Result<(), CliError> {
+    let path = cli.command_db_path()?;
+    let passphrase = if let Some(db) = cli.prepared_ledger() {
+        db.snapshot_key()
+    } else {
+        cli.resolve_passphrase()?
+    };
     let snapshot = VerifiedSnapshot::create_authorized(
-        cli.db_path()?,
-        cli.resolve_passphrase()?,
+        &path,
+        passphrase,
         output,
         overwrite,
         |reader, version, policy| cli.authorize_backup(reader, version, policy),
@@ -101,21 +107,27 @@ pub fn recover(cli: &Cli, input: &Path) -> Result<(), CliError> {
 /// # Errors
 /// Returns errors for an unselected ledger, failed authorization or a failed restore.
 pub fn restore(cli: &Cli, request: RestoreRequest) -> Result<(), CliError> {
-    let destination = cli.explicit_db()?.ok_or_else(|| {
-        CliError::Usage(
-            "restore requires an explicit --db destination or named ledger target".into(),
-        )
-    })?;
-    let target = ExistingRestoreTarget::try_from((
-        destination,
-        &request,
-        cli.passphrase.passphrase_file.as_deref(),
-    ))?;
-    let db = Db::open_for_restore(&target, cli.resolve_passphrase()?)?;
+    let opened;
+    let db = if let Some(db) = cli.prepared_ledger() {
+        db
+    } else {
+        let destination = cli.explicit_db()?.ok_or_else(|| {
+            CliError::Usage(
+                "restore requires an explicit --db destination or named ledger target".into(),
+            )
+        })?;
+        let target = ExistingRestoreTarget::try_from((
+            destination,
+            &request,
+            cli.passphrase.passphrase_file.as_deref(),
+        ))?;
+        opened = Db::open_for_restore(&target, cli.resolve_passphrase()?)?;
+        &opened
+    };
     let request = crate::request::LedgerRequest::Restore(request);
     request
-        .execute_with_actor(&db, |_| {
-            cli.verify_agent(&db)?;
+        .execute_with_actor(db, |_| {
+            cli.verify_agent(db)?;
             Ok(cli.principal())
         })?
         .0

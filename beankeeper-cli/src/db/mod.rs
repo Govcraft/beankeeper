@@ -56,7 +56,7 @@ pub use clearings::{
 pub use companies::{company_exists, create_company, get_company, list_companies};
 pub use connection::Db;
 pub use schema::{SchemaVersion, current_schema_version, get_schema_version};
-pub use snapshot::{SnapshotOverwrite, VerifiedSnapshot};
+pub use snapshot::{LedgerUpgrade, SnapshotOverwrite, VerifiedSnapshot};
 pub use transactions::{
     ConflictStrategy, ListTransactionParams, OrphanedCorrelation, PostEntryParams, PostResult,
     PostTransactionParams, count_transactions, find_orphaned_correlations,

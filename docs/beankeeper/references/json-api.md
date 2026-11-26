@@ -57,6 +57,7 @@ The `companies` array contains the exported companies with their accounts and tr
 | `USAGE` | Invalid arguments or CLI usage |
 | `VALIDATION` | Business rule violation (unbalanced entry, invalid account type) |
 | `DATABASE` | SQLite or I/O error |
+| `SCHEMA_MISMATCH` | Supported older schema (exit 4). Numeric versions appear in `error.details.stored` and `error.details.expected`. |
 | `NOT_FOUND` | Entity does not exist |
 | `UNDO_UNSUPPORTED` | The receipt's action has no undo operation (exit 3) |
 | `UNDO_INELIGIBLE` | Current ledger state blocks the receipt's undo (exit 3) |
@@ -64,6 +65,25 @@ The `companies` array contains the exported companies with their accounts and tr
 | `FORBIDDEN` | Verified token lacks the required capability (exit 7) |
 | `GENERAL` | Other error |
 | `IO` | File I/O error |
+
+### Automatic ledger upgrades
+
+When a standalone command upgrades an older ledger, its JSON envelope includes
+`meta.ledger_upgrade`. The backup is a verified copy that retains the ledger's
+previous schema and encryption. The `from` and `to` fields are integer schema
+versions. The `backup` field gives the path on the machine running Beankeeper.
+
+```json
+{"meta":{"ledger_upgrade":{"from":37,"to":38,"backup":"/books/.bk-pre-migration-example/books.bk-backup"}}}
+```
+
+Both stdio and HTTP MCP use the same object in the tool result's
+`_meta["beankeeper/ledgerUpgrade"]`. After a standalone server upgrades a
+ledger at startup, all successful ledger tool results for that ledger include
+the notice for the lifetime of the server. For HTTP, a named ledger's upgrade
+appears only in results for that target. Tell the owner about the upgrade once
+and include the backup path. Human CLI output reports the path on stderr unless
+`--quiet` is set.
 
 ## Amount Conventions
 
@@ -1625,7 +1645,7 @@ envelope to stderr. MCP uses `isError: true` and structured `{code, message}`.
 2. **Use `meta.command`** to confirm the response matches the expected command
 3. **Present amounts**: Use `<field>_display` for decimal major units; retain integer fields for exact arithmetic. Check pagination before treating a list as complete.
 4. **Handle null fields**: `metadata`, `reference`, `memo`, `notes`, `description` can be null
-5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Databases created before schema v9 are migrated to this form automatically on open.
+5. **Parse `metadata` as JSON**: when non-null, transaction `metadata` is a string containing a JSON object (free text from `-m` appears as `{"memo": "..."}`; intercompany links as `{"correlate": <id>}`). Standalone upgrades from before schema v9 migrate metadata to this form after publishing a verified backup.
 6. **Status messages go to stderr**: Use `--quiet` to suppress them; only JSON goes to stdout
 
 ## Optional identity fields (0.14.0)

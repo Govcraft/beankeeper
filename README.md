@@ -1757,7 +1757,7 @@ JSON command responses follow a uniform envelope contract for reliable programma
 }
 ```
 
-For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `IO`, `GENERAL`.
+For enveloped responses, the `meta` block is present on both success and error. The `meta.command` field uses dot notation (`company.list`, `txn.post`, `report.trial-balance`). The `meta.company` field is present when the command operates on a specific company. Error codes are: `USAGE`, `VALIDATION`, `DATABASE`, `SCHEMA_MISMATCH`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `IO`, `GENERAL`.
 
 Embedded Rust hosts can use `beankeeper_cli::output::json::EnvelopeError::from(&error)`
 to render a `CliError` with their own response metadata. This preserves the
@@ -1816,8 +1816,16 @@ and recovery use the CLI. Keep the passphrase and the external `attachments/`
 directory separately. Snapshots include attachment records. Receipt and
 document files live in that directory. Use `bk export` for accounting interchange.
 
-Rust hosts can require a verified local backup before an upgrade. Pass the same
-resolved secret to both calls.
+Standalone `bk` and MCP startup automatically publish a verified backup before
+upgrading an older ledger. The backup stays beside the ledger at
+`.bk-pre-migration-*/books.bk-backup` with its original schema and encryption.
+Successful commands report its path on stderr unless quiet mode is enabled.
+
+For embedded Rust hosts, `Db::open`, `Db::open_existing`, and
+`Db::open_snapshot` return `CliError::SchemaMismatch { stored, expected }`
+when a supported ledger needs an upgrade. Both fields are `SchemaVersion`
+values. Use your host's backup location and pass the same resolved secret to
+both calls.
 
 ```rust
 use beankeeper_cli::db::{Db, SnapshotOverwrite, VerifiedSnapshot};
@@ -1835,6 +1843,8 @@ The proof exposes the backup path, captured schema version, and verification
 evidence. The migrating open consumes the proof and uses its bound source path.
 If another SQLite connection commits after the snapshot starts, take a fresh
 snapshot before retrying. Coordinate file moves and replacements with the upgrade.
+Pass the opened connection to `commands::dispatch_with_db`, `mcp::serve_with_db`,
+or `mcp::LedgerTargets` for HTTP. See the [host integration guide](docs/mcp-host-tools.md).
 
 ### Encryption
 

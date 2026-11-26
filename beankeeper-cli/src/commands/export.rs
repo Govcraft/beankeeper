@@ -22,7 +22,7 @@ pub fn run(
     format: Option<ExportFormat>,
     output_path: Option<&Path>,
 ) -> Result<(), CliError> {
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
 
     let export_format = format.unwrap_or(ExportFormat::Json);
 

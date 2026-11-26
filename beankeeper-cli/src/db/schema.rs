@@ -1,49 +1,78 @@
 use std::fmt;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, ToSql, Transaction, TransactionBehavior, params, types::ToSqlOutput};
 
 use super::connection::ReadConn;
 use super::metadata;
+use super::snapshot::VerifiedSnapshot;
 use crate::error::CliError;
 
-pub(super) const AUDIT_LOG_SCHEMA_VERSION: i64 = 8;
-pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: i64 = 9;
-pub(super) const HASH_CHAIN_SCHEMA_VERSION: i64 = 12;
-pub(crate) const IDENTITY_SCHEMA_VERSION: i64 = 13;
-pub(crate) const POLICY_SCHEMA_VERSION: i64 = 18;
-pub(super) const PROPOSAL_SCHEMA_VERSION: i64 = 19;
-pub(super) const PERIOD_LOCK_SCHEMA_VERSION: i64 = 20;
+const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
+const RESTORE_VERSION_NUMBER: i64 = 38;
+const LATEST_VERSION: i64 = RESTORE_VERSION_NUMBER;
+
+pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
+pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
+pub(super) const HASH_CHAIN_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(12);
+pub(crate) const IDENTITY_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(13);
+pub(crate) const POLICY_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(18);
+pub(super) const PROPOSAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(19);
+pub(super) const PERIOD_LOCK_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(20);
 
 /// Current schema version. Bump this when adding migrations.
-pub(crate) const CURRENT_VERSION: i64 = RESTORE_SCHEMA_VERSION;
-pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: i64 = 22;
-pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: i64 = 23;
-pub(crate) const CLIENT_HINT_SCHEMA_VERSION: i64 = 25;
-pub(crate) const RECEIPT_SCHEMA_VERSION: i64 = 26;
-pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: i64 = 27;
-const RULE_UNDO_SCHEMA_VERSION: i64 = 28;
-const DIRECT_SETUP_SCHEMA_VERSION: i64 = 29;
-const ANNOTATION_UNDO_SCHEMA_VERSION: i64 = 30;
-pub(super) const HOLDS_SCHEMA_VERSION: i64 = 31;
-pub(crate) const ACCOUNT_RENAME_SCHEMA_VERSION: i64 = 32;
-const CORRECTION_SCHEMA_VERSION: i64 = 33;
-const RECATEGORIZATION_SCHEMA_VERSION: i64 = 34;
-pub(super) const TXN_LINK_SCHEMA_VERSION: i64 = 35;
-pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: i64 = 36;
-pub(super) const FX_SCHEMA_VERSION: i64 = 37;
-pub(super) const RESTORE_SCHEMA_VERSION: i64 = 38;
+pub(crate) const CURRENT_VERSION: SchemaVersion = SchemaVersion::known(LATEST_VERSION);
+pub(crate) const BOOK_PROFILE_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(22);
+pub(crate) const STATEMENT_BATCH_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(23);
+pub(crate) const CLIENT_HINT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(25);
+pub(crate) const RECEIPT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(26);
+pub(crate) const STANDING_SETTINGS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(27);
+const RULE_UNDO_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(28);
+const DIRECT_SETUP_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(29);
+const ANNOTATION_UNDO_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(30);
+pub(super) const HOLDS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(31);
+pub(crate) const ACCOUNT_RENAME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(32);
+const CORRECTION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(33);
+const RECATEGORIZATION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(34);
+pub(super) const TXN_LINK_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(35);
+pub(crate) const STATEMENT_RECONCILIATION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(36);
+pub(super) const FX_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(37);
+pub(super) const RESTORE_SCHEMA_VERSION: SchemaVersion =
+    SchemaVersion::known(RESTORE_VERSION_NUMBER);
+/// Earliest ledger that supports the read-only setup operations.
+pub(crate) const OLDEST_SETUP_READ_SCHEMA: SchemaVersion = SchemaVersion::known(20);
 
 /// A ledger schema version supported by this Beankeeper build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(transparent)]
 pub struct SchemaVersion(i64);
+
+impl SchemaVersion {
+    const fn is_supported(version: i64) -> bool {
+        version >= 1 && version <= LATEST_VERSION
+    }
+
+    const fn known(version: i64) -> Self {
+        assert!(Self::is_supported(version));
+        Self(version)
+    }
+
+    pub(super) fn require_at_least(self, expected: Self) -> Result<Self, CliError> {
+        if self < expected {
+            return Err(CliError::SchemaMismatch {
+                stored: self,
+                expected,
+            });
+        }
+        Ok(self)
+    }
+}
 
 impl TryFrom<i64> for SchemaVersion {
     type Error = CliError;
 
     fn try_from(version: i64) -> Result<Self, Self::Error> {
         match version {
-            1..=CURRENT_VERSION => Ok(Self(version)),
+            _ if Self::is_supported(version) => Ok(Self(version)),
             0 => Err(CliError::Database(
                 "file is not an initialized beankeeper ledger".into(),
             )),
@@ -57,6 +86,12 @@ impl TryFrom<i64> for SchemaVersion {
 impl From<SchemaVersion> for i64 {
     fn from(version: SchemaVersion) -> Self {
         version.0
+    }
+}
+
+impl ToSql for SchemaVersion {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        self.0.to_sql()
     }
 }
 
@@ -77,7 +112,7 @@ pub(super) enum AuditHistory {
 
 impl From<SchemaVersion> for AuditHistory {
     fn from(version: SchemaVersion) -> Self {
-        if i64::from(version) >= RESTORE_SCHEMA_VERSION {
+        if version >= RESTORE_SCHEMA_VERSION {
             Self::Bookkeeping
         } else {
             Self::Physical
@@ -100,7 +135,7 @@ impl fmt::Display for AuditHistory {
 /// Use [`get_schema_version`] to read the version stored in an open ledger.
 #[must_use]
 pub const fn current_schema_version() -> SchemaVersion {
-    SchemaVersion(CURRENT_VERSION)
+    CURRENT_VERSION
 }
 
 /// Returns the current schema version, or `0` if the `schema_version` table
@@ -130,110 +165,144 @@ pub fn get_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
     Ok(version)
 }
 
-/// Ensures the database schema is at `CURRENT_VERSION`, creating or migrating
-/// tables as necessary.
-///
-/// # Errors
-///
-/// Returns `CliError::Sqlite` on database errors.
-pub(in crate::db) fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
-    let version = get_schema_version(ReadConn::physical(conn))?;
-
-    if version > CURRENT_VERSION {
-        return Err(CliError::Database(format!(
-            "schema version {version} requires a newer bk binary"
-        )));
-    }
-
-    ensure_schema_at(conn, version)
+/// Read and validate the SQLite schema version of an initialized ledger.
+pub(super) fn stored_schema(reader: ReadConn<'_>) -> Result<SchemaVersion, CliError> {
+    get_schema_version(reader)?.try_into()
 }
 
-/// Apply migrations from a version read under the caller's writer reservation.
-pub(super) fn migrate_verified(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
-    ensure_schema_at(conn, version.into())
+/// A missing schema is represented separately from supported ledger versions.
+pub(super) fn read_schema(reader: ReadConn<'_>) -> Result<Option<SchemaVersion>, CliError> {
+    match get_schema_version(reader)? {
+        0 => Ok(None),
+        version => SchemaVersion::try_from(version).map(Some),
+    }
 }
 
-fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
-    if version == 0 {
-        apply_v1(conn)?;
+#[cfg(test)]
+fn ensure_schema(conn: &Connection) -> Result<(), CliError> {
+    match read_schema(ReadConn::physical(conn))? {
+        Some(version) => ensure_schema_at(conn, version),
+        None => create_schema(conn),
     }
+}
 
-    if version < 2 {
+fn create_schema(conn: &Connection) -> Result<(), CliError> {
+    apply_v1(conn)?;
+    ensure_schema_at(conn, INITIAL_SCHEMA_VERSION)
+}
+
+/// Initialize an empty database while holding SQLite's writer reservation.
+pub(super) fn initialize(conn: &Connection) -> Result<(), CliError> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let reader = ReadConn::physical(&tx);
+    if let Some(version) = read_schema(reader)? {
+        version.require_at_least(current_schema_version())?;
+    } else {
+        let empty: bool = reader.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM sqlite_schema)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !empty {
+            return Err(CliError::Database(
+                "file is not an initialized beankeeper ledger".into(),
+            ));
+        }
+        create_schema(&tx)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Apply migrations only with proof validated under the caller's writer reservation.
+pub(super) fn migrate_verified(
+    tx: Transaction<'_>,
+    snapshot: VerifiedSnapshot,
+) -> Result<(), CliError> {
+    let version = snapshot.verify_migration_source(&tx)?;
+    ensure_schema_at(&tx, version)?;
+    tx.commit()?;
+    drop(snapshot);
+    Ok(())
+}
+
+fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
+    if version < SchemaVersion::known(2) {
         apply_v2(conn)?;
     }
 
-    if version < 3 {
+    if version < SchemaVersion::known(3) {
         apply_v3(conn)?;
     }
 
-    if version < 4 {
+    if version < SchemaVersion::known(4) {
         apply_v4(conn)?;
     }
 
-    if version < 5 {
+    if version < SchemaVersion::known(5) {
         apply_v5(conn)?;
     }
 
-    if version < 6 {
+    if version < SchemaVersion::known(6) {
         apply_v6(conn)?;
     }
 
-    if version < 7 {
+    if version < SchemaVersion::known(7) {
         apply_v7(conn)?;
     }
 
-    if version < 8 {
+    if version < AUDIT_LOG_SCHEMA_VERSION {
         apply_v8(conn)?;
     }
 
-    if version < 9 {
+    if version < NORMALIZED_METADATA_SCHEMA_VERSION {
         apply_v9(conn)?;
     }
 
-    if version < 10 {
+    if version < SchemaVersion::known(10) {
         apply_v10(conn)?;
     }
 
-    if version < 11 {
+    if version < SchemaVersion::known(11) {
         apply_v11(conn)?;
     }
 
-    if version < 12 {
+    if version < HASH_CHAIN_SCHEMA_VERSION {
         apply_v12(conn)?;
     }
 
-    if version < 13 {
+    if version < IDENTITY_SCHEMA_VERSION {
         apply_v13(conn)?;
     }
 
-    if version < 14 {
+    if version < SchemaVersion::known(14) {
         apply_v14(conn)?;
     }
 
-    if version < 15 {
+    if version < SchemaVersion::known(15) {
         apply_v15(conn)?;
     }
 
-    if version < 16 {
+    if version < SchemaVersion::known(16) {
         apply_v16(conn)?;
     }
 
-    if version < 17 {
+    if version < SchemaVersion::known(17) {
         apply_v17(conn)?;
     }
 
-    if version < 18 {
+    if version < POLICY_SCHEMA_VERSION {
         apply_v18(conn)?;
     }
 
-    if version < 19 {
+    if version < PROPOSAL_SCHEMA_VERSION {
         apply_v19(conn)?;
     }
 
-    if version < 20 {
+    if version < PERIOD_LOCK_SCHEMA_VERSION {
         apply_v20(conn)?;
     }
-    if version < 21 {
+    if version < SchemaVersion::known(21) {
         apply_v21(conn)?;
     }
     if version < BOOK_PROFILE_SCHEMA_VERSION {
@@ -242,7 +311,7 @@ fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
     if version < STATEMENT_BATCH_SCHEMA_VERSION {
         apply_v23(conn)?;
     }
-    if version < 24 {
+    if version < SchemaVersion::known(24) {
         apply_v24(conn)?;
     }
     if version < CLIENT_HINT_SCHEMA_VERSION {
@@ -259,8 +328,8 @@ fn ensure_schema_at(conn: &Connection, version: i64) -> Result<(), CliError> {
     }
 
     debug_assert_eq!(
-        get_schema_version(ReadConn::physical(conn)).unwrap_or(0),
-        CURRENT_VERSION,
+        stored_schema(ReadConn::physical(conn)).ok(),
+        Some(CURRENT_VERSION),
         "schema version mismatch after migrations"
     );
 
@@ -290,16 +359,14 @@ fn apply_fx_migration(conn: &Connection) -> Result<(), CliError> {
 
 fn migrate_with_writer(
     conn: &Connection,
-    version: i64,
+    version: SchemaVersion,
     apply: impl FnOnce(&Connection) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
-    use rusqlite::{Transaction, TransactionBehavior};
-
     if !conn.is_autocommit() {
         return apply(conn);
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    if get_schema_version(ReadConn::physical(&tx))? < version {
+    if stored_schema(ReadConn::physical(&tx))? < version {
         apply(&tx)?;
     }
     tx.commit()?;
@@ -315,7 +382,7 @@ fn apply_fx_schema(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-fn apply_hold_audit_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
+fn apply_hold_audit_migrations(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
     if version < HOLDS_SCHEMA_VERSION {
         apply_v31(conn)?;
     }
@@ -351,7 +418,7 @@ fn apply_hold_audit_migrations(conn: &Connection, version: i64) -> Result<(), Cl
     Ok(())
 }
 
-fn apply_receipt_migrations(conn: &Connection, version: i64) -> Result<(), CliError> {
+fn apply_receipt_migrations(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
     if version < RECEIPT_SCHEMA_VERSION {
         apply_v26(conn)?;
     }
@@ -1628,7 +1695,7 @@ fn apply_v23(conn: &Connection) -> Result<(), CliError> {
 
 /// Admit the demo event without changing existing audit rows or their hashes.
 fn apply_v24(conn: &Connection) -> Result<(), CliError> {
-    migrate_audit(conn, AuditTable::Demo, 24)
+    migrate_audit(conn, AuditTable::Demo, SchemaVersion::known(24))
 }
 
 /// Add unverified client hints without rewriting historical hashes.
@@ -1757,7 +1824,11 @@ fn apply_v35(conn: &Connection) -> Result<(), CliError> {
     })
 }
 
-fn migrate_hold_audit(conn: &Connection, table: AuditTable, version: i64) -> Result<(), CliError> {
+fn migrate_hold_audit(
+    conn: &Connection,
+    table: AuditTable,
+    version: SchemaVersion,
+) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         // The index drops with audit_log. Drop its dependent views and
         // trigger explicitly so SQLite can rename the replacement table.
@@ -1862,7 +1933,11 @@ fn create_standing_settings(conn: &Connection) -> Result<(), CliError> {
     Ok(())
 }
 
-fn migrate_audit(conn: &Connection, table: AuditTable, schema: i64) -> Result<(), CliError> {
+fn migrate_audit(
+    conn: &Connection,
+    table: AuditTable,
+    schema: SchemaVersion,
+) -> Result<(), CliError> {
     super::audit::atomically(conn, || {
         let audit = AuditHistory::from(table);
         super::audit::verify_hash_chain(ReadConn::physical(conn))?;
@@ -2349,11 +2424,19 @@ mod tests {
             statement_import_summary(&snapshot, &"acme".parse()?)?,
             StatementImportSummary::default()
         );
-        assert_eq!(
-            get_schema_version(snapshot.read())?,
-            BOOK_PROFILE_SCHEMA_VERSION
-        );
+        assert_eq!(stored_schema(snapshot.read())?, BOOK_PROFILE_SCHEMA_VERSION);
         Ok(())
+    }
+
+    fn upgrade_plaintext_fixture(path: &std::path::Path) -> Result<super::super::Db, CliError> {
+        use super::super::{Db, SnapshotOverwrite};
+        let proof = VerifiedSnapshot::create(
+            path,
+            None,
+            &path.with_extension("bk-backup"),
+            SnapshotOverwrite::Refuse,
+        )?;
+        Db::open_after_snapshot(proof, None)
     }
 
     #[test]
@@ -2396,17 +2479,17 @@ mod tests {
             before.iter().map(|row| row.0).collect::<Vec<_>>(),
             [1, 2, 3, 3]
         );
-        // Exercise the normal file-open migration and complete verify path too.
+        // Exercise the verified file-upgrade path as well as the migration chain.
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("v19.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
-        let migrated = super::super::Db::open_existing(&path, None)?;
-        assert_eq!(get_schema_version(migrated.read())?, CURRENT_VERSION);
+        let migrated = upgrade_plaintext_fixture(&path)?;
+        assert_eq!(stored_schema(migrated.read())?, CURRENT_VERSION);
         assert_eq!(history(migrated.conn())?, before);
         crate::db::verification::VerifiedLedger::read(&migrated)?;
         ensure_schema(&conn)?;
         let reader = ReadConn::physical(&conn).at_schema(current_schema_version());
-        assert_eq!(get_schema_version(reader)?, CURRENT_VERSION);
+        assert_eq!(stored_schema(reader)?, CURRENT_VERSION);
         assert_eq!(history(&conn)?, before);
         assert!(super::super::policy::get(reader)?.enforce);
         assert_eq!(
@@ -2808,7 +2891,7 @@ mod tests {
         conn.execute_batch("CREATE TABLE audit_log_rebuild (collision TEXT)")?;
         assert!(apply_v27(&conn).is_err());
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
+            stored_schema(ReadConn::physical(&conn))?,
             RECEIPT_SCHEMA_VERSION
         );
         assert!(
@@ -2821,7 +2904,7 @@ mod tests {
 
         apply_v27(&conn)?;
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
+            stored_schema(ReadConn::physical(&conn))?,
             STANDING_SETTINGS_SCHEMA_VERSION
         );
         assert_eq!(tail()?, v26_tail);
@@ -2915,7 +2998,7 @@ mod tests {
             rules::list_active_rules(&Company::bind(reader, company)?)?,
             [rule]
         );
-        assert_eq!(get_schema_version(reader)?, RULE_UNDO_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, RULE_UNDO_SCHEMA_VERSION);
         Ok(())
     }
 
@@ -2947,11 +3030,11 @@ mod tests {
         };
         let before = audit_head()?;
         apply_v29(&conn)?;
-        assert_eq!(get_schema_version(reader)?, DIRECT_SETUP_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, DIRECT_SETUP_SCHEMA_VERSION);
         apply_v30(&conn)?;
-        assert_eq!(get_schema_version(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, ANNOTATION_UNDO_SCHEMA_VERSION);
         ensure_schema(&conn)?;
-        assert_eq!(get_schema_version(reader)?, CURRENT_VERSION);
+        assert_eq!(stored_schema(reader)?, CURRENT_VERSION);
         let mut migrations =
             conn.prepare("SELECT version FROM schema_version WHERE version >= ?1 ORDER BY rowid")?;
         let versions = migrations
@@ -2970,6 +3053,7 @@ mod tests {
                 FX_SCHEMA_VERSION,
                 RESTORE_SCHEMA_VERSION,
             ]
+            .map(i64::from)
         );
         assert_eq!(audit_head()?, before);
         super::super::audit::verify_hash_chain(reader)?;
@@ -3010,7 +3094,7 @@ mod tests {
             migrate(&conn)?;
         }
         let reader = ReadConn::physical(&conn);
-        assert_eq!(get_schema_version(reader)?, HOLDS_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, HOLDS_SCHEMA_VERSION);
         let actor = Actor::new("v31-bookkeeper".parse()?);
         let amount = 250_i64.try_into()?;
         let entries = [
@@ -3057,13 +3141,13 @@ mod tests {
 
         conn.execute_batch("CREATE TABLE audit_log_rebuild (collision TEXT)")?;
         assert!(ensure_schema(&conn).is_err());
-        assert_eq!(get_schema_version(reader)?, HOLDS_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, HOLDS_SCHEMA_VERSION);
         assert_eq!(hold_adjustment()?, -250);
         conn.execute_batch("DROP TABLE audit_log_rebuild")?;
 
         apply_v32(&conn)?;
         migrate_hold_audit(&conn, AuditTable::Correction, CORRECTION_SCHEMA_VERSION)?;
-        assert_eq!(get_schema_version(reader)?, CORRECTION_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, CORRECTION_SCHEMA_VERSION);
         assert_statement_upgrade_preserves_hold_history(&conn, audit_length)
     }
 
@@ -3086,9 +3170,9 @@ mod tests {
             AuditTable::Recategorization,
             RECATEGORIZATION_SCHEMA_VERSION,
         )?;
-        assert_eq!(get_schema_version(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, RECATEGORIZATION_SCHEMA_VERSION);
         apply_v35(conn)?;
-        assert_eq!(get_schema_version(reader)?, TXN_LINK_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, TXN_LINK_SCHEMA_VERSION);
         assert_eq!(hashes(reader)?, hold_history);
         let link = seed_v35_link(conn)?;
         let history = hashes(reader)?;
@@ -3105,7 +3189,7 @@ mod tests {
         // and the audit rebuild, leaving the original ledger usable.
         conn.execute_batch("CREATE TABLE statement_reconciliation_clearings (collision TEXT)")?;
         assert!(ensure_schema(conn).is_err());
-        assert_eq!(get_schema_version(reader)?, TXN_LINK_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, TXN_LINK_SCHEMA_VERSION);
         assert_eq!(hashes(reader)?, history);
         assert_eq!(active_link(reader)?, link);
         let table_exists: bool = reader.query_row(
@@ -3121,9 +3205,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("before-fx.db");
         conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
-        let migrated = super::super::Db::open_existing(&path, None)?;
+        let migrated = upgrade_plaintext_fixture(&path)?;
         let migrated_reader = migrated.read();
-        assert_eq!(get_schema_version(migrated_reader)?, CURRENT_VERSION);
+        assert_eq!(stored_schema(migrated_reader)?, CURRENT_VERSION);
         assert_eq!(hashes(migrated_reader)?, history);
         assert_eq!(active_link(migrated_reader)?, link);
         assert_new_statement_and_fx_tables(migrated_reader)?;
@@ -3200,7 +3284,7 @@ mod tests {
         assert!(ensure_schema(conn).is_err());
         let reader = ReadConn::physical(conn);
         assert_eq!(
-            get_schema_version(reader)?,
+            stored_schema(reader)?,
             STATEMENT_RECONCILIATION_SCHEMA_VERSION
         );
         let table_exists = |table: &str| {
@@ -3288,10 +3372,7 @@ mod tests {
         let before = hashes(&conn)?;
         assert_eq!(before.iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2]);
         ensure_schema(&conn)?;
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
         assert!(!super::super::policy::get(ReadConn::physical(&conn))?.enforce);
         // Simulate the explicit v2 insert emitted by a v17 binary.
@@ -3358,10 +3439,7 @@ mod tests {
     fn fresh_schema_defaults_off_without_inventing_policy_history() -> Result<(), CliError> {
         let conn = open_conn();
         ensure_schema(&conn)?;
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         assert!(!super::super::policy::get(ReadConn::physical(&conn))?.enforce);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row
@@ -3417,10 +3495,7 @@ mod tests {
             assert!(conn.execute(sql, []).is_err(), "unprotected: {sql}");
         }
         ensure_schema(&conn)?;
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -3455,10 +3530,7 @@ mod tests {
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -3508,10 +3580,7 @@ mod tests {
                 .is_err()
         );
         ensure_schema(&conn)?;
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -3556,10 +3625,7 @@ mod tests {
         };
         let before = hashes(&conn)?;
         ensure_schema(&conn)?;
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         assert_eq!(hashes(&conn)?, before);
         let actor = Actor::new("v14".parse()?);
         let rule = audit::savepoint::with_audited_tx(&conn, "sp_rule_fixture", |tx| {
@@ -3656,7 +3722,7 @@ mod tests {
         apply_through_v12(&conn)?;
         seed_v12_creation(&conn)?;
         ensure_schema_at_before_restore(&conn)?;
-        let old = Db::from_keyed_connection(conn, None, SchemaVersion(FX_SCHEMA_VERSION));
+        let old = Db::from_keyed_connection(conn, None, FX_SCHEMA_VERSION);
         let owner = Actor::new("owner".parse()?);
         let company = "legacy".parse()?;
         Granted::<Reconcile>::with_db(&old, &owner, |grant| {
@@ -3691,7 +3757,7 @@ mod tests {
 
         let proof =
             VerifiedSnapshot::create(&path, Some(&key), &backup, SnapshotOverwrite::Refuse)?;
-        assert_eq!(i64::from(proof.schema_version()), FX_SCHEMA_VERSION);
+        assert_eq!(proof.schema_version(), FX_SCHEMA_VERSION);
         let original = std::fs::read(&backup)?;
         let live = Db::open_after_snapshot(proof, Some(&key))?;
         let token = credential["token"]
@@ -3776,15 +3842,21 @@ mod tests {
         assert_eq!(get_schema_version(ReadConn::physical(&conn))?, 12);
         assert!(proof.encrypted());
         assert!(!std::fs::read(&destination)?.starts_with(b"SQLite format 3\0"));
-        let copy = Db::open_compatible_snapshot(&destination, Some(&passphrase), 12)?;
+        let copy = Db::open_compatible_snapshot(
+            &destination,
+            Some(&passphrase),
+            HASH_CHAIN_SCHEMA_VERSION,
+        )?;
         assert_eq!(hashes(copy.read())?, before);
         assert_eq!(
             proof.verification().schema_version(),
             proof.schema_version()
         );
-        assert!(Db::open_compatible_snapshot(&destination, None, 12).is_err());
+        assert!(
+            Db::open_compatible_snapshot(&destination, None, HASH_CHAIN_SCHEMA_VERSION).is_err()
+        );
         let upgraded = Db::open_after_snapshot(proof, Some(&passphrase))?;
-        assert_eq!(get_schema_version(upgraded.read())?, CURRENT_VERSION);
+        assert_eq!(stored_schema(upgraded.read())?, CURRENT_VERSION);
         assert_eq!(hashes(upgraded.read())?, before);
         assert_eq!(get_schema_version(copy.read())?, 12);
         Ok(())
@@ -3817,7 +3889,7 @@ mod tests {
 
         drop(source);
         let upgraded = Db::open_after_snapshot(snapshot()?, None)?;
-        assert_eq!(get_schema_version(upgraded.read())?, CURRENT_VERSION);
+        assert_eq!(stored_schema(upgraded.read())?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -3991,10 +4063,7 @@ mod tests {
         let poster: Option<String> =
             conn.query_row("SELECT posted_by FROM transactions", [], |r| r.get(0))?;
         assert_eq!(poster, None);
-        assert_eq!(
-            get_schema_version(ReadConn::physical(&conn))?,
-            CURRENT_VERSION
-        );
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
         Ok(())
     }
 
@@ -4092,7 +4161,7 @@ mod tests {
 
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4170,7 +4239,7 @@ mod tests {
         let result = ensure_schema(&conn);
         assert!(result.is_ok());
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
     }
@@ -4181,7 +4250,7 @@ mod tests {
         assert!(ensure_schema(&conn).is_ok());
         assert!(ensure_schema(&conn).is_ok());
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
     }
@@ -4267,7 +4336,7 @@ mod tests {
         // Now run ensure_schema which should apply v3
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4300,7 +4369,7 @@ mod tests {
         // Now run ensure_schema which should apply v4
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4347,7 +4416,7 @@ mod tests {
         // Now run ensure_schema which should apply v2
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4377,7 +4446,7 @@ mod tests {
         // Now run ensure_schema which should apply v7
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4422,7 +4491,7 @@ mod tests {
         // Now run ensure_schema which should apply v8.
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4476,7 +4545,7 @@ mod tests {
 
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 
@@ -4536,7 +4605,7 @@ mod tests {
         // Now run ensure_schema which should apply v6
         ensure_schema(&conn).unwrap_or_else(|e| panic!("ensure_schema failed: {e}"));
         assert_eq!(
-            get_schema_version(ReadConn::physical(&conn)).ok(),
+            stored_schema(ReadConn::physical(&conn)).ok(),
             Some(CURRENT_VERSION)
         );
 

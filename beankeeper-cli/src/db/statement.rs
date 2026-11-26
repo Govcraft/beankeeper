@@ -361,17 +361,16 @@ pub(crate) fn unreconciled_months(
     currency: Option<Currency>,
     as_of: NaiveDate,
 ) -> Result<Vec<UnreconciledMonth>, CliError> {
-    let completion_filter = if super::get_schema_version(reader)?
-        >= super::schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION
-    {
-        "AND NOT EXISTS (
+    let completion_filter =
+        if reader.schema_version()? >= super::schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION {
+            "AND NOT EXISTS (
              SELECT 1 FROM statement_reconciliations s WHERE s.company_slug = ?1
                AND s.account = m.account AND s.currency = m.currency AND s.period_end = m.period_end
                AND s.undo_receipt IS NULL
          )"
-    } else {
-        ""
-    };
+        } else {
+            ""
+        };
     let mut statement = reader.prepare(
         &format!("WITH active_months AS (
              SELECT DISTINCT e.account_code AS account, t.currency AS currency,

@@ -316,18 +316,69 @@ fn fx_schema_upgrade_preserves_historical_postings() -> TestResult {
         ],
     )?;
     let conn = rusqlite::Connection::open(&path)?;
+    legacy_schema::before_restore(&conn)?;
     conn.execute_batch(
-        "DROP TRIGGER protect_bookkeeping_receipt_uniqueness;
-         DROP TRIGGER protect_audit_related_posting;
-         DROP VIEW bookkeeping_audit;
-         DROP TABLE fx_postings;
+        "DROP TABLE fx_postings;
          DROP TABLE fx_accounts;
          DELETE FROM schema_version WHERE version > 36;",
     )?;
     drop(conn);
 
+    let mcp_path = temp.path().join("mcp-legacy.db");
+    std::fs::copy(&path, &mcp_path)?;
     let actual = data(bk(&path)?, &["txn", "show", &expected["id"].to_string()])?;
     assert_eq!(actual[0]["currency"], "MXN");
     bk(&path)?.args(["verify"]).assert().success();
+
+    let mut command = bk(&mcp_path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    let response = client.call(
+        "txn_show",
+        &json!({"company": "acme", "id": expected["id"]}),
+    )?;
+    assert!(response.get("error").is_none(), "{response}");
+    let show = payload(&response)?;
+    assert_eq!(show[0]["currency"], "MXN");
+    let notice = &response["result"]["_meta"][beankeeper_cli::mcp::LEDGER_UPGRADE_META_KEY];
+    assert_eq!(notice["from"], 36);
+    assert_eq!(
+        notice["to"],
+        json!(beankeeper_cli::db::current_schema_version())
+    );
+    let reported =
+        std::path::PathBuf::from(notice["backup"].as_str().ok_or("missing backup path")?);
+
+    let backups = temp
+        .path()
+        .read_dir()?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".bk-pre-migration-")
+        })
+        .map(|entry| entry.path().join("books.bk-backup").canonicalize())
+        .collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(backups.len(), 2);
+    assert!(backups.contains(&reported));
+    for backup in backups {
+        let raw = rusqlite::Connection::open_with_flags(
+            backup,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let version: i64 = raw.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(version, 36);
+        let count: i64 = raw.query_row(
+            "SELECT COUNT(*) FROM transactions WHERE description = 'Legacy'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+    }
     Ok(())
 }

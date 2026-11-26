@@ -10,7 +10,7 @@ use crate::identity::{Admin, Granted};
 /// # Errors
 /// Returns authorization, policy integrity, or database errors.
 pub fn run(cli: &Cli, command: &PolicyCommand) -> Result<(), CliError> {
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     let data = match command {
         PolicyCommand::Show => policy::get(db.read())?,
         PolicyCommand::Set { enforce } => {

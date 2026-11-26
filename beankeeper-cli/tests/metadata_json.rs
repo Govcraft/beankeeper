@@ -390,10 +390,6 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              DROP TABLE audit_log;
              ALTER TABLE audit_log_v8 RENAME TO audit_log;
              ALTER TABLE transactions DROP COLUMN posted_by;
-             INSERT INTO transactions (company_slug, description, metadata, date) \
-             VALUES ('acme', 'legacy', 'open:1000', '2026-01-01'); \
-             INSERT INTO transactions (company_slug, description, metadata, date) \
-             VALUES ('acme', 'legacy-num', '42', '2026-01-01'); \
              DROP TABLE lot_reliefs;
              DROP TABLE investment_lots;
              DROP TABLE security_prices;
@@ -401,9 +397,10 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
              DELETE FROM schema_version WHERE version >= 9;",
         )
         .unwrap_or_else(|e| panic!("rewind: {e}"));
+        seed_legacy_metadata(&conn).unwrap_or_else(|e| panic!("seed legacy metadata: {e}"));
     }
 
-    // Any command opens the DB and runs the v9 migration; reconcile must succeed.
+    // Reconcile verifies a backup before upgrading the legacy schema.
     let v = parse(&ok(&db, &["--json", "txn", "reconcile"]));
     assert_eq!(v["data"], Value::Array(vec![]));
 
@@ -421,4 +418,18 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
         .filter_map(Result::ok)
         .collect();
     assert_eq!(metas, vec![r#"{"memo":"open:1000"}"#, r#"{"memo":"42"}"#]);
+}
+
+fn seed_legacy_metadata(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "INSERT INTO transactions (company_slug, description, metadata, date) VALUES
+             ('acme', 'legacy', 'open:1000', '2026-01-01'),
+             ('acme', 'legacy-num', '42', '2026-01-01');
+         INSERT INTO entries (transaction_id, company_slug, account_code, direction, amount)
+             SELECT id, company_slug, '1000', 'debit', 100
+             FROM transactions WHERE description IN ('legacy', 'legacy-num');
+         INSERT INTO entries (transaction_id, company_slug, account_code, direction, amount)
+             SELECT id, company_slug, '3000', 'credit', 100
+             FROM transactions WHERE description IN ('legacy', 'legacy-num');",
+    )
 }

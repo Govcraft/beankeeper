@@ -1,6 +1,7 @@
 //! Authenticated HTTP boundary for the shared ledger tool router.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
@@ -19,8 +20,8 @@ use super::host::{HostServer, HostToolHandler, NoHostTools, catalog};
 use super::targets::OpenedLedger;
 use super::{LedgerServer, LedgerTarget, LedgerTargets};
 use crate::cli::Cli;
-use crate::db::ActorLabel;
 use crate::db::connection::Db;
+use crate::db::{ActorLabel, LedgerUpgrade};
 use crate::error::CliError;
 use crate::identity::VerifiedAgent;
 use crate::output::json::EnvelopeError;
@@ -43,10 +44,7 @@ enum HttpTargets {
 
 impl From<Db> for HttpLedgerTargets {
     fn from(db: Db) -> Self {
-        Self(HttpTargets::StartupOnly(OpenedLedger::new(
-            LedgerTarget::default(),
-            db,
-        )))
+        Self::startup_only(db, None)
     }
 }
 
@@ -57,6 +55,14 @@ impl From<LedgerTargets> for HttpLedgerTargets {
 }
 
 impl HttpLedgerTargets {
+    fn startup_only(db: Db, upgrade: Option<LedgerUpgrade>) -> Self {
+        Self(HttpTargets::StartupOnly(OpenedLedger::new(
+            LedgerTarget::default(),
+            db,
+            upgrade,
+        )))
+    }
+
     fn resolve(&self, target: &LedgerTarget) -> Result<OpenedLedger, CliError> {
         match &self.0 {
             HttpTargets::StartupOnly(startup) => match target.named() {
@@ -361,19 +367,27 @@ pub fn http_router_with_host_tools<H: HostToolHandler>(
     host: H,
 ) -> Result<Router, CliError> {
     let server = host_server(cli, read_only, host)?;
+    let targets = open_targets(cli, |path| {
+        Db::open_existing(path, passphrase).map(|db| (db, None))
+    })?;
+    Ok(build_router(cli, targets, config, server))
+}
+
+fn open_targets(
+    cli: &Cli,
+    mut open: impl FnMut(&Path) -> Result<(Db, Option<LedgerUpgrade>), CliError>,
+) -> Result<HttpLedgerTargets, CliError> {
     let paths = cli.ledger_bindings()?;
-    let startup = Db::open_existing(&cli.db, passphrase)?;
+    let (startup, upgrade) = open(&cli.db)?;
     if paths.len() == 0 {
-        return Ok(build_router(cli, startup.into(), config, server));
+        return Ok(HttpLedgerTargets::startup_only(startup, upgrade));
     }
-    let targets = LedgerTargets::new(startup);
+    let targets = LedgerTargets::with_upgrade(startup, upgrade);
     for (target, path) in paths {
-        targets.register(
-            target.clone().into(),
-            Db::open_existing(path.as_ref(), passphrase)?,
-        )?;
+        let (db, upgrade) = open(path.as_ref())?;
+        targets.register_with_upgrade(target.clone(), db, upgrade)?;
     }
-    Ok(build_router(cli, targets.into(), config, server))
+    Ok(targets.into())
 }
 
 /// Serve already-opened ledgers and application tools on one authenticated HTTP MCP endpoint.
@@ -453,9 +467,9 @@ fn build_router<H: HostToolHandler>(
 
 /// Serve the ledger at `/mcp` using authenticated Streamable HTTP.
 ///
-/// Wraps [`http_router`] with a runtime, listener and Ctrl-C shutdown. Every
-/// request verifies a bearer credential, including when capability enforcement
-/// is off. The passphrase is resolved once, without prompting.
+/// Every request verifies a bearer credential, including when capability
+/// enforcement is off. The passphrase is resolved once without prompting. Any
+/// older ledger is upgraded only after publishing a verified local backup.
 ///
 /// # Errors
 ///
@@ -465,6 +479,38 @@ pub fn serve_http(
     read_only: bool,
     bind: SocketAddr,
     allow_remote: bool,
+) -> Result<(), CliError> {
+    serve_http_router(bind, allow_remote, |config| {
+        let passphrase = cli.resolve_passphrase()?;
+        let targets = open_targets(cli, |path| cli.open_standalone_ledger(path, passphrase))?;
+        let server = host_server(cli, read_only, NoHostTools)?;
+        Ok(build_router(cli, targets, config, server))
+    })
+}
+
+/// Serve authenticated Streamable HTTP using only host-prepared ledgers.
+///
+/// The supplied registry selects ledgers. CLI actor and fallback-token
+/// configuration still apply.
+///
+/// # Errors
+/// Returns an error for an unsafe bind or transport failure.
+pub fn serve_http_with_targets(
+    cli: &Cli,
+    targets: LedgerTargets,
+    read_only: bool,
+    bind: SocketAddr,
+    allow_remote: bool,
+) -> Result<(), CliError> {
+    serve_http_router(bind, allow_remote, |config| {
+        http_router_with_ledger_targets(cli, targets, read_only, config, NoHostTools)
+    })
+}
+
+fn serve_http_router(
+    bind: SocketAddr,
+    allow_remote: bool,
+    router: impl FnOnce(StreamableHttpServerConfig) -> Result<Router, CliError>,
 ) -> Result<(), CliError> {
     if !bind.ip().is_loopback() && !allow_remote {
         return Err(CliError::Usage(
@@ -479,7 +525,7 @@ pub fn serve_http(
         config.allowed_hosts.push(bind.ip().to_string());
     }
     let cancellation = config.cancellation_token.clone();
-    let app = http_router(cli, read_only, config)?;
+    let app = router(config)?;
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

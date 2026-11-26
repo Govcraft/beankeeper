@@ -3,7 +3,8 @@
 use rusqlite::{CachedStatement, Connection, MappedRows, Params, Result, Row, Rows, Statement};
 
 use super::{ConnectionId, Db};
-use crate::db::schema::{AuditHistory, SchemaVersion};
+use crate::db::schema::{AuditHistory, SchemaVersion, stored_schema};
+use crate::error::CliError;
 
 /// A query-only borrow of a ledger connection.
 ///
@@ -22,7 +23,7 @@ use crate::db::schema::{AuditHistory, SchemaVersion};
 pub struct ReadConn<'a> {
     connection: &'a Connection,
     id: Option<&'a ConnectionId>,
-    audit_history: AuditHistory,
+    schema: Option<SchemaVersion>,
 }
 
 impl<'a> ReadConn<'a> {
@@ -31,7 +32,7 @@ impl<'a> ReadConn<'a> {
         Self {
             connection,
             id: None,
-            audit_history: AuditHistory::Physical,
+            schema: None,
         }
     }
 
@@ -39,7 +40,7 @@ impl<'a> ReadConn<'a> {
         Self {
             connection: &db.conn,
             id: Some(&db.id),
-            audit_history: db.audit_history,
+            schema: Some(db.schema_version()),
         }
     }
 
@@ -47,17 +48,22 @@ impl<'a> ReadConn<'a> {
         self.connection
     }
 
-    pub(in crate::db) fn at_schema(self, version: SchemaVersion) -> Self {
+    pub(in crate::db) const fn at_schema(self, version: SchemaVersion) -> Self {
         Self {
-            audit_history: version.into(),
+            schema: Some(version),
             ..self
         }
     }
 
+    pub(in crate::db) fn schema_version(self) -> std::result::Result<SchemaVersion, CliError> {
+        self.schema.map_or_else(|| stored_schema(self), Ok)
+    }
+
     // Older snapshots have only one bookkeeping history. They are read
     // without migrating or adding views to the source file.
-    pub(in crate::db) const fn bookkeeping_audit(self) -> AuditHistory {
-        self.audit_history
+    pub(in crate::db) fn bookkeeping_audit(self) -> AuditHistory {
+        self.schema
+            .map_or(AuditHistory::Physical, AuditHistory::from)
     }
 
     pub(crate) fn belongs_to(self, id: &ConnectionId) -> bool {
@@ -194,7 +200,7 @@ mod tests {
         let schema: i64 = read.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
             row.get(0)
         })?;
-        assert_eq!(schema, crate::db::schema::CURRENT_VERSION);
+        assert_eq!(schema, i64::from(crate::db::current_schema_version()));
         let mut query = read.prepare_cached(
             "/* snapshot */ -- result\n WITH x(v) AS (VALUES (1), (2)) SELECT v FROM x",
         )?;

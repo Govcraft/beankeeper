@@ -10,7 +10,7 @@ use crate::identity::{self, Admin, Granted, IssueRequest};
 use crate::output::amounts::OptionalMoneyField;
 
 pub(super) fn run_key(cli: &Cli) -> Result<(), CliError> {
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     let data = Granted::<Admin>::with_db(&db, &cli.principal(), identity::init_root)?;
     render(cli, &data)
 }
@@ -20,7 +20,7 @@ pub(super) fn run_key(cli: &Cli) -> Result<(), CliError> {
 /// # Errors
 /// Returns storage, token or input validation errors.
 pub fn run(cli: &Cli, command: &AgentCommand) -> Result<(), CliError> {
-    let db = cli.open_db()?;
+    let db = cli.command_db()?;
     let actor = cli.principal();
     let data = match command {
         AgentCommand::Issue {
