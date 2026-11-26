@@ -71,10 +71,11 @@ pub mod prelude {
     };
     pub use crate::reporting::{AccountBalance, TrialBalance};
     pub use crate::types::{
-        Account, AccountCode, AccountCodeError, AccountType, AccountTypeError, Amount, AmountError,
-        ClearedEntry, Currency, CurrencyError, DebitCreditError, DebitOrCredit, DocumentType,
-        DocumentTypeError, Entry, EntryError, IdempotencyKey, IdempotencyKeyError, Money,
-        MoneyError, NonNegativeMoney, PositiveMoney, Sha256Hex, Sha256HexError, SourceDocument,
+        Account, AccountClassification, AccountCode, AccountCodeError, AccountType,
+        AccountTypeError, Amount, AmountError, CashClass, CashClassError, ClearedEntry, Currency,
+        CurrencyError, DebitCreditError, DebitOrCredit, DocumentType, DocumentTypeError, Entry,
+        EntryError, IdempotencyKey, IdempotencyKeyError, Money, MoneyError, NonAssetCash,
+        NonNegativeMoney, PositiveMoney, Sha256Hex, Sha256HexError, SourceDocument,
         SourceDocumentError,
     };
 }
