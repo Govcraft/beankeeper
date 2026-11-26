@@ -609,7 +609,7 @@ fn in_savepoint<T>(
     name: &'static str,
     f: impl FnOnce() -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    savepoint::with_audited_tx(conn, name, |_| f())
+    savepoint::with_savepoint(conn, name, f)
 }
 
 #[derive(Clone, Copy)]

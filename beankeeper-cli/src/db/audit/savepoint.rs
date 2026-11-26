@@ -3,36 +3,45 @@
 use rusqlite::{Connection, Params};
 
 use super::{Actor, Creation};
-use crate::db::connection::ReadConn;
+use crate::db::connection::{ReadConn, WriteGrant};
 
 use crate::error::CliError;
 
 pub(in crate::db) struct AuditedTx<'a> {
     reader: ReadConn<'a>,
-    name: &'static str,
-    active: bool,
 }
 
 impl<'a> AuditedTx<'a> {
-    fn begin(reader: ReadConn<'a>, name: &'static str) -> Result<Self, CliError> {
-        reader
-            .connection()
-            .execute_batch(&format!("SAVEPOINT {name}"))?;
-        Ok(Self {
-            reader,
-            name,
-            active: true,
-        })
-    }
-
     pub(in crate::db) fn run<T>(
-        reader: ReadConn<'a>,
+        grant: WriteGrant<'a>,
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        let transaction = Self::begin(reader, name)?;
+        let transaction = Self {
+            reader: grant.into(),
+        };
+        with_savepoint(transaction.connection(), name, || run(&transaction))
+    }
+
+    pub(super) fn nested<T>(
+        &self,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        with_savepoint(self.connection(), name, || run(self))
+    }
+
+    pub(in crate::db) fn preview<T>(
+        grant: WriteGrant<'a>,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        let transaction = Self {
+            reader: grant.into(),
+        };
+        let savepoint = Savepoint::begin(transaction.connection(), name)?;
         let value = run(&transaction)?;
-        transaction.commit()?;
+        savepoint.rollback()?;
         Ok(value)
     }
 
@@ -59,52 +68,74 @@ impl<'a> AuditedTx<'a> {
     ) -> Result<(), CliError> {
         super::record_insert(self.connection(), actor, company, creation, id, data)
     }
+}
+
+struct Savepoint<'a> {
+    connection: &'a Connection,
+    name: &'static str,
+    active: bool,
+}
+
+impl<'a> Savepoint<'a> {
+    fn begin(connection: &'a Connection, name: &'static str) -> Result<Self, CliError> {
+        connection.execute_batch(&format!("SAVEPOINT {name}"))?;
+        Ok(Self {
+            connection,
+            name,
+            active: true,
+        })
+    }
 
     fn rollback(mut self) -> Result<(), CliError> {
         let name = self.name;
-        self.connection()
+        self.connection
             .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))?;
         self.active = false;
         Ok(())
     }
 
     fn commit(mut self) -> Result<(), CliError> {
-        self.connection()
+        self.connection
             .execute_batch(&format!("RELEASE {}", self.name))?;
         self.active = false;
         Ok(())
     }
 }
 
-impl Drop for AuditedTx<'_> {
+impl Drop for Savepoint<'_> {
     fn drop(&mut self) {
         if self.active {
             let name = self.name;
             // Keep the originating error (including an unwind) authoritative.
             let _ = self
-                .connection()
+                .connection
                 .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
         }
     }
 }
 
+pub(in crate::db) fn with_savepoint<T>(
+    connection: &Connection,
+    name: &'static str,
+    run: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let savepoint = Savepoint::begin(connection, name)?;
+    let value = run()?;
+    savepoint.commit()?;
+    Ok(value)
+}
+
+#[cfg(test)]
 pub(in crate::db) fn with_audited_tx<T>(
     connection: &Connection,
     name: &'static str,
     run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    AuditedTx::run(ReadConn::physical(connection), name, run)
-}
-
-pub(in crate::db) fn with_rolled_back_audited_tx<T>(
-    reader: ReadConn<'_>,
-    name: &'static str,
-    run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
-) -> Result<T, CliError> {
-    let transaction = AuditedTx::begin(reader, name)?;
-    let value = run(&transaction)?;
-    transaction.rollback()?;
-    Ok(value)
+    with_savepoint(connection, name, || {
+        run(&AuditedTx {
+            reader: ReadConn::physical(connection),
+        })
+    })
 }
 
 #[cfg(test)]

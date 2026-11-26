@@ -11,8 +11,9 @@ use serde_json::json;
 use super::{
     Generation, books,
     requests::{SetupReference, apply_once, deserialize_parsed, digest},
+    require_active_session,
     statement_batches::DirectionCode,
-    with_active_session, with_active_setup_write,
+    with_active_setup_write,
 };
 use crate::commands::txn::{MajorPostingLine, PostingLine};
 use crate::db::connection::ReadConn;
@@ -251,8 +252,9 @@ pub(crate) fn preview(
     actor: &Actor,
     request: &OpeningRequest,
 ) -> Result<OpeningPreview, CliError> {
-    with_active_session(db, actor, request.generation, |session| {
-        prepare(session.read(), &request.journal).map(|prepared| prepared.preview)
+    db.read_snapshot(|reader| {
+        require_active_session(reader, actor, request.generation)?;
+        prepare(reader, &request.journal).map(|prepared| prepared.preview)
     })
 }
 
