@@ -23,6 +23,44 @@ For a parsed CLI ledger command, use `commands::dispatch_with_db(&mut cli, db, m
 The supplied connection selects the ledger and the parsed CLI still supplies the
 actor, token, and output options.
 
+## Authorize writes per ledger
+
+Attach a `LedgerWriteAuthorizer` with `Db::with_write_authorizer` before handing
+the connection to embedded CLI dispatch, stdio MCP, or an HTTP MCP endpoint.
+A synchronous closure works as an authorizer. For example, to serve a named
+ledger in read-only mode, configure its connection before registration.
+
+```rust
+use beankeeper_cli::{db::Db, mcp::{LedgerTarget, LedgerTargets}};
+
+fn register_archive(targets: &LedgerTargets, archive: Db) -> Result<(), beankeeper_cli::error::CliError> {
+    let target: LedgerTarget = "archive".parse()?;
+    let archive = archive.with_write_authorizer(target.clone(), |_: &LedgerTarget| {
+        Err("This archive is read-only in Desktop.".into())
+    });
+    targets.register(target, archive)
+}
+```
+
+HTTP uses the registered ledger name. The primary connection and stdio use
+`startup`. Embedded CLI and direct library calls use the target supplied when
+the policy is attached. The host can consult current local state on each write
+admission. An admitted audited batch keeps its grant until it finishes, and the
+next write checks the current policy again. Dry runs that exercise SQLite writes
+inside a rolled-back transaction also require write admission.
+
+Denials use the shared `LEDGER_WRITE_DENIED` error with `details.ledger_target`
+and `details.reason`. MCP keeps normal discovery and bearer capability checks.
+Tool calls that only read can continue. The listener-wide `read_only` ceiling
+still controls catalog registration. Use a writable catalog to serve mixed
+ledgers on one endpoint. Host application tools keep their own effect and grant
+contract. Any ledger writes they perform through a configured connection use that
+connection's policy.
+
+Each independently opened connection needs its own host policy binding.
+Standalone CLI and MCP use the default policy, which admits writes and leaves
+credential checks and ledger invariants in effect.
+
 ## Navigation authority
 
 Issue a UI-scoped token through the existing CLI and encrypted ledger root:

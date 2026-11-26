@@ -293,7 +293,7 @@ impl<'a, C: sealed::GrantKind> Granted<'a, C> {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>, &Actor) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        AuditedTx::run(self.tx.read(), name, |tx| {
+        self.tx.nested(name, |tx| {
             Self::require_current(tx, self.actor)?;
             run(tx, self.actor)
         })
@@ -332,7 +332,7 @@ impl Granted<'_, Admin> {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>, &Actor) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        AuditedTx::run(self.tx.read(), name, |tx| {
+        self.tx.nested(name, |tx| {
             crate::identity::require_live_capability(tx.read(), self.actor, Capability::Admin)?;
             run(tx, self.actor)
         })

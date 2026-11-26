@@ -335,23 +335,31 @@ pub fn with_active_session<T>(
     write: impl FnOnce(&ActiveSession<'_>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
     db.with_audited_tx("sp_active_setup", |tx| {
-        require_encryption(tx.connection())?;
-        let credential = identity::require_live_capability(tx.read(), actor, Capability::Setup)?;
-        let session = find_session(tx.read(), generation)?
-            .filter(|session| {
-                credential.is_setup_credential()
-                    && session.state == SessionState::Active
-                    && session.token_jti.as_str() == credential.jti()
-            })
-            .ok_or_else(|| {
-                CliError::Forbidden("setup credential is not active for this generation".into())
-            })?;
+        let session = require_active_session(tx.read(), actor, generation)?;
         write(&ActiveSession {
             tx,
             session: &session,
             actor,
         })
     })
+}
+
+fn require_active_session(
+    reader: ReadConn<'_>,
+    actor: &Actor,
+    generation: Generation,
+) -> Result<Session, CliError> {
+    require_encryption(reader.connection())?;
+    let credential = identity::require_live_capability(reader, actor, Capability::Setup)?;
+    find_session(reader, generation)?
+        .filter(|session| {
+            credential.is_setup_credential()
+                && session.state == SessionState::Active
+                && session.token_jti.as_str() == credential.jti()
+        })
+        .ok_or_else(|| {
+            CliError::Forbidden("setup credential is not active for this generation".into())
+        })
 }
 
 fn with_active_setup_write<T>(

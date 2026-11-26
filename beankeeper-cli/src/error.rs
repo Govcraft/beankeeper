@@ -5,7 +5,9 @@ use crate::db::audit::{
     DuplicateAccountName, ReversalBlock, recategorize::RecategorizeBlock,
     receipts::ReceiptUndoError,
 };
+use crate::db::connection::WriteDenied;
 use crate::db::{SchemaVersion, periods::ClosedPostingPeriod, statement::StatementDiscrepancy};
+use crate::ledger_target::LedgerTarget;
 use crate::output::json::EnvelopeError;
 
 /// A foreign-currency posting or account configuration could not be applied.
@@ -120,6 +122,13 @@ pub enum CliError {
     Unauthorized(String),
     /// Verified token lacks the required capability. Exit code 7.
     Forbidden(String),
+    /// The host has made the selected ledger read-only. Exit code 7.
+    WriteDenied {
+        /// The selected ledger's canonical target.
+        ledger: LedgerTarget,
+        /// The host's reason for denying writes.
+        reason: WriteDenied,
+    },
     /// Validation error (unbalanced transaction, invalid account). Exit code 3.
     Validation(String),
     /// Foreign-currency configuration or posting error. Exit code 3.
@@ -168,6 +177,8 @@ pub enum ErrorCode {
     Unauthorized,
     /// An authenticated token is missing a required capability.
     Forbidden,
+    /// The host has made the selected ledger read-only.
+    LedgerWriteDenied,
     /// Inputs violate a domain rule.
     Validation,
     /// Foreign-currency posting or account configuration error.
@@ -208,6 +219,7 @@ impl ErrorCode {
             Self::Usage => "USAGE",
             Self::Unauthorized => "UNAUTHORIZED",
             Self::Forbidden => "FORBIDDEN",
+            Self::LedgerWriteDenied => "LEDGER_WRITE_DENIED",
             Self::Validation => "VALIDATION",
             Self::FxInvalid => "FX_INVALID",
             Self::FxRateMissing => "FX_RATE_MISSING",
@@ -241,7 +253,7 @@ impl ErrorCode {
             Self::Database | Self::SchemaMismatch => 4,
             Self::NotFound => 5,
             Self::Unauthorized => 6,
-            Self::Forbidden => 7,
+            Self::Forbidden | Self::LedgerWriteDenied => 7,
             Self::General | Self::Io => 1,
         }
     }
@@ -290,6 +302,7 @@ impl CliError {
             Self::SchemaMismatch { .. } => ErrorCode::SchemaMismatch,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::Forbidden(_) => ErrorCode::Forbidden,
+            Self::WriteDenied { .. } => ErrorCode::LedgerWriteDenied,
             Self::Io(_) => ErrorCode::Io,
             Self::General(_) => ErrorCode::General,
         }
@@ -344,6 +357,9 @@ impl fmt::Display for CliError {
             | Self::NotFound(msg)
             | Self::General(msg)
             | Self::Unimplemented(msg) => write!(f, "{msg}"),
+            Self::WriteDenied { ledger, reason } => {
+                write!(f, "Ledger '{ledger}' is read-only. {reason}")
+            }
             Self::Bean(e) => write!(f, "{e}"),
             Self::Fx(e) => write!(f, "{e}"),
             Self::DuplicateAccountName(e) => write!(f, "{e}"),
@@ -373,6 +389,7 @@ impl std::error::Error for CliError {
             Self::ReversalBlocked(e) => Some(e),
             Self::RecategorizeBlocked(e) => Some(e),
             Self::StatementDiscrepancy(e) => Some(e),
+            Self::WriteDenied { reason, .. } => Some(reason),
             Self::Sqlite(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Usage(_)

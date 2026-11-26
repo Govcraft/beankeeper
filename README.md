@@ -739,6 +739,12 @@ If the host already opened the startup ledger, pass its `Db` directly to
 `Last-Event-ID`. Hosts that prepare additional ledger files can read the
 validated names and paths with `Cli::ledger_bindings()`.
 
+Use `Db::with_write_authorizer` on each opened ledger that needs host-controlled
+write access. The same policy applies to embedded CLI dispatch and MCP, and a
+denied write returns `LEDGER_WRITE_DENIED` with the ledger target and reason.
+Reads retain the usual credential checks. See the
+[per-ledger write policy example](docs/mcp-host-tools.md#authorize-writes-per-ledger).
+
 ### Select a ledger by name
 
 Bind an existing ledger to a name with `--ledger TARGET=PATH`. To use it in a

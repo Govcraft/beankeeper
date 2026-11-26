@@ -4,15 +4,17 @@ use std::sync::Arc;
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 
-use super::audit::{
-    restore::ExistingRestoreTarget,
-    savepoint::{AuditedTx, with_rolled_back_audited_tx},
-};
+use super::audit::{restore::ExistingRestoreTarget, savepoint::AuditedTx};
 use super::schema::{self, SchemaVersion, current_schema_version, stored_schema};
 use crate::error::CliError;
+use crate::ledger_target::LedgerTarget;
 
 mod read;
+mod write;
 pub use read::{ReadConn, ReadStatement};
+use write::WriteAuthorization;
+pub(super) use write::WriteGrant;
+pub use write::{LedgerWriteAuthorizer, WriteDenied};
 
 /// Database connection wrapper with `SQLCipher` support.
 pub struct Db {
@@ -20,6 +22,7 @@ pub struct Db {
     id: ConnectionId,
     passphrase: Option<SecretString>,
     schema_version: SchemaVersion,
+    writes: WriteAuthorization,
 }
 
 impl std::fmt::Debug for Db {
@@ -49,7 +52,27 @@ impl Db {
             id: ConnectionId::default(),
             passphrase: passphrase.cloned(),
             schema_version,
+            writes: WriteAuthorization::default(),
         }
+    }
+
+    /// Apply host write policy to this opened connection, including embedded CLI and MCP calls.
+    ///
+    /// MCP binds the target to the registered name or to `startup`. For embedded
+    /// CLI or direct library use, supply the target that identifies this ledger to the host.
+    #[must_use]
+    pub fn with_write_authorizer(
+        mut self,
+        target: LedgerTarget,
+        authorizer: impl LedgerWriteAuthorizer,
+    ) -> Self {
+        self.writes = WriteAuthorization::new(target, authorizer);
+        self
+    }
+
+    pub(crate) fn at_target(mut self, target: LedgerTarget) -> Self {
+        self.writes.set_target(target);
+        self
     }
 
     pub(crate) const fn schema_version(&self) -> SchemaVersion {
@@ -206,7 +229,7 @@ impl Db {
         name: &'static str,
         run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        AuditedTx::run(self.read(), name, run)
+        self.admit_write(|grant| AuditedTx::run(grant, name, run))
     }
 
     /// Give a sequence of authorized mutations one reserved SQLite writer.
@@ -225,9 +248,11 @@ impl Db {
         &self,
         run: impl FnOnce() -> Result<T, CliError>,
     ) -> Result<T, CliError> {
-        with_rolled_back_audited_tx(self.read(), "sp_write_preview", |tx| {
-            super::audit::reserve_ledger_writer(tx)?;
-            run()
+        self.admit_write(|grant| {
+            AuditedTx::preview(grant, "sp_write_preview", |tx| {
+                super::audit::reserve_ledger_writer(tx)?;
+                run()
+            })
         })
     }
 
@@ -342,7 +367,42 @@ fn tighten_permissions(_: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use crate::identity::{Admin, Granted};
+
+    #[test]
+    fn a_batch_shares_one_admission_and_errors_end_the_scope() -> Result<(), CliError> {
+        let checks = Arc::new(AtomicUsize::new(0));
+        let count = checks.clone();
+        let db = Db::open_in_memory()?.with_write_authorizer(
+            LedgerTarget::default(),
+            move |_: &LedgerTarget| {
+                if count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    Ok(())
+                } else {
+                    Err("Writes are disabled.".into())
+                }
+            },
+        );
+        let actor = super::super::Actor::new("owner".parse()?);
+        let slug = "acme".parse()?;
+        let batch: Result<(), CliError> = db.in_write_batch(|| {
+            Granted::<Admin>::with_db(&db, &actor, |grant| {
+                super::super::create_company(grant, &slug, &"Acme".parse()?, None)
+            })?;
+            Err(CliError::Validation("roll back the batch".into()))
+        });
+        assert!(matches!(batch, Err(CliError::Validation(_))));
+        assert_eq!(checks.load(Ordering::Relaxed), 1);
+        assert!(!super::super::company_exists(db.read(), &slug)?);
+        assert!(matches!(
+            db.in_write_batch(|| Ok(())),
+            Err(CliError::WriteDenied { .. })
+        ));
+        assert_eq!(checks.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
 
     #[test]
     fn read_snapshot_retains_one_view_and_releases_it_on_error() -> Result<(), CliError> {

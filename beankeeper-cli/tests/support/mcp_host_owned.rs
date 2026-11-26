@@ -1,16 +1,93 @@
 use std::{
     future::{Future as _, poll_fn},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::Poll,
 };
 
 use beankeeper_cli::identity::{IssuedCredential, WriteMode};
 use beankeeper_cli::mcp::{
-    LEDGER_TARGET_HEADER, LEDGER_TARGET_META_KEY, LedgerTargets, NamedLedgerTarget,
+    LEDGER_TARGET_HEADER, LEDGER_TARGET_META_KEY, LedgerTarget, LedgerTargets, NamedLedgerTarget,
     http_router_with_ledger_targets,
 };
 use secrecy::ExposeSecret as _;
 
 use super::*;
+
+#[test]
+fn host_write_authorization_follows_the_ledger_on_each_request() -> TestResult {
+    const REASON: &str = "This ledger needs an active Desktop license.";
+    let startup = Ledger::new()?;
+    let demo = Ledger::new()?;
+    let read_only = Arc::new(AtomicBool::new(true));
+    let authorizer = {
+        let read_only = read_only.clone();
+        move |target: &LedgerTarget| {
+            if target.as_ref() == "demo" && read_only.load(Ordering::Relaxed) {
+                Err(REASON.into())
+            } else {
+                Ok(())
+            }
+        }
+    };
+    let targets = LedgerTargets::new(
+        startup
+            .db()?
+            .with_write_authorizer(LedgerTarget::default(), authorizer.clone()),
+    );
+    // Registration supplies the canonical name seen by the policy.
+    let demo_db = demo
+        .db()?
+        .with_write_authorizer(LedgerTarget::default(), authorizer);
+    targets.register_host_owned("demo".parse::<NamedLedgerTarget>()?.into(), demo_db)?;
+
+    exercise_router_with_check(
+        &startup,
+        false,
+        |cli, config| {
+            Ok(http_router_with_ledger_targets(
+                cli,
+                targets,
+                false,
+                config,
+                TestHost {
+                    calls: Arc::default(),
+                },
+            )?)
+        },
+        |client, endpoint| {
+            let id = initialize_embedded_router(client, endpoint)?;
+            let session = TargetSession {
+                client,
+                endpoint,
+                id: &id,
+            };
+            let writer = Some(token(&startup.writer)?);
+            let post = || session.call("txn_post", &posting("per-ledger-policy"), writer);
+            let rejected = post()?;
+            assert_eq!(rejected["result"]["isError"], true);
+            assert_eq!(rejected["result"]["_meta"][LEDGER_TARGET_META_KEY], "demo");
+            let error = payload(&rejected)?;
+            assert_eq!(error["code"], "LEDGER_WRITE_DENIED");
+            assert_eq!(
+                error["details"],
+                json!({"ledger_target": "demo", "reason": REASON})
+            );
+
+            let rows = session.call("txn_list", &json!({"company":"acme"}), writer)?;
+            assert_eq!(payload(&rows)?, json!([]));
+
+            read_only.store(false, Ordering::Relaxed);
+            assert_eq!(payload(&post()?)?["created"], true);
+            read_only.store(true, Ordering::Relaxed);
+            let rejected = session.call("txn_post", &posting("second-denied-write"), writer)?;
+            assert_eq!(payload(&rejected)?["code"], "LEDGER_WRITE_DENIED");
+            Ok(())
+        },
+    )
+}
 
 #[test]
 fn host_owned_target_preserves_startup_grants_and_attribution() -> TestResult {

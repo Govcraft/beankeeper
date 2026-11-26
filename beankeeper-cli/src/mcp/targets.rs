@@ -125,6 +125,7 @@ impl LedgerTargets {
             ));
         }
         let (closed, drained) = oneshot::channel();
+        let db = db.at_target(target.clone().into());
         let ledger = OpenedLedger {
             target: target.clone().into(),
             lease: Arc::new(LedgerLease {
@@ -226,6 +227,7 @@ enum Authority {
 
 impl OpenedLedger {
     pub(super) fn new(target: LedgerTarget, db: Db, upgrade: Option<LedgerUpgrade>) -> Self {
+        let db = db.at_target(target.clone());
         Self {
             target,
             lease: Arc::new(LedgerLease {

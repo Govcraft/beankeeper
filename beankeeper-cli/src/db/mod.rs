@@ -54,7 +54,7 @@ pub use clearings::{
     ClearingState, ClearingStatus, EntryTarget, find_entry_by_reference, get_entry_target,
 };
 pub use companies::{company_exists, create_company, get_company, list_companies};
-pub use connection::Db;
+pub use connection::{Db, LedgerWriteAuthorizer, WriteDenied};
 pub use schema::{SchemaVersion, current_schema_version, get_schema_version};
 pub use snapshot::{LedgerUpgrade, SnapshotOverwrite, VerifiedSnapshot};
 pub use transactions::{

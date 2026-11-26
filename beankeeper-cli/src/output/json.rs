@@ -179,6 +179,9 @@ impl From<&CliError> for EnvelopeError {
     fn from(error: &CliError) -> Self {
         let details = match error {
             CliError::StatementDiscrepancy(discrepancy) => Some(discrepancy.details()),
+            CliError::WriteDenied { ledger, reason } => Some(
+                serde_json::json!({"ledger_target": ledger.as_ref(), "reason": reason.as_ref()}),
+            ),
             CliError::SchemaMismatch { stored, expected } => {
                 Some(serde_json::json!({"stored": stored, "expected": expected}))
             }

@@ -407,6 +407,10 @@ fn open_targets(
 /// Endpoints with switchable targets disable SSE replay because the session
 /// cache can contain responses from different ledgers.
 ///
+/// Apply [`Db::with_write_authorizer`] to an opened ledger to set its write
+/// policy. Each admitted write uses the selected ledger's canonical target.
+/// The optional `read_only` ceiling limits the endpoint's tool catalog.
+///
 /// This factory reads the actor and fallback token from `cli`. It uses the
 /// connections supplied in `targets` and starts no listener or runtime.
 ///

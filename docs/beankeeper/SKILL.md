@@ -432,6 +432,11 @@ and the name supplied by the host on the existing HTTP session. Use the
 in CLI JSON when telling the owner which books were read or changed. A detached
 target returns `NOT_FOUND`. Check the intended books before retrying.
 
+If an embedded host returns `LEDGER_WRITE_DENIED`, tell the owner which ledger
+is read-only and why, using `details.ledger_target` and `details.reason`. Keep
+read requests on the same ledger. A write to another ledger needs the owner's
+intent to use those books.
+
 Rust host applications can merge `beankeeper_cli::mcp::http_router(&cli, read_only,
 config)?` beside their own axum routes. It already mounts `/mcp` and retains the
 same authentication and capability rules. The host supplies
