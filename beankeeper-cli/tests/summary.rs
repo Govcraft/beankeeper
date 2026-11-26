@@ -545,7 +545,7 @@ fn statement_attention_names_accounts_and_months_newest_first() -> TestResult {
     ])?;
     assert!(csv.contains("statement_check,1000,"));
     assert!(csv.contains("December 2023 statement checked."));
-    let empty = ledger.summary(&["--to", "2023-01-01"])?;
+    let empty = ledger.summary(&["--to", "2023-01-01", "--currency", "USD"])?;
     assert_eq!(
         empty["data"]["needs_attention"]["items"]["unreconciled_months"]["months"],
         json!([])
