@@ -10,7 +10,7 @@ pub(crate) use source::{
     ComparisonView, cash_flow, comparison, income_statement, periods, summary, trend,
 };
 
-use beankeeper::types::{Amount, Currency, Money, MoneyError};
+use beankeeper::types::{AccountType, Amount, Currency, Money, MoneyError};
 use serde::Serialize;
 
 use crate::error::CliError;
@@ -25,8 +25,51 @@ enum Kind {
     Bar,
 }
 
+/// Financial meaning, independent of labels, signs, and consumer palettes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Role {
+    Asset,
+    Liability,
+    NetWorth,
+    Equity,
+    Income,
+    Expense,
+    Leftover,
+    CashFlow,
+    Mixed,
+}
+
+impl From<AccountType> for Role {
+    fn from(kind: AccountType) -> Self {
+        match kind {
+            AccountType::Asset => Self::Asset,
+            AccountType::Liability => Self::Liability,
+            AccountType::Equity => Self::Equity,
+            AccountType::Revenue => Self::Income,
+            AccountType::Expense => Self::Expense,
+        }
+    }
+}
+
+impl Role {
+    /// A combined series keeps its meaning only if all contributors agree.
+    fn combined(roles: impl IntoIterator<Item = Self>) -> Self {
+        let mut roles = roles.into_iter();
+        let Some(first) = roles.next() else {
+            return Self::Mixed;
+        };
+        if roles.all(|role| role == first) {
+            first
+        } else {
+            Self::Mixed
+        }
+    }
+}
+
 /// Intermediate numeric row. Amounts stay exact until the final projection.
 struct Row {
+    role: Role,
     name: String,
     values: Vec<Money>,
     account: Option<String>,
@@ -34,12 +77,14 @@ struct Row {
 
 impl Row {
     fn new(
+        role: Role,
         name: &str,
         account: Option<&str>,
         values: impl IntoIterator<Item = i64>,
         currency: Currency,
     ) -> Self {
         Self::from_money(
+            role,
             name,
             account,
             values
@@ -49,24 +94,27 @@ impl Row {
     }
 
     fn from_money(
+        role: Role,
         name: &str,
         account: Option<&str>,
         values: impl IntoIterator<Item = Money>,
     ) -> Self {
         Self {
+            role,
             name: name.into(),
             values: values.into_iter().collect(),
             account: account.map(str::to_owned),
         }
     }
 
-    fn comparison(name: &str, account: Option<&str>, values: [Money; 2]) -> Self {
-        Self::from_money(name, account, values)
+    fn comparison(role: Role, name: &str, account: Option<&str>, values: [Money; 2]) -> Self {
+        Self::from_money(role, name, account, values)
     }
 }
 
 #[derive(Serialize)]
 struct Series {
+    role: Role,
     name: String,
     values: Vec<String>,
     unit: &'static str,
@@ -116,6 +164,7 @@ impl Chart {
         let series = rows
             .into_iter()
             .map(|row| Series {
+                role: row.role,
                 name: row.name,
                 values: row.values.into_iter().map(format_money).collect(),
                 unit: "major",
@@ -139,6 +188,7 @@ impl Chart {
 
     /// Transpose one-point rows into a category axis without losing account IDs.
     fn categories(
+        role: Role,
         title: &'static str,
         rows: Vec<Row>,
         currency: Currency,
@@ -164,6 +214,7 @@ impl Chart {
             .flat_map(|row| std::mem::take(&mut row.values))
             .collect();
         chart.series = vec![Series {
+            role,
             name: title.into(),
             values,
             unit: "major",
@@ -204,6 +255,7 @@ fn compact(
     let rest = rows.split_off(DEFAULT_LIMIT);
     let count = rest.len();
     let mut other = Row {
+        role: Role::combined(rest.iter().map(|row| row.role)),
         name: "Other".into(),
         values: vec![Money::new(Amount::ZERO, currency); rest[0].values.len()],
         account: None,
@@ -233,10 +285,64 @@ pub(crate) struct WithChart<T, C = Chart> {
 mod tests {
     use super::*;
     #[test]
+    fn roles_serialize_as_a_closed_set_and_convert_account_types() -> Result<(), serde_json::Error>
+    {
+        for (role, text) in [
+            (Role::Asset, "asset"),
+            (Role::Liability, "liability"),
+            (Role::NetWorth, "net_worth"),
+            (Role::Equity, "equity"),
+            (Role::Income, "income"),
+            (Role::Expense, "expense"),
+            (Role::Leftover, "leftover"),
+            (Role::CashFlow, "cash_flow"),
+            (Role::Mixed, "mixed"),
+        ] {
+            assert_eq!(serde_json::to_value(role)?, text);
+        }
+        for (kind, role) in [
+            (AccountType::Asset, Role::Asset),
+            (AccountType::Liability, Role::Liability),
+            (AccountType::Equity, Role::Equity),
+            (AccountType::Revenue, Role::Income),
+            (AccountType::Expense, Role::Expense),
+        ] {
+            assert_eq!(Role::from(kind), role);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn other_preserves_shared_roles_and_marks_mixed_accounts() -> Result<(), CliError> {
+        for (last, expected) in [
+            (Role::Expense, Role::Expense),
+            (Role::Liability, Role::Mixed),
+        ] {
+            let rows = (0..10)
+                .map(|index| {
+                    Row::new(
+                        if index == 9 { last } else { Role::Expense },
+                        "Cash",
+                        Some(&format!("{index:04}")),
+                        [10 - index],
+                        Currency::USD,
+                    )
+                })
+                .collect();
+            let (rows, omitted) = compact(rows, Currency::USD, false)?;
+            assert_eq!(omitted, 2);
+            assert_eq!(rows[8].role, expected);
+            assert_eq!(rows[8].values, [Money::usd(3)]);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn minimum_integer_and_other_use_exact_wide_arithmetic() -> Result<(), CliError> {
         let rows = (0..10)
             .map(|index| {
                 Row::new(
+                    Role::Expense,
                     "Same",
                     Some(&format!("50{index:02}")),
                     [i64::MIN],

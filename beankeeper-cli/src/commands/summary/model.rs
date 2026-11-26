@@ -9,9 +9,11 @@ use super::{Periods, Standing, SummaryReport, money, net, sub, sum};
 use crate::db::BalanceRow;
 use crate::error::CliError;
 use crate::output::amounts::{MoneyField, format_money};
+use crate::output::chart::Role;
 use crate::percent::{Percent, change_percent};
 
 pub(crate) struct Comparison {
+    role: Role,
     id: String,
     label: String,
     current: MoneyField,
@@ -22,6 +24,7 @@ pub(crate) struct Comparison {
 
 impl Comparison {
     fn new(
+        role: Role,
         id: &str,
         label: &str,
         current: i64,
@@ -29,6 +32,7 @@ impl Comparison {
         currency: Currency,
     ) -> Result<Self, CliError> {
         Ok(Self {
+            role,
             id: id.into(),
             label: label.into(),
             current: MoneyField::new("current", money(current, currency)),
@@ -38,8 +42,12 @@ impl Comparison {
         })
     }
 
-    pub(crate) fn chart_series(&self) -> (&str, [Money; 2]) {
-        (&self.label, [self.prior.money(), self.current.money()])
+    pub(crate) fn chart_series(&self) -> (&str, Role, [Money; 2]) {
+        (
+            &self.label,
+            self.role,
+            [self.prior.money(), self.current.money()],
+        )
     }
 }
 
@@ -79,9 +87,24 @@ pub(super) fn comparison(
     let spending = total(current, beankeeper::types::AccountType::Expense)?;
     let last_spending = total(prior, beankeeper::types::AccountType::Expense)?;
     Ok(vec![
-        Comparison::new("income", "Income", income, last_income, currency)?,
-        Comparison::new("spending", "Spending", spending, last_spending, currency)?,
         Comparison::new(
+            Role::Income,
+            "income",
+            "Income",
+            income,
+            last_income,
+            currency,
+        )?,
+        Comparison::new(
+            Role::Expense,
+            "spending",
+            "Spending",
+            spending,
+            last_spending,
+            currency,
+        )?,
+        Comparison::new(
+            Role::Leftover,
             "left_over",
             "Left over",
             sub(income, spending)?,
@@ -106,7 +129,14 @@ pub(super) fn movers(
                 .map(net)
                 .transpose()?
                 .unwrap_or(0);
-            Comparison::new(&row.code, &row.name, net(row)?, prior, currency)
+            Comparison::new(
+                row.account_type.into(),
+                &row.code,
+                &row.name,
+                net(row)?,
+                prior,
+                currency,
+            )
         })
         .collect::<Result<Vec<_>, CliError>>()?;
     changes.retain(|row| !row.change.money().is_zero());
@@ -467,7 +497,7 @@ mod tests {
     fn comparison_projects_exact_ties_and_currency_without_the_envelope()
     -> Result<(), Box<dyn std::error::Error>> {
         for (current, expected) in [(17, 6.2), (15, -6.2), (19, 18.8)] {
-            let row = Comparison::new("x", "x", current, 16, Currency::BHD)?;
+            let row = Comparison::new(Role::Expense, "x", "x", current, 16, Currency::BHD)?;
             let json = serde_json::to_value(&row)?;
             assert_eq!(json["current"], current);
             assert_eq!(json["current_display"], format!("0.{current:03}"));
@@ -480,7 +510,7 @@ mod tests {
     #[test]
     fn percentages_handle_zero_negative_and_minimum_baselines() -> Result<(), CliError> {
         let percentage = |current, prior| -> Result<Option<Number>, CliError> {
-            let row = Comparison::new("x", "x", current, prior, Currency::USD)?;
+            let row = Comparison::new(Role::Expense, "x", "x", current, prior, Currency::USD)?;
             Ok(percent_number(row.change_percent))
         };
         assert_eq!(percentage(1, 0)?, None);

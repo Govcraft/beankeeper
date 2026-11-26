@@ -116,6 +116,20 @@ fn validate(chart: &Value, currency: &str) {
     {
         assert_eq!(series["currency"], currency);
         assert_eq!(series["unit"], "major");
+        assert!(matches!(
+            series["role"].as_str(),
+            Some(
+                "asset"
+                    | "liability"
+                    | "net_worth"
+                    | "equity"
+                    | "income"
+                    | "expense"
+                    | "leftover"
+                    | "cash_flow"
+                    | "mixed"
+            )
+        ));
         let values = series["values"]
             .as_array()
             .unwrap_or_else(|| panic!("values: {series}"));
@@ -211,6 +225,7 @@ fn top_eight_plus_other_preserves_signed_totals_and_account_identifiers() -> Tes
     assert_eq!(compact["truncated"], true);
     assert_eq!(compact["omitted_count"], 2);
     assert_eq!(compact["series"][8]["name"], "Other");
+    assert_eq!(compact["series"][8]["role"], "expense");
     assert!(compact["series"][8].get("account").is_none());
     assert_eq!(all["series"].as_array().map(Vec::len), Some(10));
     assert_eq!(all["truncated"], false);
@@ -314,7 +329,9 @@ fn category_axes_and_comparison_targets_keep_resolved_identifiers() -> TestResul
     assert_eq!(chart["x_accounts"][0], "5000");
     assert_eq!(chart["x"][0], "Same, label");
     assert_eq!(chart["series"][0]["values"][0], "12.34");
+    assert_eq!(chart["series"][0]["role"], "expense");
     let cash = ledger.report(&["report", "cash-flow", "--to", "2024-02-29"], true, false)?;
+    assert_eq!(cash["data"]["chart"]["series"][0]["role"], "cash_flow");
     assert_eq!(
         cash["data"]["chart"]["series"][0]["values"],
         json!(["-12.34"])
@@ -348,6 +365,9 @@ fn category_axes_and_comparison_targets_keep_resolved_identifiers() -> TestResul
     assert_eq!(state["compare_to"], "2024-02-29");
     let summary = ledger.report(&["summary", "--to", "2024-03-31"], true, false)?;
     assert_eq!(summary["data"]["chart"]["x"][0], "2024-02-01..2024-02-29");
+    for (index, role) in ["income", "expense", "leftover"].into_iter().enumerate() {
+        assert_eq!(summary["data"]["chart"]["series"][index]["role"], role);
+    }
     Ok(())
 }
 
@@ -363,6 +383,68 @@ fn invalid_chart_requests_fail_with_named_errors() -> TestResult {
     ] {
         let output = ledger.run(&args)?;
         assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn debt_and_negative_net_worth_keep_roles_in_trends_and_comparisons() -> TestResult {
+    let ledger = Ledger::new()?;
+    // Fictional debt exceeds assets. Account labels do not determine roles.
+    ledger.post("2024-01-15", "1000:25", "2000:25", "USD")?;
+    ledger.post("2024-01-16", "5000:40", "2000:40", "USD")?;
+    for compare in [false, true] {
+        let mut args = vec![
+            "report",
+            "trend",
+            "--metric",
+            "net-worth",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-31",
+        ];
+        if compare {
+            args.extend(["--compare", "previous"]);
+        }
+        let output = ledger.report(&args, true, true)?;
+        let series = &output["data"]["chart"]["series"];
+        for (index, role, amount) in [
+            (0, "asset", "25.00"),
+            (1, "liability", "65.00"),
+            (2, "net_worth", "-40.00"),
+        ] {
+            assert_eq!(series[index]["role"], role);
+            assert_eq!(series[index]["values"][0], amount);
+        }
+    }
+    let output = ledger.report(
+        &[
+            "report",
+            "trial-balance",
+            "--period",
+            "month",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-01-31",
+        ],
+        true,
+        true,
+    )?;
+    for series in output["data"]["chart"]["series"]
+        .as_array()
+        .ok_or("series")?
+    {
+        let expected = match series["account"].as_str().ok_or("account")? {
+            "1000" => "asset",
+            "2000" => "liability",
+            "3000" => "equity",
+            "4000" => "income",
+            code if code.starts_with("50") => "expense",
+            code => return Err(format!("unexpected account {code}").into()),
+        };
+        assert_eq!(series["role"], expected);
     }
     Ok(())
 }

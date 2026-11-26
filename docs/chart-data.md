@@ -54,6 +54,7 @@ for money moving into and out of the selected cash accounts.
 | `x` | Ordered string labels: calendar periods, explicit date intervals, or category labels |
 | `x_accounts` | Exact account codes aligned with a category axis; `null` for period axes and Other |
 | `series` | Named series, each with `values`, `unit`, `currency` and optional `account` |
+| `series[].role` | Semantic hint: `asset`, `liability`, `net_worth`, `equity`, `income`, `expense`, `leftover`, `cash_flow`, or `mixed` |
 | `series[].values` | Exact signed decimal strings in major currency units, one per x label |
 | `series[].unit` | Always `major`; never an implicit minor-unit amount or percentage |
 | `series[].currency` | Explicit ISO currency code, shared by the whole chart |
@@ -106,6 +107,7 @@ amounts and its Total Spending series.
   "series": [
     {
       "name": "Dining",
+      "role": "expense",
       "account": "5000",
       "values": ["120.50", "-15.00"],
       "unit": "major",
@@ -130,3 +132,20 @@ amounts and its Total Spending series.
 
 The negative February value means refunds exceeded booked expenses by USD 15.00.
 A factual answer can say that directly before offering a chart or optional link.
+
+## Semantic roles and compatibility
+
+`series[].role` is an additive version 1 field. Existing consumers can ignore it;
+new consumers should tolerate unknown future roles and render those neutrally.
+Colors remain the consumer's choice. Roles derive from typed account kinds and
+report metrics, never account names or amount signs. `asset` means total assets
+or asset account activity, not necessarily available cash. `liability` includes
+debt; `net_worth` is assets minus liabilities and remains `net_worth` when negative.
+Never present negative net worth as a positive cash balance.
+
+Summary series use `income`, `expense`, and `leftover` (booked income less spending).
+Spending category charts use `expense`; cash-flow category and comparison series
+use `cash_flow`, describing signed movement rather than a cash balance. Period
+and comparison account series use their account type. An Other series retains a
+shared role when every omitted series agrees, otherwise it uses `mixed`.
+No role identifies a particular color or changes any amount, sign, or Desktop target.
