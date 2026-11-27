@@ -4,6 +4,8 @@ The accounting runtime for AI agents. Your assistant manages your books -- `bk` 
 
 A CLI backed by SQLCipher-encrypted SQLite, with an embeddable Rust library underneath.
 
+This repository is the open-source ledger, CLI (`bk`), and MCP server (MIT/Apache). Developer docs live at [beankeeper.app/developers](https://beankeeper.app/developers/). The self-hosted app that installs into Claude or the ChatGPT desktop app is [Beankeeper Desktop](https://beankeeper.app/).
+
 ## Why Beankeeper?
 
 AI assistants can already categorise expenses, reconcile bank feeds, and generate financial reports. The missing piece is a backend that makes those operations *safe* -- one where the agent physically cannot produce an unbalanced ledger, silently duplicate a transaction, or corrupt the audit trail.
@@ -82,8 +84,8 @@ marker names and leaves the actor label independent. See it in `bk audit log`
 and MCP `audit_log`. Use `--quiet` to suppress the stderr notice on CLI
 commands or when launching a stdio MCP server.
 
-Enforcement defaults to off. CLI 0.24.0 adds `bk policy show` and
-`bk policy set --enforce on|off`. Bootstrap by issuing a token with
+Enforcement defaults to off. Use `bk policy show` and
+`bk policy set --enforce on|off` to inspect or change it. Bootstrap by issuing a token with
 `ledger/read,ledger/admin`, saving it, then enabling as a named actor. Once on,
 all reads and mutations require tokens. Missing credentials return `UNAUTHORIZED`
 (exit 6); insufficient grants return `FORBIDDEN` (exit 7). Policy changes require
@@ -297,10 +299,12 @@ yay -S bk-bin
 ```
 
 The CLI (package `beankeeper-cli`, executable `bk`) is distributed only as
-GitHub Release binaries, through `install.sh`, AUR, or a manual download. It is
-not published to crates.io, so `cargo install beankeeper-cli` and
-`cargo binstall beankeeper-cli` are not available; build from Git instead.
-Only the `beankeeper` library is published on crates.io.
+GitHub Release binaries, through `install.sh`, AUR, or a manual download.
+Published binaries cover Linux and macOS on x86_64 and ARM. There is no Windows
+CLI build in these releases. The CLI is not published to crates.io, so
+`cargo install beankeeper-cli` and `cargo binstall beankeeper-cli` are not
+available; build from Git instead. Only the `beankeeper` library is published
+on crates.io.
 
 **From source (builds from `main`)**:
 
@@ -2030,7 +2034,7 @@ fn record_sale(ledger: &mut Ledger) -> Result<(), BeanError> {
 - `#[deny(unsafe_code)]` -- no unsafe Rust in either crate
 - `#[deny(clippy::unwrap_used)]` and `#[deny(clippy::expect_used)]` -- proper error handling everywhere
 - `#[warn(clippy::pedantic)]` -- pedantic linting enabled
-- Library depends only on `chrono`, `sha2`, and `data-encoding` -- minimal footprint
+- Library depends on `chrono`, `sha2`, `data-encoding`, and `num-bigint`, with optional `serde` and `rusqlite` features
 - Tests covering unit, integration, doctest, and real-world accounting scenarios
 
 Every pull request and push to `main` runs formatting, Clippy with warnings
@@ -2052,7 +2056,7 @@ cargo +1.91.0 check --workspace --all-targets --locked
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
 at your option.
