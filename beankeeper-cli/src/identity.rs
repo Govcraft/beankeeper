@@ -751,7 +751,7 @@ mod capability_witness_tests {
                 issue_credential_with_mode(
                     grant,
                     &IssueRequest {
-                        name: "catalog-bookkeeper",
+                        name: "catalog_bookkeeper",
                         capabilities: &capabilities,
                         ttl: Duration::from_mins(15),
                         public_key: None,
