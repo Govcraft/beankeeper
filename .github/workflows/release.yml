@@ -111,10 +111,15 @@ jobs:
           name: bk-${{ matrix.target }}
           path: ${{ env.ASSET }}
 
+  # Automatic CLI tags create the GitHub release and update AUR only.
+  # Library publishes to crates.io are a separate, explicit decision.
+  # This job is retained so the publish script and Trusted Publishing
+  # wiring stay in tree, but it does not run on tag push.
+  # Agents must never cargo publish or publish with a token.
   publish-crates:
     name: Publish library to crates.io
     needs: build
-    if: startsWith(github.ref, 'refs/tags/beankeeper-cli-v')
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read

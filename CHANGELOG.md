@@ -6,80 +6,68 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
-- Clarify the README’s open-source core and source-available Desktop licensing, link the developer site, and name ARM64 CLI artifacts explicitly. (#325)
+## [0.40.0] - 2026-11-27
+
+Released as [beankeeper-cli-v0.40.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.40.0).
+This release includes the changes previously tracked under 0.28.0 through
+0.39.0, none of which shipped separately, plus later work collected under
+Unreleased. It advances the ledger schema from v20 (in 0.27.0) to v39; each
+migration makes older binaries refuse to append to an upgraded ledger. Back
+up the full database before upgrading.
+
+### Added
 
 - Library hosts can list the MCP ledger tools for an access level with `LedgerAccess::tools()` without opening a ledger, so desktop clients see the same tools before and after setup. (#323)
+
 - CLI and MCP chart series expose typed semantic roles for assets, liabilities, net worth, and other report quantities without changing exact amounts. (#319)
 
-- Summary and statement lists name the accounts and monthly statements needing checks, newest first, across CLI and MCP. (#318)
 - Classify cash and cash-equivalent assets through CLI/MCP with audited undo so summary and cash-flow include wallets independently of account names. ([#317](https://github.com/Govcraft/beankeeper/issues/317))
 
-### Added
-
 - Embedded hosts can authorize writes per ledger across CLI and MCP, with structured denials that identify the ledger and explain why it is read-only. ([#313](https://github.com/Govcraft/beankeeper/issues/313))
+
 - Embedded MCP hosts can read typed CLI ledger bindings and resume SSE streams when serving a single preopened ledger. ([#310](https://github.com/Govcraft/beankeeper/issues/310))
+
 - Restore and undo bookkeeping snapshots through `bk` and MCP while preserving live identity, revocations, enforcement, and audit history. `bk restore` updates an existing ledger in place. Use `bk recover` to restore a full snapshot to a new file. ([#306](https://github.com/Govcraft/beankeeper/issues/306))
+
 - Embedded Rust hosts can require a verified pre-migration snapshot before upgrading a ledger, and `bk backup` preserves the source schema version. ([#305](https://github.com/Govcraft/beankeeper/issues/305))
+
 - Embedded Rust hosts can convert `&CliError` to `EnvelopeError` and preserve the CLI and MCP error code, message, and structured details. ([#303](https://github.com/Govcraft/beankeeper/issues/303))
+
 - Track native foreign-currency balances and post auditable, undoable revaluations through the CLI and MCP. ([#292](https://github.com/Govcraft/beankeeper/issues/292))
+
 - Post, import, and report in active ISO 4217 currencies with defined decimal minor units through the CLI and MCP. ([#296](https://github.com/Govcraft/beankeeper/issues/296))
+
 - Link related transactions in the same book with a typed relationship through the CLI or MCP and undo it with one audit receipt. ([#291](https://github.com/Govcraft/beankeeper/issues/291))
+
 - Reconcile monthly account statements through CLI and MCP, undo with an audit receipt, and see outstanding months in financial summaries. ([#290](https://github.com/Govcraft/beankeeper/issues/290))
+
 - Move a posted line between accounts through the CLI or MCP and undo the move with one audit receipt. ([#289](https://github.com/Govcraft/beankeeper/issues/289))
+
 - Generate verified synthetic demo books tailored to a typed profile from the CLI or an authenticated MCP host. ([#293](https://github.com/Govcraft/beankeeper/issues/293))
+
 - Settle unique pending card holds during bank imports and flag stale authorizations in financial summaries through the CLI and MCP. ([#281](https://github.com/Govcraft/beankeeper/issues/281))
+
 - Record and settle pending card holds through CLI or MCP, see posted and available balances, and undo settlements in one audited step. ([#280](https://github.com/Govcraft/beankeeper/issues/280))
+
 - Rename account labels from the CLI or MCP with one-step owner undo and sign-off for propose-only bookkeepers. ([#283](https://github.com/Govcraft/beankeeper/issues/283))
+
 - Bookkeepers can set up books and accounts, post opening balances, and import statements on their normal CLI or MCP connection with one-step owner undo. ([#273](https://github.com/Govcraft/beankeeper/issues/273))
-
-### Changed
-
-- Return typed ledger schema mismatches to Rust hosts, require a verified snapshot for migrations, and report automatic upgrades and the verified backup path in standalone CLI JSON and MCP. ([#309](https://github.com/Govcraft/beankeeper/issues/309))
-- CLI and MCP transaction lists and counts hide both sides of audited reversals by default, with an option to include them. ([#294](https://github.com/Govcraft/beankeeper/issues/294))
-- CLI and MCP reject invalid calendar dates and blank audit actor filters at input parsing with `VALIDATION`, and share typed local-day report defaults. ([#255](https://github.com/Govcraft/beankeeper/issues/255))
-- Regular PRs can record a change under Unreleased without a version bump. Release PRs still require a matching dated section for the proposed CLI tag. ([#268](https://github.com/Govcraft/beankeeper/issues/268))
-- Owners can undo categorization rule creation through the CLI or MCP. The rule and an audit receipt remain on record. ([#267](https://github.com/Govcraft/beankeeper/issues/267))
-- Read grouped audit receipts and undo eligible changes immediately from the CLI or MCP with the owner's signed grant. ([#262](https://github.com/Govcraft/beankeeper/issues/262))
-
-### Fixed
-
-- Embedded hosts can allow audited receipt and rule undo in read-only books through the same write policy for CLI and MCP. ([#315](https://github.com/Govcraft/beankeeper/issues/315))
-
-- Let existing bookkeepers reverse postings and undo eligible receipts through CLI and MCP, with pending corrections only for propose-only credentials. ([#287](https://github.com/Govcraft/beankeeper/issues/287))
-- Existing propose-only bookkeepers can configure books and accounts directly and submit openings and statement rows through transaction sign-off on the CLI and MCP. ([#275](https://github.com/Govcraft/beankeeper/issues/275))
-- MCP tool schemas describe nested objects and arrays inline, and clients such as Claude Desktop can send those arguments as JSON text. ([#277](https://github.com/Govcraft/beankeeper/issues/277))
-- Tag posted transactions through MCP using an object such as `{"status":"pending"}`, with clear validation errors and one-step annotation undo through CLI or MCP. ([#279](https://github.com/Govcraft/beankeeper/issues/279))
-
-## [0.39.0] - Unreleased
-
-### Added
 
 - Embedded Rust hosts can read the linked build's expected ledger schema
   version without opening a database.
   ([#250](https://github.com/Govcraft/beankeeper/issues/250))
-
-## [0.38.0] - Unreleased
-
-### Added
 
 - Embedded hosts can stage a private replacement credential, then register it
   and revoke the exact prior token in one owner-attributed transaction. Token
   status by ID lets a host recover after interruption.
   ([#256](https://github.com/Govcraft/beankeeper/issues/256))
 
-## [0.37.0] - Unreleased
-
-### Added
-
 - Create, list, supersede, remove, and preview company categorization rules from
   either CLI or MCP. Amendments preserve both rule versions in the audit trail.
+
 - Save and amend standing sales-tax, processor-fee, and inform preferences from
   either interface. Schema v27 adds audit hash version 7 and preserves earlier
   hashes. ([#253](https://github.com/Govcraft/beankeeper/issues/253))
-
-## [0.36.0] - Unreleased
-
-### Added
 
 - Embedded hosts can page through company audit receipts and undo a posting or
   account creation with a verified owner grant. Posting undo appends a linked
@@ -88,55 +76,25 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   migrates accounts as active. Receipt summaries and undo errors are typed.
   ([#249](https://github.com/Govcraft/beankeeper/issues/249))
 
-## [0.35.0] - Unreleased
-
-### Added
-
 - Embedded MCP hosts can register separate books that accept the startup
   ledger's verified bearer and keep its signed grants, posting mode, and audit
   identity. Hosts can detach named ledgers after active requests drain. Named
   results identify their ledger in MCP metadata and CLI JSON.
   ([#252](https://github.com/Govcraft/beankeeper/issues/252))
 
-## [0.34.0] - Unreleased
-
-### Added
-
 - Embedded hosts can attest a local owner and read a typed financial summary
   on enforced books. The read provides attributed access data to the host's
   audit sink and works with a read-only ledger snapshot.
   ([#260](https://github.com/Govcraft/beankeeper/issues/260))
 
-## [0.33.0] - Unreleased
-
-### Added
-
 - Embedded hosts can read the financial summary's inclusive current and
   comparison date windows and plain-language highlights directly from the typed
   response. ([#257](https://github.com/Govcraft/beankeeper/issues/257))
-
-## [0.32.1] - Unreleased
-
-### Changed
-
-- CLI, MCP, and embedded hosts can execute the same typed ledger requests.
-  MCP discovery generates schemas and capability hints from the operation
-  catalog. Omitted transaction posting currency follows
-  `BEANKEEPER_CURRENCY` when set and otherwise defaults to USD.
-  ([#240](https://github.com/Govcraft/beankeeper/issues/240))
-
-## [0.32.0] - Unreleased
-
-### Added
 
 - Record an unverified runtime hint on CLI and stdio MCP audit rows when known
   environment markers are present and the caller has no verified token.
   Schema v25 adds hash version 5 and preserves earlier hashes.
   ([#242](https://github.com/Govcraft/beankeeper/issues/242))
-
-## [0.31.0] - Unreleased
-
-### Added
 
 - Authenticated MCP clients can select a registered ledger for each request on
   an existing HTTP session. Beankeeper verifies the bearer and applies its
@@ -144,46 +102,18 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   while clients are connected, and local CLI commands use the same target names.
   ([#246](https://github.com/Govcraft/beankeeper/issues/246))
 
-## [0.30.1] - Unreleased
-
-### Fixed
-
-- Demo books credit generated activity to `demo` and record the initializer's
-  actor on company creation and one `demo_seed` audit event. Generated postings
-  carry the reserved `beankeeper_source` metadata key. Schema v24 preserves
-  existing audit rows and hashes. ([#243](https://github.com/Govcraft/beankeeper/issues/243))
-
-## [0.30.0] - Unreleased
-
-### Added
-
 - Signed per-agent write modes let the bookkeeper preset post directly by
   default. Issue a grant with `--write-mode propose-only` to make `bk txn post`
   and MCP `txn_post` reserve pending proposals. The owner can undo a direct
   post with an immediate audited reversal in either interface.
   ([#244](https://github.com/Govcraft/beankeeper/issues/244))
 
-## [0.29.1] - Unreleased
-
-### Fixed
-
-- CLI and MCP clearing accept signed statement amounts. Point-in-time reports
-  accept an as-of date alias and reject requests that supply both date names.
-  MCP discovery explains report options and how to request account balances.
-  Same-company correlation errors point to the audited reversal and metadata
-  tools. Audit history pages have a 100-row maximum and return a continuation
-  offset when more rows remain.
-  ([#236](https://github.com/Govcraft/beankeeper/issues/236))
-
-## [0.29.0] - Unreleased
-
-### Added
-
 - MCP `company_create` uses the same audited insert as CLI and setup book
   creation. All creation commands and tools trim company names and require
   a nonblank name. An MCP `company_delete` call confirms and audits deletion
   of an eligible company. Companies with retained data keep their history.
   ([#234](https://github.com/Govcraft/beankeeper/issues/234))
+
 - Trusted hosts can initialize a separate, optionally encrypted demo ledger
   through `create_demo_ledger`. The initializer refuses preexisting files.
   ([#234](https://github.com/Govcraft/beankeeper/issues/234))
@@ -193,28 +123,6 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
   counts/totals, plain-language highlights, chartable data and optional Desktop
   targets. Missing invoice due dates are explicit; age-based open items are
   reported separately. ([#116](https://github.com/Govcraft/beankeeper/issues/116))
-
-### Changed
-
-- CLI and MCP `verify` return local verification evidence, including per-company
-  currency totals, audit-chain head and row counts. Integrity errors name the
-  first failing check and identify the affected record where available.
-  ([#235](https://github.com/Govcraft/beankeeper/issues/235))
-
-### Fixed
-
-- MCP writes honor the configured actor and use the verified agent URI when no
-  label is configured, matching CLI attribution. Filter audit rows by actor
-  with `audit_log.actor` or `bk audit log --by-actor`. ([#233](https://github.com/Govcraft/beankeeper/issues/233))
-
-- Transaction list and count interpret amount filters in one currency. They
-  infer a sole transaction currency and require an explicit choice when the
-  company uses several. Applies to both CLI and MCP.
-  ([#155](https://github.com/Govcraft/beankeeper/issues/155))
-
-## [0.28.0] - Unreleased
-
-### Added
 
 - Period comparisons and what-changed answers for income statements, trial
   balances, spending/net-worth trends, cash flow, account balances and balance
@@ -234,10 +142,69 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Changed
 
+- Clarify the README’s open-source core and source-available Desktop licensing, link the developer site, and name ARM64 CLI artifacts explicitly. (#325)
+
+- Summary and statement lists name the accounts and monthly statements needing checks, newest first, across CLI and MCP. (#318)
+
+- Return typed ledger schema mismatches to Rust hosts, require a verified snapshot for migrations, and report automatic upgrades and the verified backup path in standalone CLI JSON and MCP. ([#309](https://github.com/Govcraft/beankeeper/issues/309))
+
+- CLI and MCP transaction lists and counts hide both sides of audited reversals by default, with an option to include them. ([#294](https://github.com/Govcraft/beankeeper/issues/294))
+
+- CLI and MCP reject invalid calendar dates and blank audit actor filters at input parsing with `VALIDATION`, and share typed local-day report defaults. ([#255](https://github.com/Govcraft/beankeeper/issues/255))
+
+- Regular PRs can record a change under Unreleased without a version bump. Release PRs still require a matching dated section for the proposed CLI tag. ([#268](https://github.com/Govcraft/beankeeper/issues/268))
+
+- Owners can undo categorization rule creation through the CLI or MCP. The rule and an audit receipt remain on record. ([#267](https://github.com/Govcraft/beankeeper/issues/267))
+
+- Read grouped audit receipts and undo eligible changes immediately from the CLI or MCP with the owner's signed grant. ([#262](https://github.com/Govcraft/beankeeper/issues/262))
+
+- CLI, MCP, and embedded hosts can execute the same typed ledger requests.
+  MCP discovery generates schemas and capability hints from the operation
+  catalog. Omitted transaction posting currency follows
+  `BEANKEEPER_CURRENCY` when set and otherwise defaults to USD.
+  ([#240](https://github.com/Govcraft/beankeeper/issues/240))
+
+- CLI and MCP `verify` return local verification evidence, including per-company
+  currency totals, audit-chain head and row counts. Integrity errors name the
+  first failing check and identify the affected record where available.
+  ([#235](https://github.com/Govcraft/beankeeper/issues/235))
+
 - Comparison CSV uses a `row_type` column for accounts, totals, movers and
   explanation rows. Non-comparison output formats are unchanged.
 
 ### Fixed
+
+- Embedded hosts can allow audited receipt and rule undo in read-only books through the same write policy for CLI and MCP. ([#315](https://github.com/Govcraft/beankeeper/issues/315))
+
+- Let existing bookkeepers reverse postings and undo eligible receipts through CLI and MCP, with pending corrections only for propose-only credentials. ([#287](https://github.com/Govcraft/beankeeper/issues/287))
+
+- Existing propose-only bookkeepers can configure books and accounts directly and submit openings and statement rows through transaction sign-off on the CLI and MCP. ([#275](https://github.com/Govcraft/beankeeper/issues/275))
+
+- MCP tool schemas describe nested objects and arrays inline, and clients such as Claude Desktop can send those arguments as JSON text. ([#277](https://github.com/Govcraft/beankeeper/issues/277))
+
+- Tag posted transactions through MCP using an object such as `{"status":"pending"}`, with clear validation errors and one-step annotation undo through CLI or MCP. ([#279](https://github.com/Govcraft/beankeeper/issues/279))
+
+- Demo books credit generated activity to `demo` and record the initializer's
+  actor on company creation and one `demo_seed` audit event. Generated postings
+  carry the reserved `beankeeper_source` metadata key. Schema v24 preserves
+  existing audit rows and hashes. ([#243](https://github.com/Govcraft/beankeeper/issues/243))
+
+- CLI and MCP clearing accept signed statement amounts. Point-in-time reports
+  accept an as-of date alias and reject requests that supply both date names.
+  MCP discovery explains report options and how to request account balances.
+  Same-company correlation errors point to the audited reversal and metadata
+  tools. Audit history pages have a 100-row maximum and return a continuation
+  offset when more rows remain.
+  ([#236](https://github.com/Govcraft/beankeeper/issues/236))
+
+- MCP writes honor the configured actor and use the verified agent URI when no
+  label is configured, matching CLI attribution. Filter audit rows by actor
+  with `audit_log.actor` or `bk audit log --by-actor`. ([#233](https://github.com/Govcraft/beankeeper/issues/233))
+
+- Transaction list and count interpret amount filters in one currency. They
+  infer a sole transaction currency and require an explicit choice when the
+  company uses several. Applies to both CLI and MCP.
+  ([#155](https://github.com/Govcraft/beankeeper/issues/155))
 
 - Multi-column and cash-flow aggregation reject arithmetic overflow instead of
   silently saturating amounts used in comparison answers.
