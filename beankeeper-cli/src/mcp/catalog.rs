@@ -59,6 +59,76 @@ fn tool<Input: JsonSchema>(
         .with_annotations(ToolAnnotations::new().read_only(operation.is_read_only()))
 }
 
+/// An immutable operation paired with its generated MCP definition.
+///
+/// Entries can only be constructed by the canonical operation catalog.
+#[derive(Debug, Clone)]
+pub struct LedgerTool {
+    operation: Operation,
+    tool: Tool,
+}
+
+impl LedgerTool {
+    /// The typed authorization and dispatch identity.
+    #[must_use]
+    pub const fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    /// The MCP discovery definition.
+    #[must_use]
+    pub const fn tool(&self) -> &Tool {
+        &self.tool
+    }
+
+    /// Consume the entry as its operation and MCP definition.
+    #[must_use]
+    pub fn into_parts(self) -> (Operation, Tool) {
+        (self.operation, self.tool)
+    }
+}
+
+macro_rules! catalog_entry {
+    ($entries:ident, $access:ident, $variant:ident, tool($name:ident, $input:ident, $description:literal)) => {
+        if matches!($access, LedgerAccess::ReadWrite) || Operation::$variant.is_read_only() {
+            $entries.push(LedgerTool {
+                operation: Operation::$variant,
+                tool: tool::<inputs::$input>(Operation::$variant, stringify!($name), $description),
+            });
+        }
+    };
+    ($entries:ident, $access:ident, $variant:ident, tool_at($path:literal, $name:ident, $input:ident, $description:literal)) => {
+        catalog_entry!(
+            $entries,
+            $access,
+            $variant,
+            tool($name, $input, $description)
+        );
+    };
+    ($entries:ident, $access:ident, $variant:ident, mcp_only($reason:ident, $name:ident, $input:ident, $description:literal)) => {
+        catalog_entry!(
+            $entries,
+            $access,
+            $variant,
+            tool($name, $input, $description)
+        );
+    };
+    ($entries:ident, $access:ident, $variant:ident, grouped($group:ident, $path:literal)) => {};
+    ($entries:ident, $access:ident, $variant:ident, cli_only($reason:ident)) => {};
+}
+
+macro_rules! typed_catalog {
+    ($($variant:ident => ($name:literal, $permission:ident, $exposure:ident($($details:tt)*))),+ $(,)?) => {
+        pub(super) fn entries(access: LedgerAccess) -> Vec<LedgerTool> {
+            let mut entries = Vec::new();
+            $(catalog_entry!(entries, access, $variant, $exposure($($details)*));)+
+            entries
+        }
+    };
+}
+
+ledger_operations!(typed_catalog);
+
 fn route<Input, Handle, Future>(
     operation: Operation,
     tool: Tool,
@@ -173,3 +243,40 @@ macro_rules! router {
 }
 
 ledger_operations!(router);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_catalog_covers_every_registered_tool_once() -> Result<(), CliError> {
+        for access in [LedgerAccess::ReadOnly, LedgerAccess::ReadWrite] {
+            let entries = access.catalog();
+            let router = router(access);
+            let tools = router.list_all();
+            assert_eq!(entries.len(), tools.len());
+            let mut names = std::collections::HashSet::new();
+            for entry in &entries {
+                let (operation, tool) = entry.clone().into_parts();
+                assert!(names.insert(tool.name.clone()));
+                assert_eq!(operation_for_tool(&tool.name)?, operation);
+                assert_eq!(
+                    tools.iter().find(|registered| registered.name == tool.name),
+                    Some(&tool)
+                );
+            }
+            for operation in Operation::ALL {
+                let expected = matches!(
+                    operation.exposure(),
+                    Exposure::Both(_) | Exposure::McpOnly(_, _)
+                ) && (matches!(access, LedgerAccess::ReadWrite)
+                    || operation.is_read_only());
+                assert_eq!(
+                    entries.iter().any(|entry| entry.operation() == *operation),
+                    expected
+                );
+            }
+        }
+        Ok(())
+    }
+}

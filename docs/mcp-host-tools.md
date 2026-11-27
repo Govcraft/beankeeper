@@ -299,3 +299,19 @@ fn host_router(cli: &Cli, passphrase: Option<&SecretString>, sender: Sender<View
 The built-in CLI and stdio server do not register host tools. View URLs, browser
 sessions, event delivery, and Desktop's specific navigation tools belong to the
 host application.
+
+## Discovery before setup
+
+Use `LedgerAccess::catalog()` for immutable `LedgerTool` entries with typed
+`operation()` and `tool()` accessors, or `into_parts()` for `(Operation, Tool)`.
+The canonical operation catalog generates both definitions and routes; hosts do
+not need to parse tool names or maintain a capability mirror. Existing
+`LedgerAccess::tools()` remains available for callers needing only definitions.
+
+Use `LedgerAccess::catalog_for(&identity, true)` before a ledger exists to filter
+by a `VerifiedAgent`'s effective grants. For a selected ledger, pass its policy's
+`enforce` value to match live HTTP discovery. This includes signed write mode,
+bookkeeper Chart/Reverse grants and mandatory explicit permissions even with
+policy off. The access ceiling always applies. Catalog discovery does not check
+revocation or expiry against a live registry and never authorizes execution;
+the authenticated endpoint continues to perform those checks per request.

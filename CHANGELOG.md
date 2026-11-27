@@ -6,6 +6,8 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+- Hosts can discover typed MCP operation/tool pairs before setup and filter them with verified effective grants, including bookkeeper Chart and Reverse rules. (#329)
+
 ## [0.40.0] - 2026-11-27
 
 Released as [beankeeper-cli-v0.40.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.40.0).
