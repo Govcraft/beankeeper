@@ -6,6 +6,8 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+- Clarify the README’s open-source core and source-available Desktop licensing, link the developer site, and name ARM64 CLI artifacts explicitly. (#325)
+
 - Library hosts can list the MCP ledger tools for an access level with `LedgerAccess::tools()` without opening a ledger, so desktop clients see the same tools before and after setup. (#323)
 - CLI and MCP chart series expose typed semantic roles for assets, liabilities, net worth, and other report quantities without changing exact amounts. (#319)
 

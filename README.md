@@ -4,7 +4,13 @@ The accounting runtime for AI agents. Your assistant manages your books -- `bk` 
 
 A CLI backed by SQLCipher-encrypted SQLite, with an embeddable Rust library underneath.
 
-This repository is the open-source ledger, CLI (`bk`), and MCP server (MIT/Apache). Developer docs live at [beankeeper.app/developers](https://beankeeper.app/developers/). The self-hosted app that installs into Claude or the ChatGPT desktop app is [Beankeeper Desktop](https://beankeeper.app/).
+See [beankeeper.app/developers](https://beankeeper.app/developers/) for the
+product overview, source repositories, and verified release files.
+[Beankeeper Desktop](https://beankeeper.app/) adds a background service,
+optional local browser views, and AI extension packaging under a separate
+[source-available license](https://github.com/Govcraft/beankeeper-desktop/blob/main/LICENSE.md).
+The ledger, CLI, and MCP server in this repository remain MIT/Apache-2.0 open source;
+you can use them independently of Desktop.
 
 ## Why Beankeeper?
 
@@ -300,7 +306,7 @@ yay -S bk-bin
 
 The CLI (package `beankeeper-cli`, executable `bk`) is distributed only as
 GitHub Release binaries, through `install.sh`, AUR, or a manual download.
-Published binaries cover Linux and macOS on x86_64 and ARM. There is no Windows
+Published binaries cover Linux and macOS on x86_64 and ARM64. There is no Windows
 CLI build in these releases. The CLI is not published to crates.io, so
 `cargo install beankeeper-cli` and `cargo binstall beankeeper-cli` are not
 available; build from Git instead. Only the `beankeeper` library is published
