@@ -12,13 +12,19 @@ versions are supported by this procedure. The library version is independent.
 Use `beankeeper-vX.Y.Z` for library tags and `beankeeper-cli-vX.Y.Z` for CLI
 tags going forward; do not create new bare `vX.Y.Z` tags or rewrite historical
 tags. Library tags do not trigger the binary release workflow. See
-[crates.io publishing](#cratesio-publishing) below: only the library is
-published there; the CLI ships as GitHub Release binaries.
+[crates.io publishing](#cratesio-publishing) below: only the library is ever
+considered for crates.io, and a CLI tag does not publish it automatically. The
+CLI ships as GitHub Release binaries.
 
-CLI [0.27.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.27.0)
-was released on 2026-11-20, including the changes tracked under 0.24.0 through
-0.26.1. The examples below use `0.27.0`; substitute the version selected during
-release preparation.
+CLI [0.40.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.40.0)
+was released on 2026-11-27, including the changes previously tracked under 0.28.0
+through 0.39.0 and later Unreleased work. The examples below use `0.40.0`;
+substitute the version selected during release preparation.
+
+Beankeeper Desktop depends on the `beankeeper-cli-vX.Y.Z` release tag, not on
+`branch = "main"`. After a CLI release, Desktop should bump
+`crates/beankeeper-desktop/Cargo.toml` and `Cargo.lock` to that tag (a scheduled
+Desktop workflow opens that PR).
 
 ## Agent / contributor convention
 
@@ -81,7 +87,7 @@ Build a fresh binary from that same tree and run the offline preflight:
 
 ```sh
 cargo build --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.27.0
+scripts/check-release.sh --tag beankeeper-cli-v0.40.0
 ```
 
 The script reads the CLI manifest, requires a stable `X.Y.Z` version and an exact
@@ -94,7 +100,7 @@ other builds:
 
 ```sh
 cargo build --release --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.27.0 "${CARGO_TARGET_DIR:-target}/release/bk"
+scripts/check-release.sh --tag beankeeper-cli-v0.40.0 "${CARGO_TARGET_DIR:-target}/release/bk"
 cargo fetch --locked
 python3 -B -m unittest discover -s scripts/tests -v
 ```
@@ -116,8 +122,8 @@ checks pass. Recheck the working tree is clean, then create a signed tag on the
 confirmed commit and push only that tag:
 
 ```sh
-git tag -s beankeeper-cli-v0.27.0 -m 'bk 0.27.0'
-git push origin refs/tags/beankeeper-cli-v0.27.0
+git tag -s beankeeper-cli-v0.40.0 -m 'bk 0.40.0'
+git push origin refs/tags/beankeeper-cli-v0.40.0
 ```
 
 Do not move an existing published tag. Correct an already published release with
@@ -145,17 +151,18 @@ a new version and tag.
 5. The AUR job downloads the published checksums, updates `PKGBUILD` and
    `.SRCINFO` for `bk-bin`, and pushes to AUR over SSH.
 
-After all four builds succeed, `publish-crates` authenticates to crates.io with
-OIDC and publishes the `beankeeper` library, skipping a version that is already
-published. It runs alongside the GitHub release job, so a publishing failure
-cannot block the GitHub release or AUR update. The CLI is never published to
-crates.io.
+The `publish-crates` job remains in the workflow so the publish script and
+crates.io Trusted Publishing wiring stay in tree, but it does not run on a CLI
+tag push (`if: false`). A GitHub binary release and the AUR `bk-bin` update do
+not publish a new `beankeeper` library version to crates.io. Library publishes
+are a separate, explicit decision. Agents must never run `cargo publish` or
+publish with a token. The CLI is never published to crates.io.
 
 Watch the Release workflow in GitHub Actions and inspect the resulting release:
 
 ```sh
 gh run list --workflow release.yml --limit 5
-gh release view beankeeper-cli-v0.27.0
+gh release view beankeeper-cli-v0.40.0
 ```
 
 AUR requires repository secret `AUR_SSH_KEY` with push access to `bk-bin`. If it
@@ -179,11 +186,11 @@ BK_INSTALL="$latest_dir" sh install.sh
 "$latest_dir/bk" --version
 
 pinned_dir=$(mktemp -d)
-BK_INSTALL="$pinned_dir" BK_VERSION=0.27.0 sh install.sh
+BK_INSTALL="$pinned_dir" BK_VERSION=0.40.0 sh install.sh
 "$pinned_dir/bk" --version
 ```
 
-Immediately after this release becomes latest, both should print `bk 0.27.0`.
+Immediately after this release becomes latest, both should print `bk 0.40.0`.
 `BK_VERSION` is the bare CLI version, without `v` or the tag prefix. The installer
 downloads from `beankeeper-cli-v${VERSION}` and, when `cosign` is on `PATH`, verifies
 both the archive and checksum file against their bundles using the exact tag's
@@ -310,14 +317,17 @@ Only the `beankeeper` library is published to crates.io. `beankeeper-cli` sets
 `cargo binstall beankeeper-cli` are not supported. See the
 [README](../README.md#install) for CLI install options.
 
-`beankeeper` publishes only through the `publish-crates` job in
-[release.yml](../.github/workflows/release.yml), never with an API token. Its
-crates.io settings require Trusted Publishing for all new versions from GitHub
-repository `Govcraft/beankeeper`, workflow `release.yml`. The job has
-`id-token: write` permission and uses `rust-lang/crates-io-auth-action@v1` to
-obtain a temporary OIDC credential, with no stored crates.io secret. The action
-revokes that credential when the job finishes. PR CI only runs dry runs; a
-maintainer or PM triggers publishing by pushing the approved CLI release tag.
+`beankeeper` is not published to crates.io as part of a CLI GitHub/AUR release.
+The `publish-crates` job in [release.yml](../.github/workflows/release.yml) is
+gated with `if: false` and does not run when a `beankeeper-cli-v*` tag is
+pushed. A new library version on crates.io is a separate, explicit decision;
+agents must never run `cargo publish` or publish with a token. Trusted
+Publishing remains configured on crates.io for GitHub repository
+`Govcraft/beankeeper`, workflow `release.yml`, and the job wiring
+(`id-token: write`, `rust-lang/crates-io-auth-action@v1`, no stored crates.io
+secret) stays in the workflow for that future decision. PR CI only runs dry
+runs. The latest published library version may lag the latest CLI GitHub
+release.
 
 Keep the CLI's `beankeeper` dependency's `version` equal to the library's package
 version, while retaining its `path` for local development. The crates have
@@ -341,12 +351,12 @@ not replace it with `--no-verify`, a path patch, or a check that ignores
 failures. It needs network access for the registry
 index and dependencies, but no publishing credential.
 
-The release job checks the library's exact version on crates.io and skips an
-existing version. Otherwise it runs `cargo publish -p beankeeper --locked`. If
-that upload is rejected because the version already exists and crates.io then
-confirms it, the job also succeeds. Registry lookup failures and all other
-publishing failures, including authorization rejections, fail the job rather
-than being treated as missing or skipped versions. Published versions are
-immutable; confirm an existing library version is the intended dependency
-before tagging. Rerun the failed job to retry; do not bump versions or retag
-solely for a retry.
+If the `publish-crates` job is later enabled, it checks the library's exact
+version on crates.io and skips an existing version; otherwise it runs
+`cargo publish -p beankeeper --locked`. If that upload is rejected because the
+version already exists and crates.io then confirms it, the job also succeeds.
+Registry lookup failures and all other publishing failures, including
+authorization rejections, fail the job rather than being treated as missing or
+skipped versions. Published versions are immutable. Do not bump versions or
+retag solely for a crates.io retry, and do not run `cargo publish` outside that
+job.
