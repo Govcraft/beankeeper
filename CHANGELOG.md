@@ -6,6 +6,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+- Library hosts can list the MCP ledger tools for an access level with `LedgerAccess::tools()` without opening a ledger, so desktop clients see the same tools before and after setup. (#323)
 - CLI and MCP chart series expose typed semantic roles for assets, liabilities, net worth, and other report quantities without changing exact amounts. (#319)
 
 - Summary and statement lists name the accounts and monthly statements needing checks, newest first, across CLI and MCP. (#318)

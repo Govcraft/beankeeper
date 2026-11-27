@@ -78,6 +78,17 @@ impl From<bool> for LedgerAccess {
     }
 }
 
+impl LedgerAccess {
+    /// Tool definitions registered at this access ceiling, without opening a ledger.
+    ///
+    /// Hosts that answer `tools/list` before any ledger exists use this catalog,
+    /// so clients see the same tools before and after the books are set up.
+    #[must_use]
+    pub fn tools(self) -> Vec<rmcp::model::Tool> {
+        catalog::router(self).list_all()
+    }
+}
+
 #[derive(Clone)]
 enum Backend {
     Stdio {
@@ -479,6 +490,33 @@ mod tests {
         for name in ["security_list", "investment_lots", "investment_holdings"] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn static_catalog_matches_the_registered_router() -> Result<(), CliError> {
+        for access in [LedgerAccess::ReadOnly, LedgerAccess::ReadWrite] {
+            let server = LedgerServer::new(Db::open_in_memory()?, access);
+            let mut registered: Vec<_> = server
+                .tool_router
+                .list_all()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect();
+            let mut catalog: Vec<_> = access.tools().into_iter().map(|tool| tool.name).collect();
+            registered.sort();
+            catalog.sort();
+            assert_eq!(catalog, registered);
+        }
+        let read_write = LedgerAccess::ReadWrite.tools();
+        assert!(read_write.iter().any(|tool| tool.name == "txn_reverse"));
+        assert!(read_write.iter().any(|tool| tool.name == "audit_undo"));
+        assert!(
+            !LedgerAccess::ReadOnly
+                .tools()
+                .iter()
+                .any(|tool| tool.name == "txn_reverse")
+        );
         Ok(())
     }
 
