@@ -258,7 +258,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `group_income_statement` | Read combined income for selected companies in one ledger. Supply `members`, `currency`, `from`, and `to`. |
 | `group_balance_sheet` | Read combined balances for selected companies in one ledger. Supply `members`, `currency`, and `as_of`. |
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
-| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure books and accounts on the Direct bookkeeper connection or in an active setup session |
+| `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure books and accounts on the agent’s bookkeeper connection or in an active setup session |
 | `ledger_setup_book_update` | Write a profile revision in an active setup session |
 | `ledger_setup_opening_post` | Post a balanced opening journal directly and return an owner undo receipt |
 | `ledger_setup_statement_import` | Import CSV or OFX statement contents directly and return an owner undo receipt |
@@ -362,7 +362,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `inform_preference_show`, `inform_preference_set` | `company`. Set also takes a `preference` |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
-| `txn_reconcile` | Check for orphaned intercompany links with `ledger/read`. Takes no arguments. |
+| `txn_reconcile` | Check for orphaned intercompany links with `ledger/read` or `ledger/reconcile`. Takes no arguments. |
 | `verify` | No arguments; verifies ledger integrity |
 | `security_create` | `company`, `symbol`, `name`, optional `currency` (default USD) |
 | `security_list` | `company`; list registered securities |
@@ -744,7 +744,7 @@ character. Surrounding whitespace is trimmed. A label already used by another
 account in that book is rejected with `DUPLICATE_ACCOUNT_NAME`. Label comparison
 is case-sensitive.
 
-Direct bookkeepers receive the previous label, a `receipt_id`, and a
+In direct mode the agent receives the previous label, a `receipt_id`, and a
 `desktop_path` for the change. Repeating the request while that rename is
 current returns the same receipt. If the name was already current with no
 matching rename receipt, the result is `unchanged`. Pass the receipt to
@@ -944,7 +944,7 @@ whole-object `before`/`after` snapshots and the resolved actor, atomically with
 the edit. Removing the last key leaves `{}`. Setting an identical string or
 removing an absent key is a no-op with no audit row. Other keys and numeric
 precision survive. Use the returned `receipt` with
-`bk audit undo --company COMPANY RECEIPT` with a signed direct bookkeeper grant to
+`bk audit undo --company COMPANY RECEIPT` with the agent’s signed posting grant in direct mode to
 restore the exact prior metadata. Undo newer annotation edits first.
 Dates, entries, amounts, currency, references, and creation attribution stay
 unchanged. Tagging the original charge preserves its age and payment matching
@@ -1998,10 +1998,10 @@ bk --company acme --json audit undo 52
 ```
 
 Set `next` to the `continuation` from the previous page. Save `through` as
-the next cursor once `continuation` is null. A signed direct bookkeeper can
+the next cursor once `continuation` is null. In direct mode a signed agent can
 reverse a posting or restore annotations or a prior account label. Account
 archiving and grouped setup undo require a signed `ledger/admin` credential.
-Propose-only bookkeepers submit eligible corrections for a signed approver.
+In proposal-only mode the agent submits eligible corrections for a signed approver.
 [Receipt paging, result fields, and error codes](json-api.md#audit-receipts)
 
 ## Agent spend limits

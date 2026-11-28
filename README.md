@@ -160,9 +160,9 @@ for output fields, history, and retry behavior.
 
 ### Set up books over the agent connection
 
-Bookkeepers can create or initialize books, add accounts, and apply a chart on
-their normal connection in either write mode. Direct bookkeepers also post
-opening balances and import CSV or OFX/QFX statement contents immediately.
+The agent can create or initialize books, add accounts, and apply a chart on
+its usual connection in either write mode. In direct mode it also posts opening
+balances and imports CSV or OFX/QFX statement contents immediately.
 The agent reports completed changes and offers one-step owner undo using the
 receipt ID, with an optional Desktop detail path. Statement undo reverses the
 postings that import created.
@@ -177,8 +177,8 @@ sign-off. Existing bookkeeper credentials gain this setup access automatically.
 
 The bookkeeper preset posts directly with `bk txn post` or MCP `txn_post`.
 Tell the owner what posted and give them the transaction ID. To correct it,
-the same bookkeeper can run `bk txn reverse ID` or use `txn_reverse`. Existing
-direct bookkeeper credentials already have reversal access. A correction
+the agent can run `bk txn reverse ID` or use `txn_reverse`. The bookkeeper
+preset in direct mode includes reversal access. A correction
 appends an audited mirror posting and keeps the original in the ledger.
 
 Use `bk --company acme --json audit receipts` or MCP `audit_receipts` to see
@@ -744,7 +744,7 @@ Call `txn_meta_set` with `company`, exactly one of `id` or `reference`, and a
 `values` object such as `{"status":"pending"}`. Legacy `["status=pending"]`
 arrays still work. `txn_meta_unset` takes the same selector and an array such
 as `keys: ["status"]`. Both tools share the CLI validation and return a
-`receipt` for each change. With a signed direct bookkeeper grant, call `audit_undo` with
+`receipt` for each change. With the agent’s signed posting grant in direct mode, call `audit_undo` with
 that receipt and company to restore the prior annotations in one step.
 Read-only mode omits both write tools.
 
@@ -760,7 +760,7 @@ To move an imported line to a different account, call `txn_recategorize` with
 `company`, exactly one of the original transaction's `id` or `reference`, and
 `to_account`. On the CLI, use `bk txn recategorize --id 42 --to-account 5100`.
 Add `entry_id` or `from_account` when more than one line could match.
-A direct bookkeeper receives a summary, amounts and account codes, a
+In direct mode the agent receives a summary, amounts and account codes, a
 `desktop_path`, and a `receipt_id` for one-step undo with `audit_undo` or
 `bk audit undo RECEIPT`. The new journal offsets the source account and
 posts the same amount to the destination. The original bank entry and
@@ -1117,7 +1117,7 @@ whole-object `before`/`after` snapshots and the resolved actor, atomically with
 the edit. Removing the last key leaves `{}`. Setting an identical string or
 removing an absent key is a no-op with no audit row. Other keys and numeric
 precision survive. Use the returned `receipt` with
-`bk audit undo --company COMPANY RECEIPT` under a signed direct bookkeeper grant to
+`bk audit undo --company COMPANY RECEIPT` under the agent’s signed posting grant in direct mode to
 restore the exact prior metadata. Undo newer annotation edits first.
 Dates, entries, amounts, currency, references, and creation attribution stay
 unchanged. Tagging the original charge preserves its age and payment matching
@@ -1151,7 +1151,7 @@ see its active links regardless of reversal status.
 MCP exposes the same operation as `txn_link` with `company`, `source_id`,
 `target_id`, and `kind`. The result includes a `receipt` and an optional
 Desktop detail path. Pass the receipt to `audit_undo` or `bk audit undo` with
-your signed direct bookkeeper or owner grant. Undo removes the link from active
+the agent’s signed posting grant in direct mode or a signed owner grant. Undo removes the link from active
 views and keeps its history. Use `txn post --correlate` for intercompany links.
 
 ### Reverse a mistaken transaction

@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.41.0
+version: 0.42.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -136,7 +136,7 @@ and free of double quotes and NUL.
 Each changed batch records a `receipt` with whole-object snapshots and returns
 a `desktop_path` for optional detail. Tell the owner what changed and give them
 the receipt for one-step undo with `bk audit undo --company ACME RECEIPT` or
-`audit_undo` using your signed direct bookkeeper grant. Undo newer annotation edits first.
+`audit_undo` using your signed posting grant in direct mode. Undo newer annotation edits first.
 No-op retries have a null receipt. Removing the last key leaves `{}`. Dates and
 financial fields stay unchanged, so tagging an original AR charge preserves
 its age under `report aging --filter-metadata status=disputed`.
@@ -156,7 +156,7 @@ For transactions in different books, use `txn_post` with `correlate`.
 Tell the owner which transactions you linked and why. Offer the result's
 `desktop_path` for optional detail and use its `receipt` with `audit_undo`
 or `bk audit undo --company acme RECEIPT` if asked to remove the link.
-Undo uses a signed direct bookkeeper or owner grant and preserves the audit
+Undo uses your signed posting grant in direct mode or a signed owner grant and preserves the audit
 history. Links do not change balances or postings.
 
 ## Record first and inform the owner
@@ -174,7 +174,7 @@ the posting uses `BEANKEEPER_CURRENCY` when set and USD otherwise.
 
 Use `bk txn reverse ID` or `txn_reverse` in the selected company to reverse a
 posting. Use `bk audit undo RECEIPT` or `audit_undo` when an eligible receipt
-identifies the change. The direct bookkeeper grant applies corrections
+identifies the change. In direct mode the agent applies corrections
 immediately and preserves the audit link. Never create a hand-made offsetting
 entry to undo a posting. Tell the owner what changed and offer the Desktop
 detail link when available.

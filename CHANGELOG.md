@@ -6,6 +6,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-28
+
+This release advances the ledger schema from v51 to v52 for bookkeeping
+proposals. Make and verify a backup with your current binary before
+upgrading. Older binaries refuse to open an upgraded ledger. To use an older
+binary again, restore a pre-upgrade backup. See the [backup and restore guide](README.md#backup-and-restore).
+
 ### Fixed
 
 - Let agents create and link customers, vendors, and projects using their usual posting access. In proposal-only mode, route those changes for approval before applying them.
