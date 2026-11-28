@@ -10,8 +10,9 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::cargo_bin("bk")?;
     command
-        .args(["--json", "--currency", "GBP", "--db"])
-        .arg(path);
+        .args(["--json", "--db"])
+        .arg(path)
+        .env("BEANKEEPER_CURRENCY", "GBP");
     for key in [
         "BEANKEEPER_DB",
         "BEANKEEPER_COMPANY",
