@@ -559,11 +559,15 @@ pub(in crate::db) struct JournalPlan {
 pub(in crate::db) fn plan_issue(
     draft: &DocumentDraft,
     lookup: impl Fn(&AccountCode) -> Option<AccountType>,
+    inventory: &crate::db::inventory::InventoryAccounts,
 ) -> Result<JournalPlan, DocumentError> {
     if !(1..=1000).contains(&draft.lines.len()) {
         return Err(DocumentError::InvalidLineCount);
     }
-    if lookup(&draft.control_account) != Some(draft.kind.control_type()) {
+    if lookup(&draft.control_account) != Some(draft.kind.control_type())
+        || inventory.stock.contains(&draft.control_account)
+        || inventory.clearing.contains(&draft.control_account)
+    {
         return Err(DocumentError::InvalidAccount(draft.control_account.clone()));
     }
     let mut lines = Vec::with_capacity(draft.lines.len());
@@ -573,7 +577,12 @@ pub(in crate::db) fn plan_issue(
         let kind = lookup(&line.account);
         let eligible = match draft.kind {
             DocumentKind::Invoice => kind == Some(AccountType::Revenue),
-            DocumentKind::Bill => matches!(kind, Some(AccountType::Expense | AccountType::Asset)),
+            DocumentKind::Bill => match kind {
+                Some(AccountType::Expense) => true,
+                Some(AccountType::Asset) => !inventory.stock.contains(&line.account),
+                Some(AccountType::Liability) => inventory.clearing.contains(&line.account),
+                _ => false,
+            },
         };
         if !eligible || line.account == draft.control_account {
             return Err(DocumentError::InvalidAccount(line.account.clone()));

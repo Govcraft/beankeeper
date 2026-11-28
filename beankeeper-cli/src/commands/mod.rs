@@ -15,6 +15,7 @@ pub mod fixed_asset;
 pub mod fx;
 pub mod import_ofx;
 pub mod init;
+pub mod inventory;
 pub mod investment;
 pub mod loan;
 pub mod payroll;
@@ -91,6 +92,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Tax(command) => command.operation(),
         Command::ExpenseClaim(args) => args.command.operation(),
         Command::Project(args) => args.command.operation(),
+        Command::Inventory(args) => args.command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -340,6 +342,9 @@ fn dispatch_ledger(
         )),
         Command::Tax(command) => Some(tax::ledger_request(cli, command)?),
         Command::ContractorTax(command) => contractor_tax::ledger_request(cli, command)?,
+        Command::Inventory(args) => Some(LedgerRequest::Inventory(
+            (require_company(cli)?, &args.command).try_into()?,
+        )),
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
@@ -535,6 +540,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Tax(_)
         | Command::ExpenseClaim(_)
         | Command::Project(_)
+        | Command::Inventory(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)

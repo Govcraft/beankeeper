@@ -64,6 +64,10 @@ pub(crate) use crate::commands::expense_claim::wire::{
 pub(crate) use crate::commands::fixed_asset::wire::{
     FixedAssetAt, FixedAssetDispose, FixedAssetList, FixedAssetRegister,
 };
+pub(crate) use crate::commands::inventory::wire::{
+    StockHistoryInput, StockItemSelector, StockLinkInput, StockMoveInput, StockMovementSelector,
+    StockRegisterInput, StockValuationInput,
+};
 type Amount = Text<DecimalAmount>;
 type Reference = Text<TransactionReference>;
 type Comparison = Text<CompareArg>;

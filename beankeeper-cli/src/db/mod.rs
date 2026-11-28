@@ -18,6 +18,7 @@ pub(crate) mod fixed_assets;
 pub(crate) mod fx;
 pub mod holds;
 pub mod ids;
+pub(crate) mod inventory;
 pub mod investments;
 pub mod metadata;
 pub mod metadata_filter;

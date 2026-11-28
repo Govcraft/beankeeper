@@ -488,6 +488,10 @@ work. MCP provides all seven security/investment operations and omits writes in
 read-only mode. See [investment lots](docs/investments.md) for setup, rounding,
 historical reports, audit behavior, and phase-one limits.
 
+## Inventory
+
+Register stock items and record receipts, shipments, returns, and count adjustments with FIFO costing. See [perpetual inventory](docs/inventory.md) for stock accounts, invoice and bill matching, and as-of valuation.
+
 ## Connect an AI assistant through MCP
 
 `bk mcp serve` exposes an existing ledger over the Model Context Protocol using
@@ -605,6 +609,14 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `expense_claim_void` | Cancel an approved and unpaid claim |
 | `expense_claim_show` | Show the latest immutable claim revision |
 | `expense_claim_list` | List a book’s most recently created claims |
+| `inventory_register` | Register a stock item and its control accounts |
+| `inventory_list` | List stock items |
+| `inventory_show` | Show a registered stock item |
+| `inventory_move` | Record a receipt, shipment, return or count adjustment |
+| `inventory_movement` | Show the movement and journal |
+| `inventory_movements` | List recent movements through a cutoff |
+| `inventory_match_document` | Match a stock movement with an issued invoice or bill line |
+| `inventory_valuation` | Show historical FIFO value and stock control account differences |
 | `fx_post` | Record native minor units and their functional value with a rate and unique reference |
 | `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |

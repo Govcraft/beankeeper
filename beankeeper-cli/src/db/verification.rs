@@ -84,6 +84,7 @@ enum Check {
     StatementReconciliations,
     FixedAssets,
     ExpenseClaims,
+    Inventory,
     ForeignKeys,
     SqliteIntegrity,
     RowCounts,
@@ -115,6 +116,7 @@ impl Check {
             Self::FixedAssets => "fixed_assets",
             Self::StatementReconciliations => "statement_reconciliations",
             Self::ExpenseClaims => "expense_claims",
+            Self::Inventory => "inventory",
             Self::ForeignKeys => "foreign_keys",
             Self::SqliteIntegrity => "sqlite_integrity",
             Self::RowCounts => "row_counts",
@@ -206,6 +208,9 @@ fn verify_commercial_subledgers(
     )?;
     Check::Projects.when(version >= schema::PROJECT_SCHEMA_VERSION, checks, || {
         audit::projects::verify(reader)
+    })?;
+    Check::Inventory.when(version >= schema::INVENTORY_SCHEMA_VERSION, checks, || {
+        audit::inventory::verify(reader)
     })?;
     Ok(())
 }

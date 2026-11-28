@@ -16,6 +16,7 @@ pub use local_date::LocalDate;
 use crate::{
     cli::Cli,
     commands::expense_claim::{ExpenseRequest, ExpenseResponse},
+    commands::inventory::{InventoryRequest, InventoryResponse},
     commands::{
         account::{AccountRequest, AccountResponse},
         audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
@@ -69,6 +70,7 @@ pub enum LedgerRequest {
     Tax(TaxRequest),
     Expense(ExpenseRequest),
     Project(ProjectRequest),
+    Inventory(InventoryRequest),
     Investment(InvestmentRequest),
     Payroll(PayrollRequest),
     Period(PeriodRequest),
@@ -100,6 +102,7 @@ pub enum LedgerResponse {
     Tax(Operation, CompanySlug, TaxResponse),
     Expense(ExpenseResponse),
     Project(Operation, CompanySlug, ProjectResponse),
+    Inventory(InventoryResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Payroll(PayrollResponse),
     Period(Operation, CompanySlug, PeriodResponse),
@@ -147,6 +150,7 @@ impl LedgerRequest {
             Self::Tax(request) => request.operation(),
             Self::Expense(request) => request.operation(),
             Self::Project(request) => request.operation(),
+            Self::Inventory(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Payroll(request) => request.operation(),
             Self::Period(request) => request.operation(),
@@ -244,6 +248,7 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Project(operation, company, response))
             }
+            Self::Inventory(request) => request.execute(db, actor).map(LedgerResponse::Inventory),
             Self::Document(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -314,6 +319,7 @@ impl LedgerResponse {
             Self::Project(operation, company, response) => {
                 response.render(cli, *operation, company)
             }
+            Self::Inventory(response) => response.render(cli),
             Self::Document(operation, company, response) => {
                 response.render(cli, *operation, company)
             }

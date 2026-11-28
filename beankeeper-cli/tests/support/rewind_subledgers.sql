@@ -1,3 +1,8 @@
+DROP TABLE stock_document_links;
+DROP TABLE stock_partitions;
+DROP TABLE stock_lots;
+DROP TABLE stock_movements;
+DROP TABLE inventory_items;
 DROP TABLE expense_claim_journals;
 DROP TABLE expense_claim_revisions;
 DROP TABLE expense_claims;

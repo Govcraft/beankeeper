@@ -33,6 +33,9 @@ mod fx;
 #[path = "mcp_stdio/holds.rs"]
 mod holds;
 
+#[path = "mcp_stdio/inventory.rs"]
+mod inventory;
+
 #[path = "mcp_stdio/onboarding.rs"]
 mod onboarding;
 
@@ -893,6 +896,14 @@ const LEDGER_TOOLS: &[&str] = &[
     "payroll_import",
     "payroll_fund",
     "payroll_show",
+    "inventory_register",
+    "inventory_list",
+    "inventory_show",
+    "inventory_move",
+    "inventory_movement",
+    "inventory_movements",
+    "inventory_match_document",
+    "inventory_valuation",
     "fx_post",
     "fx_revalue",
     "ledger_setup_status",
@@ -3354,7 +3365,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 54);
+    assert_eq!(names.len(), 59);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3524,7 +3535,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 54);
+    assert_eq!(names.len(), 59);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

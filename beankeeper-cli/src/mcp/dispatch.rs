@@ -102,6 +102,14 @@ convert! {
     expense_claim_void(ExpenseVoidInput) => Expense(input => input.into()),
     expense_claim_show(ExpenseShowInput) => Expense(input => input.into()),
     expense_claim_list(CompanyScope) => Expense(input => crate::commands::expense_claim::ExpenseRequest {company:input.company.into_inner(),work:crate::commands::expense_claim::Work::List}),
+    inventory_register(StockRegisterInput) => Inventory(input => input.into()),
+    inventory_list(CompanyScope) => Inventory(input => crate::commands::inventory::InventoryRequest {company:input.company.into_inner(),work:crate::commands::inventory::Work::List}),
+    inventory_show(StockItemSelector) => Inventory(input => input.into()),
+    inventory_move(StockMoveInput) => Inventory(input => input.into()),
+    inventory_movement(StockMovementSelector) => Inventory(input => input.into()),
+    inventory_movements(StockHistoryInput) => Inventory(input => input.into()),
+    inventory_match_document(StockLinkInput) => Inventory(input => input.into()),
+    inventory_valuation(StockValuationInput) => Inventory(input => input.into()),
     fx_post(FxPostInput) => Fx(input => (input.company.into_inner(), crate::db::fx::Movement {
         account: input.account.into_inner(), offset: input.offset_account.into_inner(),
         direction: input.direction.into_inner(), native_minor: input.native_minor, rate: input.rate,
@@ -293,6 +301,7 @@ pub(super) fn response(
         LedgerResponse::Account(response) => (encode(response)?, None),
         LedgerResponse::FixedAsset(response) => (encode(response.data())?, None),
         LedgerResponse::Expense(response) => (encode(response.data())?, None),
+        LedgerResponse::Inventory(response) => (encode(response.data())?, None),
         LedgerResponse::Fx(response) => (encode(response)?, None),
         LedgerResponse::AuditLog(response) => {
             (encode(response.data())?, Some(response.pagination()))
