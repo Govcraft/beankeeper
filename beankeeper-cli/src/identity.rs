@@ -18,7 +18,7 @@ use crate::capability::Capability;
 use crate::db::Actor;
 use crate::db::audit::grant::{
     self, AgentUndo, Bookkeeping, Chart, CorrectionPropose, OnboardingPost, OnboardingPropose,
-    StatementReconcile,
+    RefreshFeed, RefreshFeedProposed, StatementReconcile,
 };
 pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
@@ -94,6 +94,10 @@ impl VerifiedAgent {
     pub(crate) fn allows_known_operation(&self, operation: Operation) -> Result<bool, CliError> {
         match operation.permission() {
             Permission::Posting => self.allows(self.write_mode().posting_capability()),
+            Permission::FeedRefresh => match self.write_mode() {
+                WriteMode::Direct => grant::permits::<RefreshFeed>(self),
+                WriteMode::ProposeOnly => grant::permits::<RefreshFeedProposed>(self),
+            },
             Permission::Bookkeeping => match self.write_mode() {
                 WriteMode::Direct => grant::permits::<Bookkeeping>(self),
                 WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
@@ -148,6 +152,7 @@ impl VerifiedAgent {
                     | Permission::ExplicitAdmin
                     | Permission::Bookkeeping
                     | Permission::StatementReconciliation
+                    | Permission::FeedRefresh
                     | Permission::AgentUndo
                     | Permission::Reversal
             )
@@ -385,9 +390,10 @@ fn require_operation_grant(
 ) -> Result<(), CliError> {
     let permission = operation.permission();
     let required = match permission {
-        Permission::Posting | Permission::Bookkeeping | Permission::StatementReconciliation => {
-            identity.write_mode().posting_capability()
-        }
+        Permission::Posting
+        | Permission::Bookkeeping
+        | Permission::StatementReconciliation
+        | Permission::FeedRefresh => identity.write_mode().posting_capability(),
         Permission::AgentUndo | Permission::Reversal
             if identity.write_mode() == WriteMode::ProposeOnly =>
         {
@@ -404,6 +410,7 @@ fn require_operation_grant(
                 | Permission::ExplicitAdmin
                 | Permission::Bookkeeping
                 | Permission::StatementReconciliation
+                | Permission::FeedRefresh
                 | Permission::AgentUndo
                 | Permission::Reversal
         )
@@ -423,6 +430,7 @@ fn require_operation_grant(
         Permission::StatementReconciliation if identity.write_mode() == WriteMode::Direct => {
             Some(Capability::Reconcile)
         }
+        Permission::FeedRefresh => Some(Capability::Admin),
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
         Permission::Chart | Permission::AgentUndo | Permission::Bookkeeping
             if identity.write_mode() == WriteMode::Direct =>

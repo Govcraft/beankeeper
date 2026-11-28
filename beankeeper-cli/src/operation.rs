@@ -11,6 +11,7 @@ pub(crate) enum Permission {
     Posting,
     Bookkeeping,
     StatementReconciliation,
+    FeedRefresh,
     ProposalList,
     ReadOrReconcile,
     ProposalReject,
@@ -29,9 +30,10 @@ impl Permission {
     pub(crate) fn primary(self) -> Result<Capability, CliError> {
         match self {
             Self::Capability(capability) => Ok(capability),
-            Self::Posting | Self::Bookkeeping | Self::StatementReconciliation => {
-                Ok(Capability::Post)
-            }
+            Self::Posting
+            | Self::Bookkeeping
+            | Self::StatementReconciliation
+            | Self::FeedRefresh => Ok(Capability::Post),
             Self::AgentUndo | Self::Reversal => Ok(Capability::Reverse),
             Self::ProposalList | Self::SetupStatus | Self::ReadOrReconcile => Ok(Capability::Read),
             Self::SetupOrChart | Self::Chart => Ok(Capability::Chart),
@@ -47,6 +49,9 @@ impl Permission {
 macro_rules! permission {
     (Posting) => {
         Permission::Posting
+    };
+    (FeedRefresh) => {
+        Permission::FeedRefresh
     };
     (Bookkeeping) => {
         Permission::Bookkeeping

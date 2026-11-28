@@ -10,7 +10,8 @@ use crate::{
         Actor, Db,
         audit::bank_feed as writes,
         bank_feed::{
-            self, ConnectArgs, FeedConnectionId, FeedItemId, LinkArgs, PageArgs, PostArgs,
+            self, ConnectArgs, ConnectionPageArgs, FeedConnectionId, FeedItemId, LinkArgs,
+            PageArgs, PostArgs,
         },
         companies::CompanySlug,
         connection::ReadConn,
@@ -27,8 +28,10 @@ pub enum BankFeedCommand {
     Connect(ConnectArgs),
     /// Disconnect a feed without changing the ledger.
     Disconnect { feed: FeedConnectionId },
-    /// Pull Plaid transactions using host environment credentials.
+    /// Stage Plaid transactions using the host’s authorization.
     Sync { feed: FeedConnectionId },
+    /// List the company’s feed mappings and connection status.
+    Connections(ConnectionPageArgs),
     /// Read connection status.
     Show { feed: FeedConnectionId },
     /// List staged provider transactions.
@@ -55,6 +58,7 @@ impl BankFeedCommand {
             Self::Disconnect { .. } => Operation::BankFeedDisconnect,
             Self::Sync { .. } => Operation::BankFeedSync,
             Self::Show { .. } => Operation::BankFeedShow,
+            Self::Connections(..) => Operation::BankFeedConnections,
             Self::List { .. } => Operation::BankFeedList,
             Self::Review { .. } => Operation::BankFeedReview,
             Self::Post(_) => Operation::BankFeedPost,
@@ -68,6 +72,7 @@ impl BankFeedCommand {
             Self::Disconnect { feed } => BankFeedRequest::Disconnect(feed.clone()),
             Self::Sync { feed } => BankFeedRequest::Sync(feed.clone()),
             Self::Show { feed } => BankFeedRequest::Show(feed.clone()),
+            Self::Connections(page) => BankFeedRequest::Connections(page.clone()),
             Self::List { feed, page } => BankFeedRequest::List(feed.clone(), page.clone()),
             Self::Review { feed, item } => BankFeedRequest::Review(feed.clone(), item.clone()),
             Self::Post(args) => BankFeedRequest::Post(args.clone()),
@@ -82,6 +87,7 @@ pub enum BankFeedRequest {
     Disconnect(FeedConnectionId),
     Sync(FeedConnectionId),
     Show(FeedConnectionId),
+    Connections(ConnectionPageArgs),
     List(FeedConnectionId, PageArgs),
     Review(FeedConnectionId, FeedItemId),
     Post(PostArgs),
@@ -95,6 +101,7 @@ impl BankFeedRequest {
             Self::Disconnect(_) => Operation::BankFeedDisconnect,
             Self::Sync(_) => Operation::BankFeedSync,
             Self::Show(_) => Operation::BankFeedShow,
+            Self::Connections(_) => Operation::BankFeedConnections,
             Self::List(..) => Operation::BankFeedList,
             Self::Review(..) => Operation::BankFeedReview,
             Self::Post(_) => Operation::BankFeedPost,
@@ -110,10 +117,11 @@ impl BankFeedRequest {
         company: &CompanySlug,
     ) -> Result<BankFeedResponse, CliError> {
         match self {
-            Self::Connect(args) => encode(writes::connect(db, actor, company, &args)?),
+            Self::Connect(args) => encode(bank_feed::connect(db, actor, company, &args)?),
             Self::Disconnect(id) => encode(writes::disconnect(db, actor, company, &id)?),
             Self::Sync(id) => encode(bank_feed::poll(db, actor, company, &id)?),
             Self::Show(id) => encode(bank_feed::connection(reader, company, &id)?),
+            Self::Connections(page) => encode(bank_feed::connections(reader, company, &page)?),
             Self::List(id, page) => {
                 let feed = bank_feed::connection(reader, company, &id)?;
                 encode(bank_feed::list(reader, company, &feed, &page)?)
