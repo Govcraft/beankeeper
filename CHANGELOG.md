@@ -8,6 +8,8 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ### Added
 
+- Run a cross-company income statement or balance sheet for selected books in one ledger and currency. The CLI and MCP return company detail, combined totals before eliminations, and intercompany link evidence. ([#362](https://github.com/Govcraft/beankeeper/issues/362))
+
 - Hosts can discover typed MCP operation/tool pairs before setup and filter them with verified effective grants, including bookkeeper Chart and Reverse rules. (#329)
 
 ### Fixed

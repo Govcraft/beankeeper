@@ -15,6 +15,7 @@ pub mod expense_claim;
 pub mod export;
 pub mod fixed_asset;
 pub mod fx;
+pub mod group_report;
 pub mod import_ofx;
 pub mod init;
 pub mod inventory;
@@ -166,6 +167,7 @@ pub fn operation(cmd: &Command) -> Operation {
             TxnCommand::Reconcile => Operation::TxnReconcile,
         },
         Command::Report(args) => report_operation(&args.command),
+        Command::GroupReport(command) => command.operation(),
         Command::Audit(args) => match &args.command {
             AuditCommand::Log(_) => Operation::AuditLog,
             AuditCommand::Receipts(_) => Operation::AuditReceipts,
@@ -375,6 +377,7 @@ fn dispatch_ledger(
         Command::Report(args) => Some(LedgerRequest::Report(
             (require_company(cli)?, &args.command, chart).try_into()?,
         )),
+        Command::GroupReport(command) => Some(LedgerRequest::GroupReport(command.try_into()?)),
         Command::Audit(args) => Some(audit_request(cli, &args.command)?),
         _ => None,
     };
@@ -559,6 +562,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)
+        | Command::GroupReport(_)
         | Command::Audit(_) => Err(CliError::General(
             "ledger request was not dispatched".into(),
         )),

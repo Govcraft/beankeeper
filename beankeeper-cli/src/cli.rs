@@ -774,6 +774,10 @@ EXAMPLES:\n  \
     /// Generate financial reports.
     Report(ReportArgs),
 
+    /// Report across selected companies in the same ledger before eliminations.
+    #[command(subcommand)]
+    GroupReport(crate::commands::group_report::GroupReportCommand),
+
     /// Inspect the audit trail of ledger mutations.
     Audit(AuditArgs),
 }

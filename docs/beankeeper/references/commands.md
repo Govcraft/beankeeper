@@ -255,6 +255,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 
 | Tool | Arguments / behavior |
 |------|----------------------|
+| `group_income_statement` | Read combined income for selected companies in one ledger. Supply `members`, `currency`, `from`, and `to`. |
+| `group_balance_sheet` | Read combined balances for selected companies in one ledger. Supply `members`, `currency`, and `as_of`. |
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
 | `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure books and accounts on the Direct bookkeeper connection or in an active setup session |
 | `ledger_setup_book_update` | Write a profile revision in an active setup session |
@@ -1363,6 +1365,27 @@ bk --company acme report balance --account 1000
 bk --company acme report balance --account 1000 --from 2026-01-01 --to 2026-03-31
 bk --company acme report balance --account 1000 --currency MXN
 ```
+
+### `bk group-report income-statement` and `bk group-report balance-sheet`
+
+Use this report to review companies together when they share a ledger and
+currency. Repeat `--member` for at least two distinct active company slugs.
+Dates are inclusive. A conflicting book currency or an in-scope posting in
+another currency rejects the report.
+
+```bash
+bk --json group-report income-statement --member acme --member beta --currency USD --from 2026-01-01 --to 2026-03-31
+bk --format csv group-report balance-sheet --member acme --member beta --currency USD --as-of 2026-03-31
+```
+
+Review each company's accounts under its own slug. Combined figures are
+**before eliminations**. Intercompany evidence lists reciprocal pairs once
+and flags selected postings whose reciprocal side is unavailable in the
+report's scope. The figures include those postings as booked.
+
+MCP's read-only catalog exposes the same reports as `group_income_statement`
+and `group_balance_sheet`. Pass `members` as a JSON array of company slugs
+and send `currency` plus `from` and `to`, or `as_of`.
 
 ### `bk report income-statement`
 

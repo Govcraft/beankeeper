@@ -555,6 +555,8 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 
 | Tools | Purpose |
 | --- | --- |
+| `group_income_statement` | Read combined income for selected companies in one ledger. Supply `members`, `currency`, `from`, and `to`. |
+| `group_balance_sheet` | Read combined balances for selected companies in one ledger. Supply `members`, `currency`, and `as_of`. |
 | `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke` | Use a live owner Admin credential to issue or end an encrypted ledger's setup session |
 | `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_chart_apply`, `ledger_setup_account_add` | Configure books and accounts on the normal bookkeeper connection or in an opted-in setup session |
 | `ledger_setup_book_update` | Record a new profile revision in an active setup session |
@@ -1738,6 +1740,27 @@ bk --company agency report reconciliation --account 1200 \
 ```
 
 `--to` is point-in-time: a clearing counts as cleared when its cleared date is on or before `--to`, and as reconciled only when it was also reconciled on or before `--to`. An item cleared later is still outstanding as of an earlier date, and a clearing reconciled later shows as cleared but not reconciled. `--statement ID` limits the cleared balance to that statement's clearings. `--filter-metadata KEY=VALUE` (repeatable, AND-ed) and `--group-by-metadata KEY` match top-level keys of JSON transaction metadata (anything else has no keys; ungrouped items go under `(unassigned)`). `--currency CODE` filters to one currency; when omitted, the company's single transaction currency is used (an error if it has several). CSV output is the outstanding entries, then group subtotals, then `summary` rows (see `docs/beankeeper/references/commands.md`).
+
+### Cross-company financial statements
+
+Use this report to review companies together when they share a ledger and
+currency. Repeat `--member` for at least two distinct active company slugs.
+Dates are inclusive. A conflicting book currency or an in-scope posting in
+another currency rejects the report.
+
+```bash
+bk --json group-report income-statement --member acme --member beta --currency USD --from 2026-01-01 --to 2026-03-31
+bk --format csv group-report balance-sheet --member acme --member beta --currency USD --as-of 2026-03-31
+```
+
+Review each company's accounts under its own slug. Combined figures are
+**before eliminations**. Intercompany evidence lists reciprocal pairs once
+and flags selected postings whose reciprocal side is unavailable in the
+report's scope. The figures include those postings as booked.
+
+MCP's read-only catalog exposes the same reports as `group_income_statement`
+and `group_balance_sheet`. Pass `members` as a JSON array of company slugs
+and send `currency` plus `from` and `to`, or `as_of`.
 
 ### Budgeting and Variance Analysis
 

@@ -30,6 +30,7 @@ use crate::{
         document::{DocumentRequest, DocumentResponse},
         fixed_asset::{FixedAssetRequest, FixedAssetResponse},
         fx::{FxRequest, FxResponse},
+        group_report::{GroupReportRequest, GroupReportResponse},
         investment::{InvestmentRequest, InvestmentResponse},
         payroll::{PayrollRequest, PayrollResponse},
         period::{PeriodRequest, PeriodResponse},
@@ -80,6 +81,7 @@ pub enum LedgerRequest {
     Period(PeriodRequest),
     Reconcile(ReconcileRequest),
     Report(ReportRequest),
+    GroupReport(GroupReportRequest),
     Rule(RuleRequest),
     Restore(RestoreRequest),
     Setup(SetupRequest),
@@ -114,6 +116,7 @@ pub enum LedgerResponse {
     Period(Operation, CompanySlug, PeriodResponse),
     Reconcile(Operation, CompanySlug, ReconcileResponse),
     Report(ReportResponse),
+    GroupReport(GroupReportResponse),
     Rule(Operation, CompanySlug, RuleResponse),
     Restore(Operation, RestoreReceipt),
     Setup(Operation, Option<CompanySlug>, SetupResponse),
@@ -164,6 +167,7 @@ impl LedgerRequest {
             Self::Period(request) => request.operation(),
             Self::Reconcile(request) => request.operation(),
             Self::Report(request) => request.operation(),
+            Self::GroupReport(request) => request.operation(),
             Self::Rule(request) => request.operation(),
             Self::Restore(request) => request.operation(),
             Self::Setup(request) => request.operation(),
@@ -298,6 +302,9 @@ impl LedgerRequest {
                 Ok(LedgerResponse::BankFeed(operation, company, response))
             }
             Self::Report(request) => request.execute(db).map(LedgerResponse::Report),
+            Self::GroupReport(request) => {
+                request.execute(db.read()).map(LedgerResponse::GroupReport)
+            }
             Self::Restore(request) => request
                 .execute(db, actor)
                 .map(|result| LedgerResponse::Restore(operation, result)),
@@ -365,6 +372,7 @@ impl LedgerResponse {
                 response.render(cli, *operation, company)
             }
             Self::Report(response) => response.render(cli),
+            Self::GroupReport(response) => response.render(cli),
             Self::Restore(operation, receipt) => {
                 if cli.is_json() {
                     let meta = cli.meta(*operation, None);

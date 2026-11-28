@@ -662,6 +662,8 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk setup statement-receipt` | Read provenance, created transaction IDs, and preexisting matches |
 | `bk report trial-balance` | All accounts with debit/credit totals |
 | `bk report balance` | Single account balance |
+| `bk group-report income-statement` | Combine period results for selected companies in one ledger before eliminations |
+| `bk group-report balance-sheet` | Combine as-of balances for selected companies in one ledger before eliminations |
 | `bk report income-statement` | Revenue and Expenses sections with subtotals and net income for a period |
 | `bk report balance-sheet` | Assets, Liabilities, Equity sections (incl. computed retained earnings) and balance check as of a date |
 | `bk report tax-summary` | Entries grouped by tax category |
@@ -972,6 +974,27 @@ are net on each account's normal side. JSON command ids are
 Reports total one currency. A configured book defaults to the functional currency
 in its profile. Legacy books without a profile infer the currency from postings
 and require `--currency CODE` when several currencies are present.
+
+### Cross-company financial statements
+
+Use this report to review companies together when they share a ledger and
+currency. Repeat `--member` for at least two distinct active company slugs.
+Dates are inclusive. A conflicting book currency or an in-scope posting in
+another currency rejects the report.
+
+```bash
+bk --json group-report income-statement --member acme --member beta --currency USD --from 2026-01-01 --to 2026-03-31
+bk --format csv group-report balance-sheet --member acme --member beta --currency USD --as-of 2026-03-31
+```
+
+Review each company's accounts under its own slug. Combined figures are
+**before eliminations**. Intercompany evidence lists reciprocal pairs once
+and flags selected postings whose reciprocal side is unavailable in the
+report's scope. The figures include those postings as booked.
+
+MCP's read-only catalog exposes the same reports as `group_income_statement`
+and `group_balance_sheet`. Pass `members` as a JSON array of company slugs
+and send `currency` plus `from` and `to`, or `as_of`.
 
 ### Foreign-currency balances
 
