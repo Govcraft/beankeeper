@@ -708,6 +708,9 @@ EXAMPLES:\n  \
     /// Record native currency movements and revalue foreign balances.
     Fx(crate::commands::fx::FxArgs),
 
+    /// Register, depreciate and dispose of fixed assets.
+    FixedAsset(crate::commands::fixed_asset::FixedAssetArgs),
+
     /// Record and query transactions.
     Txn(TxnArgs),
 
@@ -3179,6 +3182,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Document(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
+        Command::FixedAsset(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),
         Command::Budget(args) => args.company.as_ref(),
         Command::Report(args) => args.company.as_ref(),

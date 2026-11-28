@@ -23,6 +23,7 @@ use crate::{
         company::{CompanyRequest, CompanyResponse},
         counterparty::{CounterpartyRequest, CounterpartyResponse},
         document::{DocumentRequest, DocumentResponse},
+        fixed_asset::{FixedAssetRequest, FixedAssetResponse},
         fx::{FxRequest, FxResponse},
         investment::{InvestmentRequest, InvestmentResponse},
         period::{PeriodRequest, PeriodResponse},
@@ -51,6 +52,7 @@ use crate::{
 pub enum LedgerRequest {
     Account(AccountRequest),
     Fx(FxRequest),
+    FixedAsset(FixedAssetRequest),
     AuditLog(AuditQuery),
     AuditReceipts(ReceiptRequest),
     BankFeed((CompanySlug, BankFeedRequest)),
@@ -76,6 +78,7 @@ pub enum LedgerRequest {
 pub enum LedgerResponse {
     Account(AccountResponse),
     Fx(FxResponse),
+    FixedAsset(FixedAssetResponse),
     AuditLog(AuditResponse),
     AuditReceipts(ReceiptResponse),
     BankFeed(Operation, CompanySlug, BankFeedResponse),
@@ -103,6 +106,7 @@ impl LedgerRequest {
         match self {
             Self::Account(request) => request.operation(),
             Self::Fx(request) => request.operation(),
+            Self::FixedAsset(request) => request.operation(),
             Self::AuditLog(_) => Operation::AuditLog,
             Self::AuditReceipts(request) => request.operation(),
             Self::BankFeed((_, request)) => request.operation(),
@@ -174,6 +178,7 @@ impl LedgerRequest {
         match self {
             Self::Account(request) => request.execute(db, actor).map(LedgerResponse::Account),
             Self::Fx(request) => request.execute(db, actor).map(LedgerResponse::Fx),
+            Self::FixedAsset(request) => request.execute(db, actor).map(LedgerResponse::FixedAsset),
             Self::AuditLog(request) => request.execute(db).map(LedgerResponse::AuditLog),
             Self::AuditReceipts(request) => request
                 .execute(db, actor)
@@ -242,6 +247,7 @@ impl LedgerResponse {
         match self {
             Self::Account(response) => response.render(cli),
             Self::Fx(response) => response.render(cli),
+            Self::FixedAsset(response) => response.render(cli),
             Self::AuditLog(response) => response.render(cli),
             Self::AuditReceipts(response) => response.render(cli),
             Self::Budget(response) => response.render(cli),

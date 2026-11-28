@@ -221,6 +221,11 @@ for setup, permissions and schema v19 migration behavior.
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
 
+## Fixed assets
+
+Register acquisitions, preview and post straight-line book depreciation, and
+record disposals with gains or losses. See the [fixed asset guide](docs/fixed-assets.md).
+
 ## Loan amortization
 
 Calculate a monthly fixed-rate schedule without a database or company:

@@ -9,7 +9,8 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 43;
+const LATEST_VERSION: i64 = 44;
+pub(super) const FIXED_ASSETS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(44);
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -363,7 +364,24 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
     if version < DOCUMENT_SCHEMA_VERSION {
         migrate_with_writer(conn, DOCUMENT_SCHEMA_VERSION, apply_document_schema)?;
     }
+
+    if version < FIXED_ASSETS_SCHEMA_VERSION {
+        migrate_with_writer(conn, FIXED_ASSETS_SCHEMA_VERSION, apply_fixed_assets_schema)?;
+    }
     Ok(())
+}
+
+fn apply_fixed_assets_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(conn, AuditTable::FixedAssets, FIXED_ASSETS_SCHEMA_VERSION)?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/fixed_assets.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_document_schema(conn: &Connection) -> Result<(), CliError> {
@@ -2199,6 +2217,7 @@ enum AuditTable {
     BankFeed,
     Payroll,
     Documents,
+    FixedAssets,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2209,7 +2228,8 @@ impl From<AuditTable> for AuditHistory {
             | AuditTable::Counterparties
             | AuditTable::BankFeed
             | AuditTable::Payroll
-            | AuditTable::Documents => Self::Bookkeeping,
+            | AuditTable::Documents
+            | AuditTable::FixedAssets => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2360,6 +2380,14 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
     }
     if table >= AuditTable::Documents {
         append_document_audit_extensions(entity, action);
+    }
+    if table >= AuditTable::FixedAssets {
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::FixedAsset,
+            AuditEntity::FixedAssetMovement
+        );
     }
 }
 
@@ -2527,7 +2555,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
