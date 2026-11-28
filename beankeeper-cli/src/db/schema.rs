@@ -9,7 +9,7 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 41;
+const LATEST_VERSION: i64 = 42;
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -40,6 +40,7 @@ pub(super) const RESTORE_SCHEMA_VERSION: SchemaVersion =
     SchemaVersion::known(RESTORE_VERSION_NUMBER);
 pub(crate) const CASH_CLASS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(39);
 pub(super) const COUNTERPARTY_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(40);
+pub(super) const PAYROLL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(42);
 pub(super) const BANK_FEED_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(41);
 /// Earliest ledger that supports the read-only setup operations.
 pub(crate) const OLDEST_SETUP_READ_SCHEMA: SchemaVersion = SchemaVersion::known(20);
@@ -342,6 +343,10 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
         migrate_with_writer(conn, BANK_FEED_SCHEMA_VERSION, apply_bank_feed_schema)?;
     }
 
+    if version < PAYROLL_SCHEMA_VERSION {
+        migrate_with_writer(conn, PAYROLL_SCHEMA_VERSION, apply_payroll_schema)?;
+    }
+
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -349,6 +354,19 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
     );
 
     Ok(())
+}
+
+fn apply_payroll_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(conn, AuditTable::Payroll, PAYROLL_SCHEMA_VERSION)?;
+        conn.execute_batch(include_str!("schema/payroll.sql"))?;
+        install_cash_class_guard(conn)?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_bank_feed_schema(conn: &Connection) -> Result<(), CliError> {
@@ -2156,6 +2174,7 @@ enum AuditTable {
     CashClassification,
     Counterparties,
     BankFeed,
+    Payroll,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2164,7 +2183,8 @@ impl From<AuditTable> for AuditHistory {
             AuditTable::LedgerRestore
             | AuditTable::CashClassification
             | AuditTable::Counterparties
-            | AuditTable::BankFeed => Self::Bookkeeping,
+            | AuditTable::BankFeed
+            | AuditTable::Payroll => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2304,6 +2324,14 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
     if table >= AuditTable::BankFeed {
         let _ = write!(entity, ",'{}'", AuditEntity::BankFeed);
         let _ = write!(action, ",'{}'", AuditAction::BankFeedChange);
+    }
+    if table >= AuditTable::Payroll {
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::PayrollRun,
+            AuditEntity::PayrollFunding
+        );
     }
 }
 
@@ -2446,7 +2474,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {

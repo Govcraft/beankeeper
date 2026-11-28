@@ -4,7 +4,8 @@ use rusqlite::Connection;
 
 pub fn before_restore(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "DROP TRIGGER bank_feed_proposal_requires_current_revision;
+        "DROP TABLE payroll_funding; DROP TABLE payroll_runs;
+         DROP TRIGGER bank_feed_proposal_requires_current_revision;
          DROP TABLE bank_feed_items;
          DROP TABLE bank_feed_connections;
          DROP TABLE transaction_counterparties;

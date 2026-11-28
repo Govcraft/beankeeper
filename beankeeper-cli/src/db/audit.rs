@@ -61,6 +61,7 @@ pub use standing::{set_bookkeeping_policy, set_inform_preference};
 pub(crate) mod grant;
 pub(crate) mod identity_write;
 pub(super) mod investment;
+pub mod payroll;
 pub mod receipts;
 pub mod restore;
 pub(super) mod savepoint;
@@ -166,6 +167,8 @@ audit_labels! {
         Lot => "lot",
         Price => "price",
         Schedule => "schedule",
+        PayrollRun => "payroll_run",
+        PayrollFunding => "payroll_funding",
         Rule => "rule",
         BookkeepingPolicy => "bookkeeping_policy" | "bookkeeping-policy",
         InformPreference => "inform_preference" | "inform-preference",
@@ -200,6 +203,8 @@ impl AuditEntity {
             | Self::Lot
             | Self::Price
             | Self::Schedule
+            | Self::PayrollRun
+            | Self::PayrollFunding
             | Self::Rule
             | Self::BookkeepingPolicy
             | Self::InformPreference
@@ -287,6 +292,8 @@ pub(crate) enum Creation {
     Company,
     Account,
     Attachment,
+    PayrollRun,
+    PayrollFunding,
 }
 
 impl Creation {
@@ -296,6 +303,8 @@ impl Creation {
             Self::Lot => AuditEntity::Lot,
             Self::Price => AuditEntity::Price,
             Self::Schedule => AuditEntity::Schedule,
+            Self::PayrollRun => AuditEntity::PayrollRun,
+            Self::PayrollFunding => AuditEntity::PayrollFunding,
             Self::Rule => AuditEntity::Rule,
             Self::Company => AuditEntity::Company,
             Self::Account => AuditEntity::Account,
@@ -2044,6 +2053,7 @@ fn reverse_in_scope(
         })
     })?;
     reject_investment_reversal(conn, p.id)?;
+    payroll::reject_generic_reversal(tx.read(), p.id)?;
     let mut original_metadata: serde_json::Value = original
         .metadata
         .as_deref()

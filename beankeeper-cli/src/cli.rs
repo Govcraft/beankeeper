@@ -740,11 +740,59 @@ EXAMPLES:\n  \
     /// Calculate monthly loan payments or post a scheduled payment.
     Loan(LoanArgs),
 
+    /// Preview and import finalized aggregate payroll runs.
+    #[command(subcommand)]
+    Payroll(PayrollCommand),
+
     /// Generate financial reports.
     Report(ReportArgs),
 
     /// Inspect the audit trail of ledger mutations.
     Audit(AuditArgs),
+}
+
+/// Work with finalized payroll exports.
+#[derive(Debug, Subcommand)]
+pub enum PayrollCommand {
+    /// Validate a provider export and preview its balanced journal.
+    Preview {
+        /// Local aggregate payroll JSON file.
+        #[arg(long)]
+        file: std::path::PathBuf,
+    },
+    /// Import or propose the exact reviewed payroll journal.
+    Import {
+        /// Local aggregate payroll JSON file.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// SHA-256 of the payroll journal returned by preview.
+        #[arg(long)]
+        digest: beankeeper::types::Sha256Hex,
+    },
+    /// Link a posted withdrawal or remittance to a payroll liability entry.
+    Fund {
+        /// The payroll `TypeID` returned by import.
+        #[arg(long)]
+        payroll: crate::db::audit::payroll::PayrollRunId,
+        /// Liability entry in the posted payroll journal.
+        #[arg(long)]
+        liability_entry: crate::db::ids::EntryId,
+        /// Journal recording the withdrawal.
+        #[arg(long)]
+        payment_transaction: crate::db::ids::TransactionId,
+        /// Debit entry in that journal on the same payroll liability account.
+        #[arg(long)]
+        payment_entry: crate::db::ids::EntryId,
+        /// Portion of the withdrawal to apply, in currency minor units.
+        #[arg(long)]
+        amount_minor: crate::db::amounts::PositiveMinorUnits,
+    },
+    /// Review the outstanding liabilities and matched withdrawals of a posted run.
+    Show {
+        /// The payroll `TypeID` returned by import.
+        #[arg(long)]
+        payroll: crate::db::audit::payroll::PayrollRunId,
+    },
 }
 
 /// Company-scoped security master and prices.

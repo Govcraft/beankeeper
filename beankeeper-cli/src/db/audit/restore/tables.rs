@@ -51,6 +51,9 @@ table_set!(RestorableTable {
     TransactionCounterparties => "transaction_counterparties",
     BankFeedConnections => "bank_feed_connections",
     BankFeedItems => "bank_feed_items",
+
+    PayrollRuns => "payroll_runs",
+    PayrollFunding => "payroll_funding",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

@@ -13,6 +13,7 @@ pub mod import_ofx;
 pub mod init;
 pub mod investment;
 pub mod loan;
+mod payroll;
 pub mod period;
 pub mod policy;
 mod posting_output;
@@ -70,6 +71,10 @@ pub fn operation(cmd: &Command) -> Operation {
             crate::cli::LoanCommand::Schedule(_) => Operation::LoanSchedule,
             crate::cli::LoanCommand::Pay(_) => Operation::LoanPay,
         },
+        Command::Payroll(crate::cli::PayrollCommand::Preview { .. }) => Operation::PayrollPreview,
+        Command::Payroll(crate::cli::PayrollCommand::Import { .. }) => Operation::PayrollImport,
+        Command::Payroll(crate::cli::PayrollCommand::Fund { .. }) => Operation::PayrollFund,
+        Command::Payroll(crate::cli::PayrollCommand::Show { .. }) => Operation::PayrollShow,
         Command::Rule(args) => args.command.operation(),
         Command::Counterparty(args) => args.command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
@@ -435,6 +440,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             schedule::run(cli, company, &args.command)
         }
         Command::Loan(args) => loan::run(cli, &args.command),
+        Command::Payroll(command) => payroll::run(cli, command),
         Command::Key(crate::cli::KeyCommand::Init) => agent::run_key(cli),
         Command::Agent(command) => agent::run(cli, command),
         Command::Policy(command) => policy::run(cli, command),

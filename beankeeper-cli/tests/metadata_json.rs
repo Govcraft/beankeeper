@@ -348,7 +348,8 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
 
 fn revert_to_v8_fixture(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "DROP TRIGGER bank_feed_proposal_requires_current_revision;
+        "DROP TABLE payroll_funding; DROP TABLE payroll_runs;
+         DROP TRIGGER bank_feed_proposal_requires_current_revision;
          DROP TABLE bank_feed_items;
          DROP TABLE bank_feed_connections;
          DROP TABLE transaction_counterparties;
