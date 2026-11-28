@@ -71,8 +71,9 @@ when the agent can post directly, or `bank_feed_post` to apply or propose the
 reviewed revision under the configured write mode.
 
 If credentials are missing, the owner must authorize the feed on the host.
-If Plaid rejects access, the owner must renew the provider authorization and
-update the credential. A failed refresh never changes the cursor or stages
+If Plaid reports that it is preparing transactions, retry the refresh later.
+If Plaid requests a new login, use Link in update mode, then update the
+credential if needed. A failed refresh never changes the cursor or stages
 partial data. Owners using Desktop can store the provider authorization through
 the local `bk bank-feed authorize` command in the native credential store.
 

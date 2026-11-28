@@ -198,6 +198,7 @@ pub enum FeedError {
     InvalidCredentials,
     Credentials,
     Transport,
+    NotReady,
     PaginationChanged,
     PaginationLimit,
     Stale,
@@ -225,6 +226,7 @@ impl fmt::Display for FeedError {
                 f.write_str("bank provider rejected the authorization. Ask the owner to renew the connection")
             }
             Self::Transport => f.write_str("bank provider is temporarily unavailable"),
+            Self::NotReady => f.write_str("the bank provider is preparing this feed’s transactions. Try refreshing again shortly"),
             Self::PaginationChanged => f.write_str(
                 "bank provider changed results while paging; retry from the committed cursor",
             ),

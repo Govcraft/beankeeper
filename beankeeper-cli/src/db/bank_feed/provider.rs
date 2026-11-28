@@ -342,11 +342,25 @@ fn parse_page(bytes: &[u8], account: &ProviderAccountKey) -> Result<Page, FeedEr
         added: Vec<PlaidRow>,
         modified: Vec<PlaidRow>,
         removed: Vec<Removal>,
-        next_cursor: SyncCursor,
+        next_cursor: String,
         has_more: bool,
     }
     let response: Response =
         serde_json::from_slice(bytes).map_err(|_| FeedError::InvalidResponse)?;
+    // Plaid returns an empty cursor while an Item's first transaction pull
+    // is pending. Preserve the ledger's cursor instead of treating it as data.
+    if response.next_cursor.is_empty()
+        && !response.has_more
+        && response.added.is_empty()
+        && response.modified.is_empty()
+        && response.removed.is_empty()
+    {
+        return Err(FeedError::NotReady);
+    }
+    let cursor = response
+        .next_cursor
+        .parse()
+        .map_err(|_| FeedError::InvalidResponse)?;
     Ok(Page {
         delta: FeedDelta {
             rows: response
@@ -365,7 +379,7 @@ fn parse_page(bytes: &[u8], account: &ProviderAccountKey) -> Result<Page, FeedEr
                 })
                 .collect(),
         },
-        cursor: response.next_cursor,
+        cursor,
         has_more: response.has_more,
     })
 }
@@ -395,6 +409,23 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque};
 
     use super::*;
+
+    #[test]
+    fn an_initial_pull_without_a_cursor_is_not_ready() -> Result<(), FeedError> {
+        let account = "account-fixture".parse()?;
+        let bytes = br#"{"added":[],"modified":[],"removed":[],"next_cursor":"","has_more":false}"#;
+        assert!(matches!(
+            parse_page(bytes, &account),
+            Err(FeedError::NotReady)
+        ));
+        let invalid =
+            br#"{"added":[],"modified":[],"removed":[],"next_cursor":"","has_more":true}"#;
+        assert!(matches!(
+            parse_page(invalid, &account),
+            Err(FeedError::InvalidResponse)
+        ));
+        Ok(())
+    }
 
     #[test]
     fn authorization_errors_contain_no_provider_details() {
