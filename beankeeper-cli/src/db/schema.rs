@@ -3338,6 +3338,7 @@ mod tests {
                 BANK_FEED_SCHEMA_VERSION,
                 PAYROLL_SCHEMA_VERSION,
                 DOCUMENT_SCHEMA_VERSION,
+                FIXED_ASSETS_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
