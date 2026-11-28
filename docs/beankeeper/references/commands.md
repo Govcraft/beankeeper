@@ -1,6 +1,6 @@
 # Command Reference
 
-For beankeeper-cli 0.40.0 (`bk`).
+For beankeeper-cli 0.41.0 (`bk`).
 
 All commands accept global options: `--db PATH`, `--company SLUG`, `--json`, `--format {table|json|csv}`, `--quiet`, `--verbose`, `--no-color`, `--actor NAME`, `--agent-token TOKEN`. General options work before or after the subcommand, for example `bk report trial-balance --format json`. On import/export, use the distinct file-format options described below.
 
@@ -1608,7 +1608,7 @@ bk --company acme report aging --account 1100 --filter-metadata status=disputed
 
 **Metadata filter.** Settlements are matched against every charge first; only then are the open items restricted to charges whose metadata matches. A filtered charge therefore keeps its original age and shows what is still open after the payments applied to it, whether they matched the filter or not (typically payments carry no `status`). This lets a disputed receivable stay in the AR account tagged `{"status":"disputed"}` instead of moving to another account, which would reset its age. Unapplied credit cannot be attributed to a charge, so it is not shown under a filter (`unapplied_credit` is 0), and the totals no longer tie to the account balance: the table shows the unfiltered balance separately, and JSON still has the real `account_balance`.
 
-**How it works.** The ledger has no invoice or due-date model, so ages are measured from transaction dates. Entries on the account are netted per transaction; a net increase is a *charge* and a net decrease is a *settlement*. For an asset account (receivables) charges are debits and settlements credits; for a liability account (payables) charges are credits and settlements debits -- the same command serves AR and AP. Transactions are processed by date (charges before settlements on the same date, then by id), per counterparty when grouping. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
+**How it works.** This account report measures age from transaction dates. Use `bk document aging` or MCP `document_aging` for open invoices and bills grouped by due date. Entries on the account are netted per transaction; a net increase is a *charge* and a net decrease is a *settlement*. For an asset account (receivables) charges are debits and settlements credits; for a liability account (payables) charges are credits and settlements debits -- the same command serves AR and AP. Transactions are processed by date (charges before settlements on the same date, then by id), per counterparty when grouping. Settlements beyond the open charges are reported as an *unapplied credit*, which later charges consume first. Each charge's remaining open amount is bucketed by age in days (`as_of - transaction date`; age 0 is `Current`). The report always reconciles: total open - unapplied credit = account balance as of the date.
 
 **Matching methods.**
 - `fifo`: every settlement is applied to the oldest open charges.

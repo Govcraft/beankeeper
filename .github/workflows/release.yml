@@ -79,8 +79,8 @@ jobs:
             echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
           } >> "$GITHUB_ENV"
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p beankeeper-cli
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} -p beankeeper-cli --bins
 
       - name: Determine version from tag
         id: version
@@ -88,21 +88,19 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: echo "version=${REF_NAME#beankeeper-cli-v}" >> "$GITHUB_OUTPUT"
 
-      - name: Package binary
+      - name: Package binaries
         env:
           TARGET: ${{ matrix.target }}
           VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
-          BIN_NAME="bk"
           ARCHIVE_NAME="bk-${VERSION}-${TARGET}"
 
           mkdir -p "staging/${ARCHIVE_NAME}"
-          cp "target/${TARGET}/release/${BIN_NAME}" "staging/${ARCHIVE_NAME}/"
+          cp "target/${TARGET}/release/bk" "target/${TARGET}/release/bk-wise-bridge" "staging/${ARCHIVE_NAME}/"
           cp README.md LICENSE-MIT LICENSE-APACHE "staging/${ARCHIVE_NAME}/"
 
-          cd staging
-          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          tar -C staging -czf "staging/${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
           echo "ASSET=staging/${ARCHIVE_NAME}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Upload artifact

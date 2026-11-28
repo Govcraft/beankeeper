@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.40.0
+version: 0.41.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -78,8 +78,9 @@ Draw charts from `standing`, `comparison.series`, `biggest_movers.series` and
 `needs_attention.items`; monetary values are minor units with `_display`
 companions. Supply your own advisor voice, and offer `desktop_view` only if a
 visual would help. Do not send the owner to a dashboard to get the answer.
-Overdue status is unavailable without invoice due dates. Older open items,
-named suspense activity and scheduled posting volume carry explicit limits;
+Use `document_aging` or `bk document aging` for overdue issued invoices and
+bills by due date. The summary separately lists older open journal items by posting date.
+That age, named suspense activity, and scheduled posting volume carry explicit limits;
 do not present them as overdue bills or unresolved transaction counts.
 `needs_attention.items.stale_holds` lists card authorizations held open for
 more than seven days as of the summary end date. Explain that these amounts can
@@ -953,6 +954,20 @@ audited set. Use `unset` for an unconfigured bookkeeping instruction.
 report completed changes. Use the [accepted values and payloads](references/commands.md#standing-bookkeeping-and-inform-preferences)
 when translating the owner's answer to a setting.
 
+### Choose the accounting workflow
+
+| For this task | Start here |
+| --- | --- |
+| Invoice a customer or record a vendor bill | Identify the counterparty using `counterparty_list`. Draft and issue with `document_draft` and `document_issue`, then use `document_allocate` for a posted payment and `document_aging` for due-date balances. [Invoices and bills](references/commands.md#invoices-and-bills) |
+| Reconcile new bank activity | Use `bank_feed_list` and `bank_feed_review` to inspect staged revisions. Link an existing journal with `bank_feed_link`, or post or propose the reviewed entry with `bank_feed_post`. Connection administration uses the host's Plaid credentials and signed admin authority. [Bank feeds](https://github.com/Govcraft/beankeeper/blob/main/docs/bank-feeds.md) |
+| Collect payment or pay a vendor | Use `collection_create_link` for an issued invoice and verified Stripe evidence to reconcile receipts, payouts and refunds. For vendor payments, preview and draft the instruction, obtain signed approval, then use a separate dispatch grant. Inspect uncertain provider results by lookup using the original instruction. [Stripe collection](https://github.com/Govcraft/beankeeper/blob/main/docs/payment-collection.md) · [Vendor payments](https://github.com/Govcraft/beankeeper/blob/main/docs/disbursements.md) · [Wise bridge](https://github.com/Govcraft/beankeeper/blob/main/docs/wise-bridge.md) |
+| Review costs, assets or stock | Use `project_report` for profitability and unbilled costs, `expense_claim_submit` to route a claim for review, `fixed_asset_preview` to preview book depreciation, and `inventory_valuation` for FIFO stock value. [Projects](references/commands.md#project-accounting) · [Expense claims](https://github.com/Govcraft/beankeeper/blob/main/docs/expense-claims.md) · [Fixed assets](https://github.com/Govcraft/beankeeper/blob/main/docs/fixed-assets.md) · [Inventory](https://github.com/Govcraft/beankeeper/blob/main/docs/inventory.md) |
+| Prepare payroll or tax records | Preview aggregate payroll with `payroll_preview`, import with the reviewed digest, and match actual withdrawals with `payroll_fund`. Use `tax_report` for UK GBP invoice VAT, and `contractor_tax_worksheet` for the 2025 US Form 1099-NEC worksheet. Keep W-9 materials on the configured private host path. [Payroll](references/commands.md#import-finalized-payroll) · [VAT](https://github.com/Govcraft/beankeeper/blob/main/docs/document-vat.md) · [Contractor tax](https://github.com/Govcraft/beankeeper/blob/main/docs/contractor-tax.md) |
+
+Keep provider keys and raw provider deliveries on the configured host. Check
+the tool result for the posting or proposal status before describing a
+financial write as complete.
+
 ### Generate reports
 
 ```bash
@@ -962,6 +977,8 @@ bk --company acme report balance-sheet --to 2026-03-31
 bk --company acme report tax-summary --from 2026-01-01 --to 2026-12-31
 bk --company acme report ledger --account 1000 --from 2026-01-01 --to 2026-03-31
 bk --company acme report cash-flow --from 2026-01-01 --to 2026-03-31
+bk --company acme report income-statement --basis cash --from 2026-01-01 --to 2026-03-31
+bk --company acme report cash-forecast --as-of 2026-03-31 --through 2026-06-30
 
 # Companies with transactions in several currencies must pick one
 bk --company acme report trial-balance --currency MXN
@@ -979,6 +996,12 @@ are net on each account's normal side. JSON command ids are
 `report.<report>.periods` and `report.<report>.compare`; see
 [`references/commands.md`](references/commands.md) and
 [`references/json-api.md`](references/json-api.md).
+
+For cash-basis results, review any coverage gaps returned with
+`--allow-incomplete`. Use cash forecast scenario adjustments to explore timing
+and link a scheduled payment to its document before counting both sources.
+MCP `report` uses `basis: "cash"` for income statements and
+`kind: "cash-forecast"` for projections. [Cash basis and forecast options](references/commands.md#cash-basis-and-cash-forecast)
 
 Reports total one currency. A configured book defaults to the functional currency
 in its profile. Legacy books without a profile infer the currency from postings
@@ -1015,6 +1038,10 @@ and send `currency` plus `from` and `to`, or `as_of`.
 
 ### Tax-oriented exports
 
+Use `contractor-tax worksheet --year 2025` or MCP `contractor_tax_worksheet`
+for reviewed US contractor settlements. The transaction-tag summaries below
+remain available for estimate and historical review. [Contractor workflow](https://github.com/Govcraft/beankeeper/blob/main/docs/contractor-tax.md)
+
 Use `report schedule-c` with canonical, case-insensitive `sched-c:<line>` entry
 tags. Inspect all three arrays: `lines`, `unmapped`, and `untagged`. Untagged
 income/expense activity stays visible. Use `report 1099` with transaction
@@ -1031,6 +1058,11 @@ for signs, line meanings, metadata rules, and output fields.
 
 ### Receivables / payables aging
 
+Use `bk --company acme document aging --as-of 2026-03-31` or MCP
+`document_aging` for issued invoices and bills by payment due date.
+Use the account report below for journal aging by posting date.
+[Invoice and bill allocation](references/commands.md#invoices-and-bills)
+
 ```bash
 bk --company acme report aging --account 1100                     # AR as of today
 bk --company acme report aging --account 2000 --as-of 2026-03-31  # AP
@@ -1042,9 +1074,8 @@ bk --company acme report aging --account 1100 --include-children            # 11
 bk --company acme report aging --account 1100 --filter-metadata status=disputed
 ```
 
-There is no invoice or due-date model: each net increase to the account is a
-charge, each net decrease a settlement, and ages are measured from transaction
-dates. Asset accounts (AR) age debit-side charges and apply credit-side
+The account report treats each net increase as a charge and each net decrease
+as a settlement. Age is measured from transaction dates. Asset accounts (AR) age debit-side charges and apply credit-side
 settlements; liability accounts (AP) the reverse.
 
 With several accounts, each is matched on its own (totals equal the sum of

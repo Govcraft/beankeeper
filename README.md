@@ -1,6 +1,8 @@
 # Beankeeper
 
-The accounting runtime for AI agents. Your assistant manages your books -- `bk` makes sure it can't mess them up.
+The accounting runtime for AI agents. `bk` enforces balanced posting, scoped
+permissions, and tamper-evident audit history while your assistant manages
+your books.
 
 A CLI backed by SQLCipher-encrypted SQLite, with an embeddable Rust library underneath.
 
@@ -11,6 +13,20 @@ optional local browser views, and AI extension packaging under a separate
 [source-available license](https://github.com/Govcraft/beankeeper-desktop/blob/main/LICENSE.md).
 The ledger, CLI, and MCP server in this repository remain MIT/Apache-2.0 open source;
 you can use them independently of Desktop.
+
+## Accounting workflows
+
+| Workflow | What to use |
+| --- | --- |
+| Customers, vendors, invoices and bills | Maintain counterparty records, issue documents, allocate payments and credits, and age open balances by due date. [Counterparties](docs/beankeeper/references/commands.md#customers-and-vendors) · [Invoices and bills](docs/beankeeper/references/commands.md#invoices-and-bills) |
+| Bank feeds and payments | Review staged Plaid transactions, collect invoices through Stripe, and reconcile approved vendor payments through Wise. [Bank feeds](docs/bank-feeds.md) · [Stripe collections](docs/payment-collection.md) · [Vendor disbursements](docs/disbursements.md) |
+| Cash reporting | Run cash-basis income statements and compare cash forecasts built from postings, open items, and schedules. [Cash basis and forecasts](docs/beankeeper/references/commands.md#cash-basis-and-cash-forecast) |
+| Operating records | Track project costs and billable time, reconcile employee expenses, depreciate fixed assets, and value FIFO stock. [Projects](docs/beankeeper/references/commands.md#project-accounting) · [Expense claims](docs/expense-claims.md) · [Fixed assets](docs/fixed-assets.md) · [Inventory](docs/inventory.md) |
+| Payroll and tax | Import reviewed aggregate payroll, reconcile UK VAT on GBP documents, and prepare a 2025 US contractor worksheet. [Payroll](docs/beankeeper/references/commands.md#import-finalized-payroll) · [UK VAT](docs/document-vat.md) · [Contractor worksheet](docs/contractor-tax.md) |
+
+The CLI and MCP tool catalog expose these workflows with their applicable
+grants. Provider credentials and private evidence files are configured on the
+host. See [what changed and how to upgrade](CHANGELOG.md).
 
 ## Why Beankeeper?
 
@@ -1663,9 +1679,9 @@ Use real calendar dates in `YYYY-MM-DD` format for CLI and MCP report and
 summary filters. When the end date defaults to today, Beankeeper uses the local
 date. Invalid dates return `VALIDATION`.
 
-The CLI and MCP tool return the same full envelope. Overdue status is explicitly
-unavailable because the ledger has no payment due dates; older open items are
-reported separately. The `stale_holds` attention item shows authorizations still
+The CLI and MCP tool return the same full envelope. Summary reports older open
+journal charges by posting date. For overdue invoices and bills, use
+`bk document aging` or MCP `document_aging`. The `stale_holds` attention item shows authorizations still
 open at the end date and older than seven days by default. Use
 `--stale-hold-age-days` or MCP `stale_hold_age_days` to change the threshold.
 See the [summary contract and limitations](docs/financial-summary.md).
@@ -1804,7 +1820,12 @@ Annual budgets are split exactly across 12 months -- any remainder cents are dis
 
 ### Receivables and Payables Aging
 
-`bk report aging` ages the open balance of an asset (receivables) or liability (payables) account:
+Use `bk --company personal document aging --as-of 2026-03-31` or MCP
+`document_aging` for outstanding issued invoices and bills by due date.
+[Document aging and allocation](docs/beankeeper/references/commands.md#invoices-and-bills)
+
+Use `bk report aging` for the open balance of an asset (receivables) or
+liability (payables) account by journal posting date:
 
 ```sh
 # Accounts receivable as of today (buckets: Current, 1-30, 31-60, 61-90, 90+)
@@ -1831,7 +1852,7 @@ bk --company personal report aging --account 1100 --include-children
 bk --company personal report aging --account 1100 --filter-metadata status=disputed
 ```
 
-The ledger has no invoice or due-date model, so the report works from transactions: entries on the account are netted per transaction, each net increase is a **charge** and each net decrease is a **settlement**, and ages are measured from **transaction dates**.
+The account report nets entries per transaction. Each net increase is a **charge**, each net decrease is a **settlement**, and age uses the **transaction date**.
 
 - **Sign convention.** An asset account (receivables) ages debit-side charges and applies credit-side settlements; a liability account (payables) ages credit-side charges and applies debit-side settlements. The same command works for AR and AP.
 - **Matching (`--method`).** With `fifo` (default) every settlement goes to the oldest open charges. With `specific`, a settlement whose metadata links to a charge is applied to that charge first; any excess, and unlinked settlements, fall back to FIFO. The link is the metadata key `applies_to` (change it with `--link-key`), holding the charge's reference (`txn post -r`; references are unique per company, so the payment carries the link rather than sharing the reference) or its transaction id, or an array of these. A link to a missing transaction, to one that is not a charge on this account, to a charge dated later or after `--as-of`, or to another counterparty's charge is reported as a warning and under `unmatched_links` in JSON, and the settlement is applied FIFO.

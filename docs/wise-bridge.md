@@ -17,7 +17,11 @@ the operator can inspect it in Wise.
 
 ## Configure the host
 
-Build and run from the Beankeeper checkout.
+The signed release archive includes `bk-wise-bridge` from CLI 0.41.0 onward.
+Verify and extract the archive for your platform, then run the companion
+executable. [Release verification](RELEASE.md#sigstore-verification-contract)
+
+To build from a checkout, run:
 
 ```sh
 cargo build --release --locked -p beankeeper-cli --bin bk-wise-bridge
