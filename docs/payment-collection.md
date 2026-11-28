@@ -115,9 +115,10 @@ reconciliation. Use the existing payout journal when recording the bank match
 to avoid a duplicate deposit. An agent-reported payout remains in
 `collection_exceptions` until the bank evidence covers the entire debit.
 
-The status tools expose `source` and `original_source`. A matching signed
-delivery can confirm an agent report. A conflicting signed delivery creates a
-review exception without changing the posted journal. Read the journal's
+The status tools expose `source`, `original_source`, and `signed_conflict`.
+A matching signed delivery can confirm an agent report. A conflicting signed
+delivery creates a review exception without changing the posted journal.
+Resolve conflicting evidence before further reconciliation. Read the journal's
 initial source in its evidence audit record. `verify` checks Stripe evidence
 provenance against the audit chain.
 

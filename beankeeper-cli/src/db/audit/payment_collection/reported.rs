@@ -200,23 +200,40 @@ impl Source {
         json!({"stripe_evidence_source":self}).to_string()
     }
 
-    pub(super) fn effective(
+    pub(super) fn review(
         self,
         reader: ReadConn<'_>,
         company: &CompanySlug,
         key: &str,
-    ) -> Result<Self, CliError> {
-        if self == Self::Signed {
-            return Ok(self);
-        }
-        let confirmed: bool = reader.query_row(
-            "SELECT EXISTS(SELECT 1 FROM stripe_evidence_reviews
-             WHERE company_slug=?1 AND evidence_key=?2 AND agrees=1)",
-            params![company, key],
-            |r| r.get(0),
-        )?;
-        Ok(if confirmed { Self::Signed } else { self })
+    ) -> Result<ReviewedSource, CliError> {
+        let (signed_match, signed_conflict): (bool, bool) = if self == Self::Signed {
+            (false, false)
+        } else {
+            reader.query_row(
+                "SELECT COALESCE(MAX(agrees),0), COALESCE(MIN(agrees)=0,0)
+                 FROM stripe_evidence_reviews WHERE company_slug=?1 AND evidence_key=?2",
+                params![company, key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        };
+        let source = if signed_match && !signed_conflict {
+            Self::Signed
+        } else {
+            self
+        };
+        Ok(ReviewedSource {
+            source,
+            original_source: self,
+            signed_conflict,
+        })
     }
+}
+
+#[derive(Serialize)]
+pub(super) struct ReviewedSource {
+    source: Source,
+    original_source: Source,
+    signed_conflict: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -319,8 +336,8 @@ fn record_signed_review(
 pub(super) struct PaymentView {
     pub payment: StripePaymentIntentId,
     pub posting: TransactionId,
-    pub source: Source,
-    pub original_source: Source,
+    #[serde(flatten)]
+    pub provenance: ReviewedSource,
 }
 
 pub(super) fn ensure_no_conflict(
