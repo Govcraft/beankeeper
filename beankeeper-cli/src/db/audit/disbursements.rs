@@ -310,10 +310,10 @@ fn observe(
             after.state = apply(&after.state, event.event())?;
             match event.status {
                 ProviderStatus::Settled if after.confirmed.is_none() => {
-                    after.confirmed = Some(event.clone())
+                    after.confirmed = Some(event.clone());
                 }
                 ProviderStatus::Returned if after.returned.is_none() => {
-                    after.returned = Some(event.clone())
+                    after.returned = Some(event.clone());
                 }
                 _ => {}
             }
