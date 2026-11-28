@@ -240,7 +240,7 @@ impl TryFrom<(MajorPostingLine, Currency)> for PostingLine {
 }
 
 /// A parsed decimal in major currency units, before applying currency scale.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MajorAmount {
     source: Box<str>,
     negative: bool,
@@ -881,7 +881,12 @@ mod tests {
                     status: Some(crate::cli::ClearanceArg::Cleared),
                 },
             ))?;
-            let result = request.execute(&db, &"acme".parse()?, &actor)?;
+            let result = crate::db::audit::corrections::reconciliation::clear(
+                &db,
+                &actor,
+                &"acme".parse()?,
+                request,
+            )?;
             serde_json::to_value(result).map_err(|error| CliError::General(error.to_string()))
         };
         assert!(run_batch("batch-a,5\nbatch-b,11").is_err());

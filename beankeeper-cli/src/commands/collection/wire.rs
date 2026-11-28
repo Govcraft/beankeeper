@@ -150,3 +150,21 @@ impl PaymentCollectionRequest {
         }
     }
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CollectionEvidence {
+    company: Text<CompanySlug>,
+    evidence: super::store::reported::ReportedEvidence,
+}
+
+impl From<CollectionEvidence> for PaymentCollectionRequest {
+    fn from(input: CollectionEvidence) -> Self {
+        Self {
+            company: input.company.into_inner(),
+            command: CollectionCommand::ReportEvidence {
+                evidence: input.evidence,
+            },
+        }
+    }
+}

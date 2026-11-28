@@ -6,7 +6,11 @@ use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{Actor, AuditEntity, CollectionOutcome, ReadConn, record, validation};
+use super::{
+    Actor, AuditEntity, CollectionOutcome, ReadConn, record,
+    reported::{self, Facts, Origin, ReviewedSource, Source},
+    validation,
+};
 use crate::{
     db::{
         amounts::PositiveMinorUnits,
@@ -16,7 +20,9 @@ use crate::{
         ids::TransactionId,
     },
     error::CliError,
-    payments::stripe::{StripeDisputeId, StripeEvent, VerifiedStripeEvent},
+    payments::stripe::{
+        DisputeMovement, StripeDisputeId, StripeEvent, StripePaymentIntentId, VerifiedStripeEvent,
+    },
 };
 
 pub(super) fn ingest(
@@ -34,20 +40,40 @@ pub(super) fn ingest(
     else {
         return Ok(CollectionOutcome::Unrelated);
     };
+    let facts = Facts::signed(event, event.created().date_naive(), *amount)?;
+    record_evidence(
+        tx,
+        actor,
+        company,
+        (dispute, payment, *movement, &facts),
+        Origin::Signed(event),
+    )
+}
+
+pub(super) fn record_evidence(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    (dispute, payment, movement, facts): (
+        &StripeDisputeId,
+        &StripePaymentIntentId,
+        DisputeMovement,
+        &Facts,
+    ),
+    origin: Origin<'_>,
+) -> Result<CollectionOutcome, CliError> {
     Company::bind(tx.read(), company.clone())?;
-    let provider = event.account().to_string();
-    let live = event.mode().is_live();
+    let provider = facts.account.to_string();
     let payment = payment.to_string();
-    let currency = amount.money().currency();
-    let amount: PositiveMinorUnits = amount.money().amount().try_into()?;
-    let occurred = event.created().date_naive();
+    let occurred = NaiveDate::from(facts.date);
     let movement = movement.code();
     let id = dispute.to_string();
-    if let Some(saved) = tx
+    let key = format!("{id}:{movement}");
+    if let Some((old_provider, live, old_payment, currency, amount, old_date, old_source)) = tx
         .read()
         .query_row(
-            "SELECT account,live,payment,currency,amount FROM stripe_disputes
-        WHERE company_slug=?1 AND dispute=?2 AND movement=?3",
+            "SELECT account,live,payment,currency,amount,occurred,source FROM stripe_disputes
+             WHERE company_slug=?1 AND dispute=?2 AND movement=?3",
             params![company, id, movement],
             |row| {
                 Ok((
@@ -56,19 +82,41 @@ pub(super) fn ingest(
                     row.get::<_, String>(2)?,
                     row.get::<_, Currency>(3)?,
                     row.get::<_, PositiveMinorUnits>(4)?,
+                    calendar_date::read(row, 5)?,
+                    row.get::<_, String>(6)?,
                 ))
             },
         )
         .optional()?
     {
-        if saved == (provider, live, payment, currency, amount) {
-            return Ok(CollectionOutcome::Duplicate);
-        }
-        return Err(validation(
-            "verified dispute movement conflicts with recorded terms",
-        ));
+        let old_source = Source::from_row(&old_source)?;
+        let agrees = (old_provider, live, old_payment, currency, amount)
+            == (
+                provider,
+                facts.live,
+                payment,
+                facts.currency,
+                facts.amount_minor,
+            )
+            && (origin.source() == Source::Signed && old_source == Source::Signed
+                || old_date == occurred);
+        return reported::compare(tx, actor, company, &key, (old_source, origin, agrees));
     }
-    let delivery = event.id().to_string();
+    if origin.source() == Source::AgentReported {
+        let known: bool = tx.read().query_row(
+            "SELECT EXISTS(SELECT 1 FROM collection_events e JOIN invoice_collections c ON c.id=e.collection
+                WHERE e.payment=?1 AND c.company_slug=?2 AND c.account=?3 AND c.live=?4 AND c.currency=?5
+                  AND e.occurred_on<=?6 AND c.amount>=?7)",
+            params![payment,company,provider,facts.live,facts.currency,occurred,facts.amount_minor],
+            |row| row.get(0),
+        )?;
+        if !known {
+            return Err(validation(
+                "reported dispute must match a receipt in the same processor scope",
+            ));
+        }
+    }
+    let delivery = origin.delivery(&key);
     record(
         tx,
         actor,
@@ -76,13 +124,14 @@ pub(super) fn ingest(
         AuditEntity::StripeDispute,
         &delivery,
         &json!({
-            "dispute":id,"provider":provider,"live":live,"movement":movement,"payment":payment,
-            "occurred":occurred,"currency":currency,"amount":amount,
+            "dispute":id, "provider":provider, "live":facts.live, "movement":movement,
+            "payment":payment, "occurred":occurred, "currency":facts.currency,
+            "amount":facts.amount_minor, "source":origin.source(),
         }),
     )?;
-    tx.insert("INSERT INTO stripe_disputes(company_slug,dispute,movement,account,live,payment,occurred,currency,amount,delivery)
-        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![company,id,movement,provider,live,payment,occurred,currency,amount,delivery])?;
+    tx.insert("INSERT INTO stripe_disputes(company_slug,dispute,movement,account,live,payment,occurred,currency,amount,delivery,source)
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![company,id,movement,provider,facts.live,payment,occurred,facts.currency,facts.amount_minor,delivery,origin.source().code()])?;
     Ok(CollectionOutcome::DisputeRecorded(dispute.clone()))
 }
 
@@ -96,6 +145,8 @@ pub struct DisputeView {
     amount_minor: PositiveMinorUnits,
     original_receipt: Option<TransactionId>,
     allocation_effect: &'static str,
+    #[serde(flatten)]
+    provenance: ReviewedSource,
 }
 
 pub(crate) fn report(
@@ -104,7 +155,7 @@ pub(crate) fn report(
 ) -> Result<Vec<DisputeView>, CliError> {
     let mut stmt = reader.prepare_cached("SELECT d.dispute,d.movement,d.payment,d.occurred,d.currency,d.amount,
         (SELECT e.posting FROM collection_events e JOIN invoice_collections c ON c.id=e.collection
-         WHERE e.payment=d.payment AND c.company_slug=d.company_slug AND c.account=d.account AND c.live=d.live AND c.currency=d.currency)
+         WHERE e.payment=d.payment AND c.company_slug=d.company_slug AND c.account=d.account AND c.live=d.live AND c.currency=d.currency),d.source
         FROM stripe_disputes d WHERE d.company_slug=?1 ORDER BY d.occurred DESC,d.dispute LIMIT 100")?;
     let rows = stmt.query_map([company], |row| {
         Ok((
@@ -115,10 +166,22 @@ pub(crate) fn report(
             row.get(4)?,
             row.get(5)?,
             row.get(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, movement, payment, occurred, currency, amount_minor, original_receipt) = row?;
+        let (
+            id,
+            movement,
+            payment,
+            occurred,
+            currency,
+            amount_minor,
+            original_receipt,
+            original_source,
+        ) = row?;
+        let original_source = Source::from_row(&original_source)?;
+        let key = format!("{id}:{movement}");
         Ok(DisputeView {
             dispute: id.parse().map_err(validation)?,
             movement,
@@ -127,6 +190,7 @@ pub(crate) fn report(
             currency,
             amount_minor,
             original_receipt,
+            provenance: original_source.review(reader, company, &key)?,
             allocation_effect: "unchanged_pending_review",
         })
     })

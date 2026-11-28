@@ -51,7 +51,8 @@ pub(crate) enum DocumentMutation {
     Revoke(AllocationId, NaiveDate),
 }
 
-pub(crate) use review::{ApprovalAction, ReviewRecord, review, review_requests};
+pub(crate) use review::review;
+pub use review::{ApprovalAction, ReviewRecord, decide_document, get, list};
 
 /// Result of an accounting document mutation.
 #[derive(Debug, Serialize, Deserialize)]

@@ -24,7 +24,7 @@ use crate::{
 
 use super::{
     Actor, AuditAction, AuditChange, AuditEntity, AuditLinks, append_with_links,
-    grant::{Admin, Approve, Budget, Granted, Post, sealed::GrantKind},
+    grant::{Approve, Granted, Post, sealed::GrantKind},
     savepoint::AuditedTx,
 };
 
@@ -36,10 +36,8 @@ pub(super) use distribution::{guard_project_entry, mirror_reversal};
 pub(crate) use verification::verify;
 
 pub(crate) enum ProjectMutation {
-    Archive(ProjectId),
     Record(WorkInput),
     Approve(TimeEntryId, NaiveDate),
-    Budget(ProjectBudgetInput),
 }
 
 #[derive(Debug, Serialize)]
@@ -70,11 +68,6 @@ pub(crate) fn mutate(
     mutation: ProjectMutation,
 ) -> Result<ProjectChange, CliError> {
     match mutation {
-        ProjectMutation::Archive(id) => {
-            with_scope::<Admin>(db, actor, slug, |tx, actor, company| {
-                save_project(tx, actor, company, ProjectEdit::Archive(&id))
-            })
-        }
         ProjectMutation::Record(work) => {
             with_scope::<Post>(db, actor, slug, |tx, actor, company| {
                 save_work(tx, actor, company, WorkEdit::New(work))
@@ -83,11 +76,6 @@ pub(crate) fn mutate(
         ProjectMutation::Approve(id, date) => {
             with_scope::<Approve>(db, actor, slug, |tx, actor, company| {
                 save_work(tx, actor, company, WorkEdit::Approve(&id, date))
-            })
-        }
-        ProjectMutation::Budget(input) => {
-            with_scope::<Budget>(db, actor, slug, |tx, actor, company| {
-                set_budget(tx, actor, company, input)
             })
         }
     }
@@ -100,6 +88,15 @@ pub(super) fn create(
     terms: ProjectTerms,
 ) -> Result<ProjectChange, CliError> {
     save_project(tx, actor, company, ProjectEdit::New(terms))
+}
+
+pub(super) fn archive(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &Company<'_>,
+    id: &ProjectId,
+) -> Result<ProjectChange, CliError> {
+    save_project(tx, actor, company, ProjectEdit::Archive(id))
 }
 
 pub(super) use distribution::set_splits;
@@ -262,7 +259,7 @@ fn save_work(
     })
 }
 
-fn set_budget(
+pub(super) fn set_budget(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,

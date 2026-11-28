@@ -179,7 +179,12 @@ impl ProjectRequest {
                     .map(Response::Bookkeeping)
                     .map(ProjectResponse);
             }
-            Cmd::Archive { id } => Edit::Archive(id),
+            Cmd::Archive { id } => {
+                return ProjectWrite::Archive { id }
+                    .submit(db, actor, company)
+                    .map(Response::Bookkeeping)
+                    .map(ProjectResponse);
+            }
             Cmd::Record { work } => Edit::Record(work),
             Cmd::Approve { id, date } => Edit::Approve(id, date.into()),
             Cmd::Split {
@@ -196,7 +201,12 @@ impl ProjectRequest {
                 .map(Response::Bookkeeping)
                 .map(ProjectResponse);
             }
-            Cmd::Budget { budget } => Edit::Budget(budget),
+            Cmd::Budget { budget } => {
+                return ProjectWrite::Budget { budget }
+                    .submit(db, actor, company)
+                    .map(Response::Bookkeeping)
+                    .map(ProjectResponse);
+            }
             Cmd::DraftInvoice { invoice } => {
                 return writes::draft_invoice(db, actor, company, invoice)
                     .map(Box::new)

@@ -20,23 +20,22 @@ use std::{collections::HashSet, fmt, num::NonZeroU64, str::FromStr};
 
 use beankeeper::types::{AccountCode, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::reference::TransactionReference;
 use crate::cli::{ClearanceArg, Cli, OutputFormat, TxnClearArgs, resolve_format};
 use crate::db::amounts::PositiveMinorUnits;
-use crate::db::audit::{Reconciliation, with_reconciliation};
-use crate::db::clearings::SkipReason;
+use crate::db::audit::Reconciliation;
+use crate::db::clearings::{Clearing, SkipReason, list_clearings};
 use crate::db::companies::{Company, CompanySlug};
-use crate::db::connection::Db;
-use crate::db::ids::{EntryId, TransactionId};
-use crate::db::{self, Actor, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
+use crate::db::ids::{ClearingId, EntryId, TransactionId};
+use crate::db::{self, ClearAction, ClearOutcome, ClearRequest, EntryStatus, EntryTarget};
 use crate::error::CliError;
-use crate::identity::{Granted, Reconcile};
 use crate::output;
 use crate::output::amounts::{MoneyField, OptionalMoneyField, format_money_grouped};
 
 /// A clearing with a single valid selection and normalized options.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClearanceRequest {
     target: ClearRequestTarget,
     settings: ClearanceSettings,
@@ -104,6 +103,8 @@ pub(crate) struct ClearOptions {
     pub status: Option<ClearanceArg>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ClearRequestTarget {
     Entry {
         selector: EntrySelector,
@@ -115,6 +116,8 @@ pub(crate) enum ClearRequestTarget {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum EntrySelector {
     Id {
         transaction_id: TransactionId,
@@ -200,28 +203,109 @@ pub struct ClearanceResponse {
 }
 
 impl ClearanceRequest {
-    pub(super) fn execute(
-        self,
-        db_handle: &Db,
+    pub(crate) fn run(
+        &self,
+        writer: &Reconciliation<'_>,
         company: &CompanySlug,
-        actor: &Actor,
     ) -> Result<ClearanceResponse, CliError> {
-        db::get_company(db_handle.read(), company)?;
-        let Self { target, settings } = self;
-        let items = Granted::<Reconcile>::with_db(db_handle, actor, |grant| {
-            with_reconciliation(grant, |writer| match target {
-                ClearRequestTarget::Entry { selector, amount } => {
-                    let target = resolve_entry(writer, company, &selector)?;
-                    let amount = amount.map(|amount| amount.for_entry(&target)).transpose()?;
-                    let outcome = apply(writer, company, &settings, &target, amount)?;
-                    Ok(ClearedItems::Single(Item::new(None, &target, &outcome)))
-                }
-                ClearRequestTarget::Batch { account, lines } => {
-                    run_batch(writer, company, &settings, account, &lines).map(ClearedItems::Batch)
-                }
-            })
+        self.run_with(writer, company, |target, amount| {
+            apply(writer, company, &self.settings, target, amount)
+        })
+    }
+
+    pub(crate) fn run_with_evidence(
+        &self,
+        writer: &Reconciliation<'_>,
+        company: &CompanySlug,
+    ) -> Result<(ClearanceResponse, Vec<ClearanceEvidence>), CliError> {
+        let scope = Company::bind(writer.read(), company.clone())?;
+        let mut evidence = Vec::new();
+        let response = self.run_with(writer, company, |target, amount| {
+            let before = list_clearings(&scope, target.entry_id)?;
+            let outcome = apply(writer, company, &self.settings, target, amount)?;
+            let after = list_clearings(&scope, target.entry_id)?;
+            evidence.push(ClearanceEvidence {
+                entry_id: target.entry_id,
+                transaction_id: target.transaction_id,
+                reference: target.reference.clone(),
+                account: target.account_code.clone(),
+                currency: target.currency,
+                before: before
+                    .iter()
+                    .map(|row| ClearingPreview::new(row, None))
+                    .collect(),
+                after: after
+                    .iter()
+                    .map(|row| ClearingPreview::new(row, outcome.clearing_id))
+                    .collect(),
+            });
+            Ok(outcome)
         })?;
-        Ok(ClearanceResponse { settings, items })
+        Ok((response, evidence))
+    }
+
+    fn run_with(
+        &self,
+        writer: &Reconciliation<'_>,
+        company: &CompanySlug,
+        mut apply: impl FnMut(
+            &EntryTarget,
+            Option<PositiveMinorUnits>,
+        ) -> Result<ClearOutcome, CliError>,
+    ) -> Result<ClearanceResponse, CliError> {
+        let items = match &self.target {
+            ClearRequestTarget::Entry { selector, amount } => {
+                let target = resolve_entry(writer, company, selector)?;
+                let amount = amount.map(|amount| amount.for_entry(&target)).transpose()?;
+                let outcome = apply(&target, amount)?;
+                ClearedItems::Single(Item::new(None, &target, &outcome))
+            }
+            ClearRequestTarget::Batch { account, lines } => {
+                ClearedItems::Batch(run_batch(writer, company, account, lines, &mut apply)?)
+            }
+        };
+        Ok(ClearanceResponse {
+            settings: self.settings.clone(),
+            items,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClearanceEvidence {
+    entry_id: EntryId,
+    transaction_id: TransactionId,
+    reference: Option<String>,
+    account: String,
+    currency: Currency,
+    before: Vec<ClearingPreview>,
+    after: Vec<ClearingPreview>,
+}
+
+impl ClearanceEvidence {
+    pub(crate) fn unchanged(&self) -> bool {
+        self.before == self.after
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ClearingPreview {
+    id: Option<ClearingId>,
+    amount_minor: PositiveMinorUnits,
+    cleared_on: NaiveDate,
+    reconciled_on: Option<NaiveDate>,
+    statement_ref: Option<String>,
+}
+
+impl ClearingPreview {
+    fn new(row: &Clearing, inserted: Option<ClearingId>) -> Self {
+        Self {
+            id: (Some(row.id) != inserted).then_some(row.id),
+            amount_minor: row.amount,
+            cleared_on: row.cleared_on(),
+            reconciled_on: row.state().reconciled_on(),
+            statement_ref: row.statement_ref.clone(),
+        }
     }
 }
 
@@ -261,6 +345,7 @@ fn resolve_entry(
 }
 
 /// Shared settings for every entry in one invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct ClearanceSettings {
     /// `--date`: the cleared date of new clearings and, with
     /// `--status reconciled`, the reconciled date.
@@ -341,6 +426,18 @@ impl fmt::Display for StatementAmount {
     }
 }
 
+impl Serialize for StatementAmount {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::request::text::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StatementAmount {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::request::text::deserialize(deserializer)
+    }
+}
+
 impl StatementAmount {
     fn for_entry(self, target: &EntryTarget) -> Result<PositiveMinorUnits, CliError> {
         if self.direction.is_some_and(|side| side != target.direction) {
@@ -401,7 +498,7 @@ fn apply(
 // ---------------------------------------------------------------------------
 
 /// One parsed batch line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BatchLine {
     /// 1-based line number in the input.
     pub line: u64,
@@ -411,6 +508,8 @@ pub(crate) struct BatchLine {
 }
 
 /// Nonempty statement rows with one amount per transaction reference.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<BatchLine>")]
 pub(crate) struct StatementBatch(Vec<BatchLine>);
 
 impl TryFrom<Vec<BatchLine>> for StatementBatch {
@@ -514,9 +613,9 @@ fn at_line(line: u64, reference: &str, e: CliError) -> CliError {
 fn run_batch(
     writer: &Reconciliation<'_>,
     company: &CompanySlug,
-    ctx: &ClearanceSettings,
-    account: AccountCode,
+    account: &AccountCode,
     batch: &StatementBatch,
+    mut apply: impl FnMut(&EntryTarget, Option<PositiveMinorUnits>) -> Result<ClearOutcome, CliError>,
 ) -> Result<ClearedBatch, CliError> {
     let lines = &batch.0;
     let scope = Company::bind(writer.read(), company.clone())?;
@@ -540,14 +639,14 @@ fn run_batch(
     let items = resolved
         .iter()
         .map(|(l, target, amount)| {
-            apply(writer, company, ctx, target, *amount)
+            apply(target, *amount)
                 .map(|o| Item::new(Some(l.line), target, &o))
                 .map_err(|e| at_line(l.line, l.reference.as_str(), e))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let total = batch_total(&items)?;
     Ok(ClearedBatch {
-        account,
+        account: account.clone(),
         items,
         total,
     })

@@ -194,8 +194,11 @@ pub enum FeedError {
     InvalidIdentifier(&'static str),
     InvalidAmount,
     InvalidResponse,
+    MissingCredentials,
+    InvalidCredentials,
     Credentials,
     Transport,
+    NotReady,
     PaginationChanged,
     PaginationLimit,
     Stale,
@@ -213,10 +216,17 @@ impl fmt::Display for FeedError {
                 f.write_str("bank feed amount is zero, out of range, or exceeds currency precision")
             }
             Self::InvalidResponse => f.write_str("bank provider returned an invalid response"),
+            Self::MissingCredentials => {
+                f.write_str("bank provider credentials are missing from this host. Ask the owner to authorize the feed")
+            }
+            Self::InvalidCredentials => {
+                f.write_str("bank provider credentials are unavailable or invalid. Ask the owner to check the host credential store")
+            }
             Self::Credentials => {
-                f.write_str("bank provider credentials are missing, expired, or invalid")
+                f.write_str("bank provider rejected the authorization. Ask the owner to renew the connection")
             }
             Self::Transport => f.write_str("bank provider is temporarily unavailable"),
+            Self::NotReady => f.write_str("the bank provider is preparing this feed’s transactions. Try refreshing again shortly"),
             Self::PaginationChanged => f.write_str(
                 "bank provider changed results while paging; retry from the committed cursor",
             ),

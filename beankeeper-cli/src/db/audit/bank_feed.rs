@@ -5,7 +5,10 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::json;
 
 use super::{
-    AuditAction, AuditChange, AuditEntity, grant::BankFeedAdmin, record, savepoint::AuditedTx,
+    AuditAction, AuditChange, AuditEntity,
+    grant::{BankFeedAdmin, RefreshFeed, RefreshFeedProposed},
+    record,
+    savepoint::AuditedTx,
     snapshot,
 };
 use crate::{
@@ -18,7 +21,7 @@ use crate::{
         companies::{Company, CompanySlug},
     },
     error::CliError,
-    identity::Granted,
+    identity::{Granted, VerifiedAgent, WriteMode},
 };
 
 pub(crate) fn connect(
@@ -119,56 +122,65 @@ pub(in crate::db) fn commit_sync(
     cursor: &Cursor,
     delta: &SyncDelta,
 ) -> Result<Connection, CliError> {
-    Granted::<BankFeedAdmin>::with_db(db, actor, |grant| {
-        grant.mutate("sp_sync_bank_feed", |tx, actor| {
-            let current = bank_feed::connection(tx.read(), company, &before.id)?;
-            if !current.connected {
-                return Err(FeedError::Disconnected.into());
-            }
-            if current.revision != before.revision || current.cursor != before.cursor {
-                return Err(FeedError::Stale.into());
-            }
-            let mut changes = 0_u64;
-            for row in delta
-                .rows
-                .iter()
-                .filter(|row| row.account == current.provider_account)
+    let write = |tx: &AuditedTx<'_>, actor: &Actor| {
+        let current = bank_feed::connection(tx.read(), company, &before.id)?;
+        if !current.connected {
+            return Err(FeedError::Disconnected.into());
+        }
+        if current.revision != before.revision || current.cursor != before.cursor {
+            return Err(FeedError::Stale.into());
+        }
+        let mut changes = 0_u64;
+        for row in delta
+            .rows
+            .iter()
+            .filter(|row| row.account == current.provider_account)
+        {
+            changes += u64::from(upsert_row(tx, company, &current, row)?);
+            if !row.pending
+                && let Some(key) = &row.pending_key
+                && key != &row.key
             {
-                changes += u64::from(upsert_row(tx, company, &current, row)?);
-                if !row.pending
-                    && let Some(key) = &row.pending_key
-                    && key != &row.key
-                {
-                    changes += u64::from(remove_row(tx, company, &current.id, key)?);
-                }
+                changes += u64::from(remove_row(tx, company, &current.id, key)?);
             }
-            for row in delta.removed.iter().filter(|row| {
-                row.account
-                    .as_ref()
-                    .is_none_or(|account| account == &current.provider_account)
-            }) {
-                changes += u64::from(remove_row(tx, company, &current.id, &row.key)?);
-            }
-            if changes == 0 && current.cursor.as_ref() == Some(cursor) {
-                return Ok(current);
-            }
-            tx.connection().execute(
-                "UPDATE bank_feed_connections SET cursor = ?1, revision = revision + 1
-                 WHERE id = ?2 AND company_slug = ?3",
-                params![cursor.as_str(), current.id, company],
-            )?;
-            let after = bank_feed::connection(tx.read(), company, &current.id)?;
-            audit(
-                tx,
-                actor,
-                company,
-                &current.id.to_string(),
-                Some(&snapshot(&current)),
-                &snapshot(&json!({"connection": &after, "changed_items": changes})),
-            )?;
-            Ok(after)
-        })
-    })
+        }
+        for row in delta.removed.iter().filter(|row| {
+            row.account
+                .as_ref()
+                .is_none_or(|account| account == &current.provider_account)
+        }) {
+            changes += u64::from(remove_row(tx, company, &current.id, &row.key)?);
+        }
+        if changes == 0 && current.cursor.as_ref() == Some(cursor) {
+            return Ok(current);
+        }
+        tx.connection().execute(
+            "UPDATE bank_feed_connections SET cursor = ?1, revision = revision + 1
+         WHERE id = ?2 AND company_slug = ?3",
+            params![cursor.as_str(), current.id, company],
+        )?;
+        let after = bank_feed::connection(tx.read(), company, &current.id)?;
+        audit(
+            tx,
+            actor,
+            company,
+            &current.id.to_string(),
+            Some(&snapshot(&current)),
+            &snapshot(&json!({"connection": &after, "changed_items": changes})),
+        )?;
+        Ok(after)
+    };
+    match actor
+        .identity()
+        .map_or_else(WriteMode::default, VerifiedAgent::write_mode)
+    {
+        WriteMode::Direct => Granted::<RefreshFeed>::with_db(db, actor, |grant| {
+            grant.mutate("sp_sync_bank_feed", write)
+        }),
+        WriteMode::ProposeOnly => Granted::<RefreshFeedProposed>::with_db(db, actor, |grant| {
+            grant.mutate("sp_sync_bank_feed", write)
+        }),
+    }
 }
 
 fn upsert_row(
@@ -853,7 +865,7 @@ mod tests {
         )?);
         let feed = commit_sync(
             &db,
-            &owner,
+            &actor,
             &company,
             &feed,
             &"first".parse()?,

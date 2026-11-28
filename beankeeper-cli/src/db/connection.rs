@@ -23,6 +23,7 @@ pub struct Db {
     passphrase: Option<SecretString>,
     schema_version: SchemaVersion,
     writes: WriteAuthorization,
+    plaid_credentials: Option<Arc<dyn super::bank_feed::PlaidCredentialSource>>,
 }
 
 impl std::fmt::Debug for Db {
@@ -53,6 +54,7 @@ impl Db {
             passphrase: passphrase.cloned(),
             schema_version,
             writes: WriteAuthorization::default(),
+            plaid_credentials: None,
         }
     }
 
@@ -68,6 +70,23 @@ impl Db {
     ) -> Self {
         self.writes = WriteAuthorization::new(target, authorizer);
         self
+    }
+
+    /// Attach a host credential source for bank feed sync on this ledger.
+    ///
+    /// This source is only called by authorized refreshes and supersedes the
+    /// standalone process environment.
+    #[must_use]
+    pub fn with_plaid_credentials(
+        mut self,
+        source: impl super::bank_feed::PlaidCredentialSource,
+    ) -> Self {
+        self.plaid_credentials = Some(Arc::new(source));
+        self
+    }
+
+    pub(super) fn plaid_credentials(&self) -> Option<&dyn super::bank_feed::PlaidCredentialSource> {
+        self.plaid_credentials.as_deref()
     }
 
     pub(crate) fn at_target(mut self, target: LedgerTarget) -> Self {

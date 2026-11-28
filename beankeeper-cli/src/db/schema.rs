@@ -9,7 +9,10 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 52;
+const STATEMENT_CORRECTIONS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(53);
+const LATEST_VERSION: i64 = 55;
+const MAINTENANCE_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(55);
+pub(super) const STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(54);
 const BOOKKEEPING_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(52);
 pub(super) const PROJECT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(48);
 pub(super) const COLLECTION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(51);
@@ -435,7 +438,50 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
             Ok(())
         })?;
     }
+    if version < STATEMENT_CORRECTIONS_SCHEMA_VERSION {
+        migrate_with_writer(conn, STATEMENT_CORRECTIONS_SCHEMA_VERSION, |conn| {
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [STATEMENT_CORRECTIONS_SCHEMA_VERSION],
+            )?;
+            Ok(())
+        })?;
+    }
+    if version < STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION {
+        migrate_with_writer(
+            conn,
+            STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
+            apply_stripe_agent_evidence_schema,
+        )?;
+    }
+    if version < MAINTENANCE_PROPOSALS_SCHEMA_VERSION {
+        // Reject older readers that cannot decode the added proposal variants.
+        migrate_with_writer(conn, MAINTENANCE_PROPOSALS_SCHEMA_VERSION, |conn| {
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [MAINTENANCE_PROPOSALS_SCHEMA_VERSION],
+            )?;
+            Ok(())
+        })?;
+    }
     Ok(())
+}
+
+fn apply_stripe_agent_evidence_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(
+            conn,
+            AuditTable::StripeAgentEvidence,
+            STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
+        )?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/stripe_agent_evidence.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_collection_schema(conn: &Connection) -> Result<(), CliError> {
@@ -2374,6 +2420,7 @@ enum AuditTable {
     Inventory,
     Disbursements,
     Collection,
+    StripeAgentEvidence,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2392,7 +2439,8 @@ impl From<AuditTable> for AuditHistory {
             | AuditTable::Projects
             | AuditTable::Inventory
             | AuditTable::Disbursements
-            | AuditTable::Collection => Self::Bookkeeping,
+            | AuditTable::Collection
+            | AuditTable::StripeAgentEvidence => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2602,6 +2650,9 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
     }
     if table >= AuditTable::Collection {
         append_collection_audit_extensions(entity);
+    }
+    if table >= AuditTable::StripeAgentEvidence {
+        let _ = write!(entity, ",'{}'", AuditEntity::StripeEvidenceReview);
     }
     if table >= AuditTable::Disbursements {
         let _ = write!(entity, ",'{}'", AuditEntity::Disbursement);
@@ -2819,7 +2870,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets | AuditTable::Vat | AuditTable::ExpenseClaims | AuditTable::ContractorTax | AuditTable::Projects | AuditTable::Inventory | AuditTable::Disbursements | AuditTable::Collection => {
+        table if table >= AuditTable::Receipts => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -3611,6 +3662,9 @@ mod tests {
                 DISBURSEMENT_SCHEMA_VERSION,
                 COLLECTION_SCHEMA_VERSION,
                 BOOKKEEPING_PROPOSALS_SCHEMA_VERSION,
+                STATEMENT_CORRECTIONS_SCHEMA_VERSION,
+                STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
+                MAINTENANCE_PROPOSALS_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
@@ -4265,11 +4319,11 @@ mod tests {
         use crate::db::{
             Actor, Db, SnapshotOverwrite, VerifiedSnapshot,
             audit::restore::RestoreRequest,
-            audit::statement::{StatementInput, reconcile},
+            audit::{corrections::reconciliation, statement::StatementInput},
             statement::{StatementClose, StatementSelection},
             verification::VerifiedLedger,
         };
-        use crate::identity::{self, Reconcile};
+        use crate::identity;
         use std::time::Duration;
 
         let directory = tempfile::tempdir()?;
@@ -4288,21 +4342,20 @@ mod tests {
         let old = Db::from_keyed_connection(conn, None, FX_SCHEMA_VERSION);
         let owner = Actor::new("owner".parse()?);
         let company = "legacy".parse()?;
-        Granted::<Reconcile>::with_db(&old, &owner, |grant| {
-            reconcile(
-                grant,
-                &company,
-                StatementInput {
-                    account: "1000".parse().map_err(beankeeper::error::BeanError::from)?,
-                    month: "2026-01-31".parse()?,
-                    ending: 0_u32.into(),
-                    currency: Some(beankeeper::types::Currency::USD),
-                    statement_ref: None,
-                    selection: StatementSelection::default(),
-                    close: StatementClose::default(),
-                },
-            )
-        })?;
+        reconciliation::complete(
+            &old,
+            &owner,
+            &company,
+            StatementInput {
+                account: "1000".parse().map_err(beankeeper::error::BeanError::from)?,
+                month: "2026-01-31".parse()?,
+                ending: 0_u32.into(),
+                currency: Some(beankeeper::types::Currency::USD),
+                statement_ref: None,
+                selection: StatementSelection::default(),
+                close: StatementClose::default(),
+            },
+        )?;
         Granted::<Admin>::with_db(&old, &owner, identity::init_root)?;
         let credential = Granted::<Admin>::with_db(&old, &owner, |grant| {
             identity::issue(

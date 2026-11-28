@@ -274,7 +274,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
 | `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
-| `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect` | Administer host-authorized bank and card feeds through the audited workflow |
+| `bank_feed_connect`, `bank_feed_disconnect` | Manage an authorized bank or card feed with owner access |
+| `bank_feed_connections`, `bank_feed_sync` | Discover authorized feed mappings and stage new transactions with normal agent access |
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
@@ -319,8 +320,9 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `collection_apply` | Authenticate and apply a signed Stripe delivery from the trusted host spool |
 | `collection_resolve_receipt` | Post a freshly authenticated receipt blocked solely by a closed period on an explicit open date |
 | `collection_show`, `collection_exceptions` | Inspect collection status and review exceptions |
-| `collection_reconcile_payout`, `collection_payouts` | Reconcile signed net deposits and list payout evidence |
-| `collection_reconcile_refund`, `collection_refunds` | Post approved verified refunds and list their evidence |
+| `collection_report_evidence` | Record payment, payout, refund or dispute facts read through Stripe MCP for direct posting or independent review |
+| `collection_reconcile_payout`, `collection_payouts` | Reconcile Stripe net deposits and list evidence and bank confirmation |
+| `collection_reconcile_refund`, `collection_refunds` | Post or propose a recorded Stripe refund and list its evidence |
 | `collection_disputes` | Inspect signed dispute movements pending accounting review |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
@@ -402,6 +404,14 @@ Propose-only bookkeepers use the existing proposal flow.
 MCP monetary results include the same `_display` companions as CLI JSON.
 `txn_list` and `audit_log` expose pagination in the tool result’s `_meta.pagination`
 while retaining their data arrays.
+
+The `txn_clear` and `reconcile_statement` tools accept direct
+`ledger/post` or `ledger/reconcile` access. Proposal-only access creates a
+pending request containing the exact clearing changes or matched statement
+evidence. Use `txn_proposals` to review it and an independent
+`ledger/approve` credential to decide it. A stale proposal must be submitted
+again with current entries and balances. Combined period close requires
+direct `ledger/reconcile` and `ledger/admin`.
 
 `txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
@@ -596,7 +606,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor_tax_export`,
 `company_create`, `company_delete`, `tax_configure`, `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect`,
 `bank_feed_post`, `bank_feed_link`, `payroll_import`, `payroll_fund`,
-`collection_create_link`, `collection_apply`, `collection_resolve_receipt`, `collection_reconcile_payout`, `collection_reconcile_refund`,
+`collection_create_link`, `collection_apply`, `collection_resolve_receipt`, `collection_report_evidence`, `collection_reconcile_payout`, `collection_reconcile_refund`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
@@ -2110,7 +2120,7 @@ off; afterward all ledger commands require tokens and policy changes require
 | `ledger/propose` | txn propose, list/withdraw owned proposals |
 | `ledger/approve` | List all proposals, txn approve/reject |
 | `ledger/reverse` | Reverse postings and undo eligible audit receipts |
-| `ledger/reconcile` | txn clear/reconcile |
+| `ledger/reconcile` | statement clearing and reconciliation in direct mode |
 | `ledger/budget` | budget set/delete |
 | `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 

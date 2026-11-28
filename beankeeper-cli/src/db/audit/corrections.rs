@@ -1,6 +1,9 @@
 //! Corrections use the same review commands as posting and rename proposals.
 
 pub(crate) mod bookkeeping;
+pub(crate) mod reconciliation;
+
+use reconciliation::ReconciliationChange;
 
 use bookkeeping::Bookkeeping;
 use chrono::NaiveDate;
@@ -95,6 +98,7 @@ enum Correction {
     Recategorize(Recategorization),
     Undo { receipt: ReceiptId },
     Bookkeeping { change: Bookkeeping },
+    Reconciliation { change: Box<ReconciliationChange> },
 }
 
 impl Correction {
@@ -293,6 +297,10 @@ enum Applied {
         receipt_id: Option<ReceiptId>,
         result: serde_json::Value,
     },
+    Reconciliation {
+        receipt_id: Option<ReceiptId>,
+        result: serde_json::Value,
+    },
     Recategorized(Box<recategorize::Applied>),
     Reversed {
         transaction: TransactionId,
@@ -309,7 +317,9 @@ impl Applied {
     fn desktop_path(&self, company: &CompanySlug) -> Option<String> {
         let receipt = match *self {
             Self::Recategorized(ref applied) => return Some(applied.desktop_path(company)),
-            Self::Bookkeeping { receipt_id, .. } => receipt_id?,
+            Self::Bookkeeping { receipt_id, .. } | Self::Reconciliation { receipt_id, .. } => {
+                receipt_id?
+            }
             Self::Undone { undo_receipt, .. } => undo_receipt,
             Self::Reversed { receipt, .. } => receipt,
         };
@@ -380,17 +390,32 @@ impl CorrectionProposal {
     /// A short description of the requested change.
     #[must_use]
     pub const fn title(&self) -> &'static str {
-        use bookkeeping::{Party, Project};
+        use bookkeeping::{Party, Project, StripeCollection};
         match &self.payload.correction {
             Correction::Reverse(_) => "Reverse a transaction",
             Correction::Recategorize(_) => "Recategorize a transaction",
             Correction::Undo { .. } => "Undo a recorded change",
+            Correction::Reconciliation { change } => change.title(),
             Correction::Bookkeeping { change } => match change {
+                Bookkeeping::StripeCollection(StripeCollection::ReportEvidence { .. }) => {
+                    "Record reported Stripe evidence"
+                }
+                Bookkeeping::StripeCollection(StripeCollection::ReconcilePayout { .. }) => {
+                    "Reconcile a Stripe payout"
+                }
+                Bookkeeping::StripeCollection(StripeCollection::ReconcileRefund { .. }) => {
+                    "Reconcile a Stripe refund"
+                }
                 Bookkeeping::Counterparty(Party::Create { .. }) => "Create a customer or vendor",
                 Bookkeeping::Counterparty(Party::Associate { .. }) => {
                     "Link a customer or vendor to a transaction"
                 }
+                Bookkeeping::Counterparty(Party::Amend { .. }) => "Update a customer or vendor",
+                Bookkeeping::Counterparty(Party::Archive { .. }) => "Archive a customer or vendor",
                 Bookkeeping::Project(Project::Create { .. }) => "Create a project",
+                Bookkeeping::Project(Project::Archive { .. }) => "Archive a project",
+                Bookkeeping::Project(Project::Budget { .. }) => "Set a project budget",
+                Bookkeeping::Classify(_) => "Classify an account for cash reporting",
                 Bookkeeping::Project(Project::Split { .. }) => {
                     "Allocate a posted entry to projects"
                 }
@@ -640,6 +665,14 @@ pub fn approve(
                     }
                     let active = Company::bind(tx.read(), company.clone())?;
                     change.clone().apply(tx, actor, &active)?
+                }
+                Correction::Reconciliation { change } => {
+                    if actor.agent_uri() == Some(proposal.proposer_uri.as_str()) {
+                        return Err(CliError::Forbidden(
+                            "a proposer cannot approve their reconciliation request".into(),
+                        ));
+                    }
+                    change.apply(tx, actor, scope.slug())?
                 }
                 Correction::Undo { receipt } => {
                     let outcome = AgentReceiptUndo::load(&scope, *receipt)?.apply(

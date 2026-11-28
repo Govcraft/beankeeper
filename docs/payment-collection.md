@@ -64,3 +64,62 @@ Writes require ledger posting authority. The status and reporting tools
 appear on the read-only surface. Inspect provider IDs, timestamps, accounting
 amounts, and journal references through the tools. Raw payloads and provider
 credentials stay in the trusted host.
+
+## Reconcile data read by an agent
+
+Connect Stripe's official MCP to the agent and have it read the correct Stripe
+account. On Stripe, review and approve any requested write individually. The
+reconciliation below only needs Stripe reads. It works without a Beankeeper
+webhook receiver or Stripe credentials on the Beankeeper host.
+
+Use `collection_report_evidence` or `bk collection report-evidence --evidence
+JSON` in the selected company. Each report uses `facts` with `account`, `live`,
+`date`, `currency`, and a positive `amount_minor`. Normalize timestamps to the
+UTC calendar date. Use Stripe's payout arrival date for a payout. Supply the
+actual dispute balance movement date and direction for a dispute. Example:
+
+```json
+{
+  "kind": "payment",
+  "facts": {
+    "account": "acct_example", "live": true, "date": "2026-11-15",
+    "currency": "USD", "amount_minor": 15000
+  },
+  "payment": "pi_example",
+  "target": {
+    "type": "invoice", "invoice": "<Beankeeper invoice ID>",
+    "clearing_account": "1150"
+  }
+}
+```
+
+For a managed checkout, give `target` as `{"type":"checkout","collection":"…",
+"session":"cs_…"}`. For a paid payout, use `kind: payout`, the `payout` ID,
+its net amount, and `fees_minor` from the payout's balance transactions.
+For a succeeded refund use `kind: refund`, the `refund` and `payment` IDs,
+and the refunded amount. For a dispute use `kind: dispute`, the `dispute`
+and `payment` IDs, and `movement` of `withdrawn` or `reinstated`.
+Dispute reports leave the invoice allocation unchanged.
+
+Report the payments first, then record and reconcile any refunds. Report the
+payout and call `collection_reconcile_payout` with its exact payment and refund
+IDs, fees, and ledger accounts. A payment can settle in one payout, and refunds
+cannot exceed the original receipt. With approval-only access, submitting a
+report or reconciliation returns a pending request for independent approval.
+Owners can review it with `txn_proposals` and approve or reject it with the
+usual proposal tools or Desktop review.
+
+Match the payout's bank entry to the actual feed item with `bank_feed_link`
+or mark that exact debit from the imported bank statement and complete the
+reconciliation. Use the existing payout journal when recording the bank match
+to avoid a duplicate deposit. An agent-reported payout remains in
+`collection_exceptions` until the bank evidence covers the entire debit.
+
+The status tools expose `source`, `original_source`, and `signed_conflict`.
+A matching signed delivery can confirm an agent report. A conflicting signed
+delivery creates a review exception without changing the posted journal.
+Resolve conflicting evidence before further reconciliation. Read the journal's
+initial source in its evidence audit record. `verify` checks Stripe evidence
+provenance against the audit chain.
+
+[Stripe's official MCP server](https://docs.stripe.com/mcp)

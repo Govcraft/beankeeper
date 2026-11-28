@@ -1,6 +1,6 @@
 ---
 name: beankeeper
-version: 0.42.0
+version: 0.43.0
 description: >
   This skill should be used when interacting with the beankeeper accounting system
   via the `bk` CLI or MCP server. Use when the user asks to "record a transaction", "post an entry",
@@ -564,7 +564,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk setup book-update` | Record a new profile revision in an active setup session |
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
-| `bk collection create-link/apply/show/exceptions/reconcile-payout/payouts/reconcile-refund/refunds/disputes` | Reconcile hosted Stripe collections against invoices and verified processor evidence |
+| `bk collection create-link/apply/report-evidence/show/exceptions/reconcile-payout/payouts/reconcile-refund/refunds/disputes` | Reconcile hosted Stripe collections against invoices and verified processor evidence |
 | `bk collection resolve-receipt` | Post a freshly authenticated receipt deferred by a period lock |
 | `bk account create/list/show/rename/classify/delete` | Manage chart of accounts |
 | `bk fixed-asset register/show/list/preview/depreciate/dispose` | Manage a fixed asset register and book depreciation |
@@ -582,7 +582,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk txn recategorize` | Move one posted line between accounts and return a receipt for one-step undo. |
 | `bk txn show ID` | Display a single transaction with entries, their cleared/remaining amounts and individual clearings |
 | `bk bank-feed connect/disconnect/sync` | Map a Plaid account, disconnect it, or poll it using host credentials. Sync stages activity for review. |
-| `bk bank-feed show/list/review` | Inspect the connection and staged transactions before choosing a match. |
+| `bk bank-feed connections/show/list/review` | Inspect the connection and staged transactions before choosing a match. |
 | `bk bank-feed post/link` | Submit a reviewed revision for posting or match it to an existing journal. |
 | `bk txn import` | Import OFX/CSV bank statements or JSON journal batches |
 | `bk schedule create/list/run/cancel` | Manage pending recurring templates and post due occurrences |
@@ -959,8 +959,10 @@ when translating the owner's answer to a setting.
 | For this task | Start here |
 | --- | --- |
 | Assign imported income and expenses to a project | Find or create the customer and vendors using `counterparty_list` and `counterparty_create`. Use `counterparty_associate` to link their journals. Create the project and use `txn_show` to find the posted income and expense entry IDs. Apply exact amounts in minor units with `project_split`, then check `project_report`. In proposal-only mode, wait for approval before using the new record or allocation. |
+| Maintain vendor terms, projects, or cash classifications | Use `counterparty_amend` to fix directory details, `project_budget` to set a monthly expense target, and `account_classify` for cash-flow reporting. For obsolete records, use `counterparty_archive` or `project_archive` to retain their history. In proposal-only mode, submit the request and offer the review link. |
+| Reconcile activity from Stripe MCP | Read the paid payout and its balance transactions. Use `collection_report_evidence` for payments, refunds, payouts and dispute movements. Reconcile refunds and the payout, then match the deposit to bank evidence and check `collection_exceptions`. Review any Stripe write individually with the owner. [Stripe collection workflow](https://github.com/Govcraft/beankeeper/blob/main/docs/payment-collection.md#reconcile-data-read-by-an-agent) |
 | Invoice a customer or record a vendor bill | Identify the counterparty using `counterparty_list`. Draft and issue with `document_draft` and `document_issue`, then use `document_allocate` for a posted payment and `document_aging` for due-date balances. [Invoices and bills](references/commands.md#invoices-and-bills) |
-| Reconcile new bank activity | Use `bank_feed_list` and `bank_feed_review` to inspect staged revisions. Link an existing journal with `bank_feed_link`, or post or propose the reviewed entry with `bank_feed_post`. Connection administration uses the host's Plaid credentials and signed admin authority. [Bank feeds](https://github.com/Govcraft/beankeeper/blob/main/docs/bank-feeds.md) |
+| Reconcile new bank activity | Discover authorized feeds with `bank_feed_connections` and stage updates with `bank_feed_sync`. Use `bank_feed_list` and `bank_feed_review` to inspect staged revisions. Link an existing journal with `bank_feed_link`, or post or propose the reviewed entry with `bank_feed_post`. Connection administration uses the host's Plaid credentials and signed admin authority. [Bank feeds](https://github.com/Govcraft/beankeeper/blob/main/docs/bank-feeds.md) |
 | Collect payment or pay a vendor | Use `collection_create_link` for an issued invoice and verified Stripe evidence to reconcile receipts, payouts and refunds. For vendor payments, preview and draft the instruction, obtain signed approval, then use a separate dispatch grant. Inspect uncertain provider results by lookup using the original instruction. [Stripe collection](https://github.com/Govcraft/beankeeper/blob/main/docs/payment-collection.md) · [Vendor payments](https://github.com/Govcraft/beankeeper/blob/main/docs/disbursements.md) · [Wise bridge](https://github.com/Govcraft/beankeeper/blob/main/docs/wise-bridge.md) |
 | Review costs, assets or stock | Use `project_report` for profitability and unbilled costs, `expense_claim_submit` to route a claim for review, `fixed_asset_preview` to preview book depreciation, and `inventory_valuation` for FIFO stock value. [Projects](references/commands.md#project-accounting) · [Expense claims](https://github.com/Govcraft/beankeeper/blob/main/docs/expense-claims.md) · [Fixed assets](https://github.com/Govcraft/beankeeper/blob/main/docs/fixed-assets.md) · [Inventory](https://github.com/Govcraft/beankeeper/blob/main/docs/inventory.md) |
 | Prepare payroll or tax records | Preview aggregate payroll with `payroll_preview`, import with the reviewed digest, and match actual withdrawals with `payroll_fund`. Use `tax_report` for UK GBP invoice VAT, and `contractor_tax_worksheet` for the 2025 US Form 1099-NEC worksheet. Keep W-9 materials on the configured private host path. [Payroll](references/commands.md#import-finalized-payroll) · [VAT](https://github.com/Govcraft/beankeeper/blob/main/docs/document-vat.md) · [Contractor tax](https://github.com/Govcraft/beankeeper/blob/main/docs/contractor-tax.md) |
@@ -1113,13 +1115,19 @@ limits the clearings to that reference. Use `entry_ids` or `references` to
 limit the selection further. The CLI equivalents are repeatable `--entry-id`
 or `--reference`.
 
+Use `txn_clear` and `reconcile_statement` with the managed agent's posting
+access. In proposal-only mode, show the pending proposal ID and ask the owner
+to review the exact entries and totals in the Desktop review queue. Record
+that the statement is complete only after approval. Refresh the evidence and
+submit a new proposal if entries or totals change.
+
 The workflow adds the selected signed clearings dated in the statement month
 to the prior completed statement balance. The first run uses net reconciled
 clearings dated before the month as the opening. If a match succeeds, tell the
 owner the ending balance and receipt. Offer the Desktop link if they want to
 inspect the activity. Use `audit_undo` or `bk audit undo RECEIPT` to unlock a
 completed statement. The `close_period` option also locks posting for the
-company and requires `ledger/admin` both to set and to restore its cutoff.
+company. It requires direct `ledger/reconcile` and `ledger/admin` to set the cutoff. Restoring the cutoff also requires `ledger/admin`.
 
 On `STATEMENT_DISCREPANCY`, use the expected and actual ending balances and
 the exact delta in `details` to help locate unmatched activity. Beankeeper

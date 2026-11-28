@@ -589,7 +589,8 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
-| `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect` | Administer host-authorized bank and card feeds through the audited workflow |
+| `bank_feed_connect`, `bank_feed_disconnect` | Manage authorized bank and card feed mappings with owner access |
+| `bank_feed_connections`, `bank_feed_sync` | Discover an authorized feed and stage its new provider transactions |
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
@@ -627,8 +628,9 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `collection_apply` | Authenticate and apply a signed Stripe delivery from the trusted host spool |
 | `collection_resolve_receipt` | Post a freshly authenticated receipt blocked solely by a closed period on an explicit open date |
 | `collection_show`, `collection_exceptions` | Inspect collection status and review exceptions |
-| `collection_reconcile_payout`, `collection_payouts` | Reconcile signed net deposits and list payout evidence |
-| `collection_reconcile_refund`, `collection_refunds` | Post approved verified refunds and list their evidence |
+| `collection_report_evidence` | Record payment, payout, refund or dispute facts read through Stripe MCP for direct posting or independent review |
+| `collection_reconcile_payout`, `collection_payouts` | Reconcile Stripe net deposits and list evidence and bank confirmation |
+| `collection_reconcile_refund`, `collection_refunds` | Post or propose a recorded Stripe refund and list its evidence |
 | `collection_disputes` | Inspect signed dispute movements pending accounting review |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
@@ -1672,6 +1674,13 @@ restore the promoted clearings and, with admin authority, restore the prior
 cutoff if the statement still controls it. Undo later statements for the same
 account and currency first. Statement history remains available in
 `reconcile list`, which also shows account months that still need a statement.
+
+Managed agents with posting access can run `txn_clear` and
+`reconcile_statement`. The existing `ledger/reconcile` grant also supports
+both in direct mode. In proposal-only mode, inspect the exact clearings and
+totals in the review queue before approval. A change to those details makes
+the old proposal stale. Combining a statement with a company period close
+requires direct `ledger/reconcile` and `ledger/admin` access.
 
 Agents can use the equivalent `reconcile_statement`, `reconcile_list` and
 `audit_undo` MCP tools. Results include exact amounts and optional links to

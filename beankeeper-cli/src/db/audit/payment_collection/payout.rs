@@ -8,7 +8,11 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Actor, AuditEntity, CollectionOutcome, Db, ReadConn, record, validation};
+use super::{
+    Actor, AuditEntity, CollectionOutcome, ReadConn, record,
+    reported::{self, Facts, Origin, ReviewedSource, Source},
+    validation,
+};
 use crate::{
     db::{
         self, PostEntryParams, PostResult, PostTransactionParams,
@@ -18,7 +22,6 @@ use crate::{
         ids::TransactionId,
     },
     error::CliError,
-    identity::{Granted, Post},
     payments::stripe::{
         StripePaymentIntentId, StripePayoutId, StripeRefundId, VerifiedStripeEvent,
     },
@@ -34,6 +37,10 @@ pub struct PayoutView {
     fees_minor: Option<i64>,
     gross_minor: Option<i64>,
     refunds_minor: Option<i64>,
+    reported_fees_minor: Option<i64>,
+    #[serde(flatten)]
+    provenance: ReviewedSource,
+    bank_confirmed: bool,
 }
 
 pub(super) fn ingest(
@@ -50,23 +57,42 @@ pub(super) fn ingest(
     else {
         return Ok(CollectionOutcome::Unrelated);
     };
+    let facts = Facts::signed(event, arrival.date_naive(), *amount)?;
+    record_evidence(tx, actor, company, payout, &facts, Origin::Signed(event))
+}
+
+pub(super) fn record_evidence(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    payout: &StripePayoutId,
+    facts: &Facts,
+    origin: Origin<'_>,
+) -> Result<CollectionOutcome, CliError> {
     Company::bind(tx.read(), company.clone())?;
     let key = payout.to_string();
-    let provider = event.account().to_string();
-    let date = arrival.date_naive();
-    let currency = amount.money().currency();
-    let net: PositiveMinorUnits = amount.money().amount().try_into()?;
-    if let Some((old_provider, live, old_date, old_currency, old_net)) = tx.read().query_row(
-        "SELECT account,live,arrive_on,currency,net FROM stripe_payouts WHERE company_slug=?1 AND payout=?2",
-        params![company, key], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, NaiveDate>(2)?, row.get::<_, Currency>(3)?, row.get::<_, PositiveMinorUnits>(4)?)),
-    ).optional()? {
-        return if (old_provider, live, old_date, old_currency, old_net) == (provider, event.mode().is_live(), date, currency, net) {
-            Ok(CollectionOutcome::Duplicate)
-        } else {
-            Err(validation("a recorded Stripe payout has different evidence"))
-        };
+    let provider = facts.account.to_string();
+    let date = NaiveDate::from(facts.date);
+    let fees = origin.fees();
+    if let Some(stored) = find_evidence(tx.read(), company, payout)? {
+        let agrees = (
+            stored.account,
+            stored.live,
+            stored.date,
+            stored.currency,
+            stored.net,
+        ) == (
+            provider,
+            facts.live,
+            date,
+            facts.currency,
+            facts.amount_minor,
+        ) && (origin.source() == Source::Signed
+            || stored.reported_fees.is_none()
+            || stored.reported_fees == fees);
+        return reported::compare(tx, actor, company, &key, (stored.source, origin, agrees));
     }
-    let delivery = event.id().to_string();
+    let delivery = origin.delivery(&key);
     record(
         tx,
         actor,
@@ -74,15 +100,17 @@ pub(super) fn ingest(
         AuditEntity::StripePayout,
         &key,
         &json!({
-            "provider":provider, "live":event.mode().is_live(),"date":date, "currency":currency, "net":net, "delivery":delivery,
+            "provider":provider, "live":facts.live,"date":date, "currency":facts.currency,
+            "net":facts.amount_minor, "delivery":delivery, "source":origin.source(), "reported_fees":fees,
         }),
     )?;
-    tx.insert("INSERT INTO stripe_payouts(company_slug,payout,account,live,arrive_on,currency,net,delivery)
-        VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![company, key, provider, event.mode().is_live(), date, currency, net, delivery])?;
+    tx.insert("INSERT INTO stripe_payouts(company_slug,payout,account,live,arrive_on,currency,net,delivery,source,reported_fees)
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![company, key, provider, facts.live, date, facts.currency, facts.amount_minor, delivery, origin.source().code(), fees])?;
     Ok(CollectionOutcome::PayoutRecorded(payout.clone()))
 }
 
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PayoutManifest {
     pub payout: StripePayoutId,
@@ -100,26 +128,13 @@ pub struct PayoutManifest {
     pub fee_account: AccountCode,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct PayoutPosting {
     transaction: TransactionId,
     existing: bool,
 }
 
-pub(crate) fn reconcile(
-    db: &Db,
-    actor: &Actor,
-    company: &CompanySlug,
-    manifest: &PayoutManifest,
-) -> Result<PayoutPosting, CliError> {
-    Granted::<Post>::with_db(db, actor, |grant| {
-        grant.mutate("sp_stripe_payout_reconcile", |tx, actor| {
-            reconcile_in_scope(tx, actor, company, manifest)
-        })
-    })
-}
-
-fn reconcile_in_scope(
+pub(in crate::db::audit) fn reconcile_in_scope(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &CompanySlug,
@@ -130,27 +145,22 @@ fn reconcile_in_scope(
     let selection = Selection::try_from(manifest)?;
     let terms = selection.snapshot(manifest);
     let encoded_terms = terms.to_string();
-    let evidence = payout_evidence(tx.read(), company, &manifest.payout)?;
-    if let Some((transaction, snapshot)) = tx.read().query_row(
-        "SELECT posting,manifest FROM stripe_payout_postings WHERE company_slug=?1 AND payout=?2",
-        params![company, key], |row| Ok((row.get::<_, TransactionId>(0)?, row.get::<_, String>(1)?)),
-    ).optional()? {
-        if snapshot == encoded_terms {
-            return Ok(PayoutPosting { transaction, existing: true });
-        }
-        return Err(validation("payout is already reconciled using different terms"));
-    }
-    let (gross, clearing) = group_receipts(tx.read(), company, &evidence, &selection.payments)?;
-    let refunded = group_refunds(tx.read(), company, &evidence, &clearing, &selection.refunds)?;
-    let net = gross
-        .checked_sub(refunded)
-        .and_then(|total| total.checked_sub(Amount::from(manifest.fees_minor)))
-        .ok_or_else(|| validation("payout totals exceed supported range"))?;
-    if net != Amount::from(evidence.net) {
+    let evidence = find_evidence(tx.read(), company, &manifest.payout)?.ok_or_else(|| {
+        CliError::NotFound("no evidence has been recorded for this Stripe payout".into())
+    })?;
+    if evidence
+        .reported_fees
+        .is_some_and(|fees| fees != manifest.fees_minor)
+    {
         return Err(validation(
-            "Stripe payout does not equal the selected gross receipts less fees and refunds",
+            "payout fees differ from the reported balance transaction fees",
         ));
     }
+    if let Some(existing) = known_posting(tx.read(), company, &key, &encoded_terms)? {
+        return Ok(existing);
+    }
+    let (gross, refunded, clearing) =
+        validate_selection(tx.read(), company, &evidence, manifest, &selection)?;
     validate_account(&scope, &manifest.bank_account, AccountType::Asset)?;
     validate_account(&scope, &manifest.fee_account, AccountType::Expense)?;
     if clearing == manifest.bank_account.as_str() {
@@ -167,10 +177,12 @@ fn reconcile_in_scope(
         clearing,
     )?;
     let reference = format!("stripe-payout:{key}");
+    let source = settlement_source(tx.read(), company, evidence.source, &selection)?;
+    let metadata = source.metadata();
     let posting = PostTransactionParams {
         company_slug: company,
         description: "Stripe payout and processor fees",
-        metadata: None,
+        metadata: Some(&metadata),
         currency: evidence.currency,
         date: evidence.date,
         entries: &entries,
@@ -191,7 +203,7 @@ fn reconcile_in_scope(
         company,
         AuditEntity::StripePayoutPosting,
         &key,
-        &json!({"posting":transaction, "gross": gross.minor_units(), "refunds":refunded.minor_units(), "terms": terms}),
+        &json!({"posting":transaction, "gross": gross.minor_units(), "refunds":refunded.minor_units(), "terms": terms, "source":source}),
     )?;
     tx.insert(
         "INSERT INTO stripe_payout_postings(company_slug,payout,posting,gross,fees,refunds,manifest)
@@ -222,6 +234,50 @@ fn reconcile_in_scope(
         transaction,
         existing: false,
     })
+}
+
+fn known_posting(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    payout: &str,
+    terms: &str,
+) -> Result<Option<PayoutPosting>, CliError> {
+    reader.query_row(
+        "SELECT posting,manifest FROM stripe_payout_postings WHERE company_slug=?1 AND payout=?2",
+        params![company, payout],
+        |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
+    ).optional()?.map(|(transaction, stored)| {
+        if stored == terms {
+            Ok(PayoutPosting { transaction, existing: true })
+        } else {
+            Err(validation("payout is already reconciled using different terms"))
+        }
+    }).transpose()
+}
+
+fn validate_selection(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    evidence: &Evidence,
+    manifest: &PayoutManifest,
+    selection: &Selection,
+) -> Result<(Amount, Amount, String), CliError> {
+    reported::ensure_no_conflict(reader, company, &manifest.payout.to_string())?;
+    for member in selection.payments.iter().chain(&selection.refunds) {
+        reported::ensure_no_conflict(reader, company, member)?;
+    }
+    let (gross, clearing) = group_receipts(reader, company, evidence, &selection.payments)?;
+    let refunded = group_refunds(reader, company, evidence, &clearing, &selection.refunds)?;
+    let net = gross
+        .checked_sub(refunded)
+        .and_then(|total| total.checked_sub(Amount::from(manifest.fees_minor)))
+        .ok_or_else(|| validation("payout totals exceed supported range"))?;
+    if net != Amount::from(evidence.net) {
+        return Err(validation(
+            "Stripe payout does not equal the selected gross receipts less fees and refunds",
+        ));
+    }
+    Ok((gross, refunded, clearing))
 }
 
 struct Selection {
@@ -318,16 +374,51 @@ struct Evidence {
     date: NaiveDate,
     currency: Currency,
     net: PositiveMinorUnits,
+    source: Source,
+    reported_fees: Option<i64>,
 }
 
-fn payout_evidence(
+fn find_evidence(
     reader: ReadConn<'_>,
     company: &CompanySlug,
     payout: &StripePayoutId,
-) -> Result<Evidence, CliError> {
-    reader.query_row("SELECT account,live,arrive_on,currency,net FROM stripe_payouts WHERE company_slug=?1 AND payout=?2",
-        params![company, payout.to_string()], |row| Ok(Evidence { account:row.get(0)?, live:row.get(1)?, date:row.get(2)?, currency:row.get(3)?, net:row.get(4)? }))
-        .optional()?.ok_or_else(|| CliError::NotFound("no signed evidence has been recorded for this Stripe payout".into()))
+) -> Result<Option<Evidence>, CliError> {
+    reader.query_row("SELECT account,live,arrive_on,currency,net,source,reported_fees FROM stripe_payouts WHERE company_slug=?1 AND payout=?2",
+        params![company, payout.to_string()], |row| Ok((
+            row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get::<_, String>(5)?,row.get(6)?,
+        )))
+        .optional()?.map(|(account,live,date,currency,net,source,reported_fees)| {
+            Ok(Evidence { account,live,date,currency,net,source:Source::from_row(&source)?,reported_fees })
+        }).transpose()
+}
+
+fn settlement_source(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    payout_source: Source,
+    selection: &Selection,
+) -> Result<Source, CliError> {
+    if payout_source == Source::AgentReported {
+        return Ok(payout_source);
+    }
+    let payments = serde_json::to_string(&selection.payments).map_err(validation)?;
+    let refunds = serde_json::to_string(&selection.refunds).map_err(validation)?;
+    let agent: bool = reader.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM collection_events e JOIN invoice_collections c ON c.id=e.collection
+           WHERE c.company_slug=?1 AND e.source='agent_reported' AND e.payment IN (SELECT value FROM json_each(?2))
+           UNION ALL
+           SELECT 1 FROM stripe_refunds f WHERE f.company_slug=?1 AND f.source='agent_reported'
+             AND f.refund IN (SELECT value FROM json_each(?3))
+        )",
+        params![company, payments, refunds],
+        |row| row.get(0),
+    )?;
+    Ok(if agent {
+        Source::AgentReported
+    } else {
+        Source::Signed
+    })
 }
 
 fn group_receipts(
@@ -375,7 +466,7 @@ fn group_refunds(
         JOIN collection_events e ON e.posting=r.original_payment
         JOIN invoice_collections c ON c.id=e.collection
         WHERE r.company_slug=?1 AND f.account=?2 AND f.live=?3 AND f.currency=?4
-        AND r.refund=?5 AND f.occurred<=?6 AND c.clearing_account=?7
+        AND r.refund=?5 AND f.occurred<=?6 AND r.booked_on<=?6 AND c.clearing_account=?7
         AND NOT EXISTS(SELECT 1 FROM stripe_payout_refunds m WHERE m.refund=r.refund)",
     )?;
     refunds.iter().try_fold(Amount::ZERO, |total, refund| {
@@ -408,7 +499,7 @@ pub(crate) fn report(
     reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<Vec<PayoutView>, CliError> {
-    let mut statement = reader.prepare_cached("SELECT p.payout,p.arrive_on,p.currency,p.net,r.posting,r.fees,r.gross,r.refunds
+    let mut statement = reader.prepare_cached("SELECT p.payout,p.arrive_on,p.currency,p.net,r.posting,r.fees,r.gross,r.refunds,p.source,p.reported_fees
         FROM stripe_payouts p LEFT JOIN stripe_payout_postings r ON p.company_slug=r.company_slug AND p.payout=r.payout
         WHERE p.company_slug=?1 ORDER BY p.arrive_on DESC,p.payout LIMIT 100")?;
     let rows = statement.query_map([company], |row| {
@@ -421,6 +512,8 @@ pub(crate) fn report(
             row.get(5)?,
             row.get(6)?,
             row.get(7)?,
+            row.get::<_, String>(8)?,
+            row.get(9)?,
         ))
     })?;
     rows.map(|row| {
@@ -433,7 +526,10 @@ pub(crate) fn report(
             fees_minor,
             gross_minor,
             refunds_minor,
+            original_source,
+            reported_fees_minor,
         ) = row?;
+        let original_source = Source::from_row(&original_source)?;
         Ok(PayoutView {
             payout: key.parse().map_err(validation)?,
             arrive_on,
@@ -443,7 +539,60 @@ pub(crate) fn report(
             fees_minor,
             gross_minor,
             refunds_minor,
+            reported_fees_minor,
+            provenance: original_source.review(reader, company, &key)?,
+            bank_confirmed: bank_confirmed(reader, company, &key)?,
         })
     })
     .collect()
+}
+
+/// Independent bank evidence must cover the payout's exact debit in its account.
+fn bank_confirmed(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    payout: &str,
+) -> Result<bool, CliError> {
+    Ok(reader.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM stripe_payout_postings r JOIN stripe_payouts p USING(company_slug,payout)
+            JOIN entries e ON e.company_slug=r.company_slug AND e.transaction_id=r.posting
+            JOIN transactions t ON t.company_slug=e.company_slug AND t.id=e.transaction_id
+            WHERE r.company_slug=?1 AND r.payout=?2 AND e.direction='debit'
+              AND e.account_code=json_extract(r.manifest,'$.bank_account')
+              AND e.amount=p.net AND t.currency=p.currency AND (
+                EXISTS(SELECT 1 FROM bank_feed_items i JOIN bank_feed_connections f ON f.id=i.connection_id
+                       WHERE i.company_slug=r.company_slug AND i.transaction_id=r.posting
+                         AND i.status='posted' AND i.resolved_revision=i.revision AND i.amount_minor=p.net
+                         AND f.company_slug=r.company_slug AND f.account_code=e.account_code AND f.currency=p.currency
+                         AND (f.environment='production')=p.live)
+                OR e.amount=(SELECT COALESCE(SUM(c.amount),0) FROM entry_clearings c
+                       WHERE c.entry_id=e.id AND c.company_slug=e.company_slug
+                         AND c.status='reconciled')
+            )
+        )",
+        params![company, payout],
+        |row| row.get(0),
+    )?)
+}
+
+pub(super) fn unconfirmed(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+) -> Result<Vec<super::CollectionException>, CliError> {
+    let mut query = reader.prepare_cached(
+        "SELECT payout FROM stripe_payouts WHERE company_slug=?1 AND source='agent_reported'
+         ORDER BY arrive_on DESC,payout LIMIT 100",
+    )?;
+    let ids = query.query_map([company], |row| row.get::<_, String>(0))?;
+    let mut unconfirmed = Vec::new();
+    for id in ids {
+        let id = id?;
+        if !bank_confirmed(reader, company, &id)? {
+            unconfirmed.push(super::CollectionException::unconfirmed_payout(
+                id.parse().map_err(validation)?,
+            ));
+        }
+    }
+    Ok(unconfirmed)
 }

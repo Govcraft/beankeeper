@@ -13,10 +13,14 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::model::{
-    FeedDelta, FeedError, FeedTransaction, ProviderAccountKey, ProviderTransactionKey,
-    RemovedTransaction, SignedMinor, SyncCursor,
+use super::{
+    FeedConnectionId,
+    model::{
+        FeedDelta, FeedError, FeedTransaction, ProviderAccountKey, ProviderTransactionKey,
+        RemovedTransaction, SignedMinor, SyncCursor,
+    },
 };
+use crate::db::companies::CompanySlug;
 
 const MAX_PAGES: usize = 100;
 const MAX_ROWS: usize = 20_000;
@@ -104,33 +108,80 @@ pub(super) struct PlaidProvider {
     client: Client,
     endpoint: &'static str,
     account: ProviderAccountKey,
-    credentials: Credentials,
+    credentials: PlaidCredentials,
 }
 
-struct Credentials {
+/// Validated Plaid credentials. Secret fields cannot be serialized or formatted.
+pub struct PlaidCredentials {
     client_id: SecretString,
     secret: SecretString,
     access_token: SecretString,
 }
 
-impl PlaidProvider {
-    pub(super) fn from_host(
-        environment: PlaidEnvironment,
-        account: ProviderAccountKey,
-    ) -> Result<Self, FeedError> {
-        fn host_secret(key: &str) -> Result<SecretString, FeedError> {
-            let value = std::env::var(key).map_err(|_| FeedError::Credentials)?;
-            if value.trim().is_empty() || value.len() > 4096 {
-                return Err(FeedError::Credentials);
-            }
-            Ok(value.into())
-        }
+/// The trusted host's credential source for one authorized feed mapping.
+///
+/// Returning an error prevents falling back to process environment credentials.
+pub trait PlaidCredentialSource: Send + Sync + 'static {
+    /// Retrieve credentials for this company and feed.
+    ///
+    /// # Errors
+    /// Reports a missing or unavailable private host credential.
+    fn credentials(
+        &self,
+        company: &CompanySlug,
+        feed: &FeedConnectionId,
+    ) -> Result<PlaidCredentials, FeedError>;
+}
 
-        let credentials = Credentials {
+impl TryFrom<&SecretString> for PlaidCredentials {
+    type Error = FeedError;
+
+    fn try_from(value: &SecretString) -> Result<Self, FeedError> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input<'a> {
+            client_id: &'a str,
+            secret: &'a str,
+            access_token: &'a str,
+        }
+        let input: Input<'_> = serde_json::from_str(value.expose_secret())
+            .map_err(|_| FeedError::InvalidCredentials)?;
+        Ok(Self {
+            client_id: validate_secret(input.client_id)?,
+            secret: validate_secret(input.secret)?,
+            access_token: validate_secret(input.access_token)?,
+        })
+    }
+}
+
+fn validate_secret(value: &str) -> Result<SecretString, FeedError> {
+    if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_whitespace) {
+        return Err(FeedError::InvalidCredentials);
+    }
+    Ok(value.into())
+}
+
+impl PlaidCredentials {
+    pub(super) fn from_environment() -> Result<Self, FeedError> {
+        fn host_secret(key: &str) -> Result<SecretString, FeedError> {
+            let value = std::env::var(key).map_err(|_| FeedError::MissingCredentials)?;
+            let value: SecretString = value.into();
+            validate_secret(value.expose_secret())
+        }
+        Ok(Self {
             client_id: host_secret("BK_PLAID_CLIENT_ID")?,
             secret: host_secret("BK_PLAID_SECRET")?,
             access_token: host_secret("BK_PLAID_ACCESS_TOKEN")?,
-        };
+        })
+    }
+}
+
+impl PlaidProvider {
+    pub(super) fn new(
+        environment: PlaidEnvironment,
+        account: ProviderAccountKey,
+        credentials: PlaidCredentials,
+    ) -> Result<Self, FeedError> {
         let client = Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
@@ -160,7 +211,9 @@ impl BankFeedProvider for PlaidProvider {
         let request = PlaidRequest {
             access_token: self.credentials.access_token.expose_secret(),
             account_id: self.account.as_str(),
-            cursor: cursor.map(SyncCursor::as_str),
+            cursor: cursor
+                .map(SyncCursor::as_str)
+                .filter(|value| !value.is_empty()),
             count: 500,
         };
         let response = self
@@ -291,11 +344,30 @@ fn parse_page(bytes: &[u8], account: &ProviderAccountKey) -> Result<Page, FeedEr
         added: Vec<PlaidRow>,
         modified: Vec<PlaidRow>,
         removed: Vec<Removal>,
-        next_cursor: SyncCursor,
+        next_cursor: String,
         has_more: bool,
     }
     let response: Response =
         serde_json::from_slice(bytes).map_err(|_| FeedError::InvalidResponse)?;
+    // Plaid returns an empty cursor while an Item's first transaction pull
+    // is pending. Preserve the ledger's cursor instead of treating it as data.
+    if response.next_cursor.is_empty() {
+        return Err(
+            if response.has_more
+                || !response.added.is_empty()
+                || !response.modified.is_empty()
+                || !response.removed.is_empty()
+            {
+                FeedError::InvalidResponse
+            } else {
+                FeedError::NotReady
+            },
+        );
+    }
+    let cursor = response
+        .next_cursor
+        .parse()
+        .map_err(|_| FeedError::InvalidResponse)?;
     Ok(Page {
         delta: FeedDelta {
             rows: response
@@ -314,7 +386,7 @@ fn parse_page(bytes: &[u8], account: &ProviderAccountKey) -> Result<Page, FeedEr
                 })
                 .collect(),
         },
-        cursor: response.next_cursor,
+        cursor,
         has_more: response.has_more,
     })
 }
@@ -344,6 +416,43 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque};
 
     use super::*;
+
+    #[test]
+    fn an_initial_pull_without_a_cursor_is_not_ready() -> Result<(), FeedError> {
+        let account = "account-fixture".parse()?;
+        let bytes = br#"{"added":[],"modified":[],"removed":[],"next_cursor":"","has_more":false}"#;
+        assert!(matches!(
+            parse_page(bytes, &account),
+            Err(FeedError::NotReady)
+        ));
+        let invalid =
+            br#"{"added":[],"modified":[],"removed":[],"next_cursor":"","has_more":true}"#;
+        assert!(matches!(
+            parse_page(invalid, &account),
+            Err(FeedError::InvalidResponse)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn authorization_errors_contain_no_provider_details() {
+        assert_eq!(
+            plaid_error(br#"{"error_code":"ITEM_LOGIN_REQUIRED","error_message":"private info"}"#),
+            FeedError::Credentials
+        );
+        assert!(!FeedError::Credentials.to_string().contains("private info"));
+        let invalid = SecretString::from(
+            r#"{"client_id":"fixture","secret":"large secret","access_token":"fixture"}"#,
+        );
+        assert!(matches!(
+            PlaidCredentials::try_from(&invalid),
+            Err(FeedError::InvalidCredentials)
+        ));
+        let valid = SecretString::from(
+            r#"{"client_id":"fixture","secret":"secret","access_token":"fixture"}"#,
+        );
+        assert!(PlaidCredentials::try_from(&valid).is_ok());
+    }
 
     #[test]
     fn plaid_outflows_use_exact_decimal_minor_units() {

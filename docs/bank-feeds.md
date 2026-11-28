@@ -34,7 +34,11 @@ reactivates that exact mapping and resumes from its previous cursor.
 
 ## Review and resolve
 
+List an owner's configured feed IDs and stage new revisions before reviewing.
+
 ```sh
+bk --company acme --json bank-feed connections
+bk --company acme --json bank-feed sync "$feed"
 bk --company acme --json bank-feed list "$feed"
 bk --company acme --json bank-feed review "$feed" "$item"
 bk --company acme --json bank-feed link "$feed" "$item" --revision 1 --transaction 42
@@ -54,19 +58,24 @@ marks a resolved row as requiring correction and preserves the original
 posting. A proposal for an outdated revision cannot be approved. Reject it and
 review the current provider row before proposing a replacement.
 
-In MCP, use `bank_feed_connect`, `bank_feed_sync` and
-`bank_feed_disconnect` to administer a connection. Send the company slug
-with each request. Connect takes the ledger account, Plaid account ID,
-currency and optional environment. Sync and disconnect take the feed ID.
-Signed callers need `ledger/admin`. The MCP host supplies Plaid credentials
-through its own environment. Tool arguments and results carry no API keys
-or access tokens.
+Use `bank_feed_connections` in MCP to discover the selected company's feed IDs.
+Call `bank_feed_sync` with the company and feed ID to stage new revisions. A
+normal posting or approval-mode connection can stage them. Refresh does not
+create a posting or a proposal. `bank_feed_connect` and `bank_feed_disconnect`
+continue to require owner administration. Tool arguments and results carry no
+API keys, cursor, or access tokens.
 
-Use `bank_feed_show`, `bank_feed_list`, `bank_feed_review`,
-`bank_feed_post` and `bank_feed_link` to work with staged transactions.
-Reads require read access when ledger enforcement applies. A direct
-bookkeeper can link an existing posting. A propose-only bookkeeper can
-request a posting for approval.
+Use `bank_feed_show`, `bank_feed_list` and `bank_feed_review` to inspect the
+staged transactions. Use `bank_feed_link` for a confirmed existing journal
+when the agent can post directly, or `bank_feed_post` to apply or propose the
+reviewed revision under the configured write mode.
+
+If credentials are missing, the owner must authorize the feed on the host.
+If Plaid reports that it is preparing transactions, retry the refresh later.
+If Plaid requests a new login, use Link in update mode, then update the
+credential if needed. A failed refresh never changes the cursor or stages
+partial data. Owners using Desktop can store the provider authorization through
+the local `bk bank-feed authorize` command in the native credential store.
 
 Backups preserve the mapping, cursor and staged rows on the restored accounting
 timeline. Credentials stay with the host. After restore, the next authorized

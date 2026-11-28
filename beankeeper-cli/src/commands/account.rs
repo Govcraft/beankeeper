@@ -6,7 +6,10 @@ use serde::{Serialize, Serializer};
 
 use crate::cli::{AccountCommand, Cli, OutputFormat, resolve_format};
 use crate::confirmation::{Confirmed, confirm_deletion};
-use crate::db::audit::account_rename::{self, RenameSubmission};
+use crate::db::audit::{
+    account_rename::{self, RenameSubmission},
+    corrections::bookkeeping::{Classification, Submission},
+};
 use crate::db::companies::{Company, CompanySlug};
 use crate::db::{self, AccountBalanceWindow, Db, accounts};
 use crate::error::CliError;
@@ -143,8 +146,7 @@ impl AccountRequest {
                 (company, AccountData::Rows(vec![row]))
             }
             Self::Classify(company, code, class) => {
-                let result =
-                    db::audit::cash_classification::submit(db, actor, &company, code, class)?;
+                let result = Classification { code, class }.submit(db, actor, &company)?;
                 (company, AccountData::Classify(result))
             }
             Self::Rename(company, code, name) => {
@@ -183,7 +185,7 @@ enum AccountData {
     Balances(Vec<db::AccountWithBalanceRow>, AccountBalanceWindow),
     Deleted(AccountCode),
     Rename(RenameSubmission),
-    Classify(db::audit::cash_classification::ClassificationSubmission),
+    Classify(Submission<db::audit::cash_classification::ClassificationSubmission>),
 }
 
 /// Result of an account operation, with the existing JSON data shape.
@@ -253,7 +255,13 @@ impl AccountResponse {
                 print!("{}", output::csv::render_accounts_with_balances(rows)?);
             }
             (_, AccountData::Rename(result)) => println!("{result}"),
-            (_, AccountData::Classify(result)) => println!("{result}"),
+            (_, AccountData::Classify(Submission::Applied(result))) => println!("{result}"),
+            (_, AccountData::Classify(Submission::Pending(pending))) => {
+                println!(
+                    "Proposed account classification {} for approval.",
+                    pending.id()
+                );
+            }
             (_, AccountData::Deleted(_)) => {}
         }
         if !cli.verbosity.quiet {

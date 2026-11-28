@@ -875,6 +875,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "bank_feed_disconnect",
     "bank_feed_show",
     "bank_feed_list",
+    "bank_feed_connections",
     "bank_feed_review",
     "bank_feed_post",
     "bank_feed_link",
@@ -896,6 +897,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "financial_summary",
     "collection_create_link",
     "collection_apply",
+    "collection_report_evidence",
     "collection_resolve_receipt",
     "collection_show",
     "collection_exceptions",
@@ -1692,6 +1694,7 @@ fn assert_collection_read_only_tools(names: &BTreeSet<&str>) {
     for write in [
         "collection_create_link",
         "collection_apply",
+        "collection_report_evidence",
         "collection_resolve_receipt",
         "collection_reconcile_refund",
         "collection_reconcile_payout",
@@ -1711,7 +1714,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 69);
+    assert_eq!(names.len(), 70);
     assert_collection_read_only_tools(&names);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
@@ -1734,6 +1737,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     for name in [
         "bank_feed_show",
         "bank_feed_list",
+        "bank_feed_connections",
         "bank_feed_review",
         "rule_list",
         "rule_match",
@@ -3420,7 +3424,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 69);
+    assert_eq!(names.len(), 70);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3609,7 +3613,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert!(names.contains("txn_reverse"));
     assert!(names.contains("audit_undo"));
     assert!(names.contains("txn_reconcile"));
-    for forbidden in ["txn_clear", "budget_set", "account_create"] {
+    assert!(names.contains("txn_clear"));
+    assert!(names.contains("reconcile_statement"));
+    for forbidden in ["budget_set", "account_create"] {
         assert!(!names.contains(forbidden));
     }
     let posted = writer.success("txn_post", &posting("enforced"))?;
@@ -3618,7 +3624,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 69);
+    assert_eq!(names.len(), 70);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

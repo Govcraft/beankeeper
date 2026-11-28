@@ -383,3 +383,242 @@ fn resolve_concurrently(books: &Books, spool: &Path) -> Result<Value, Box<dyn Er
     assert_eq!(first, second);
     Ok(first)
 }
+
+fn report_evidence(books: &Books, evidence: &Value) -> Result<Value, Box<dyn Error>> {
+    books.data(&[
+        "collection",
+        "report-evidence",
+        "--evidence",
+        &evidence.to_string(),
+    ])
+}
+
+fn rejected_report(books: &Books, evidence: &Value) -> TestResult {
+    let result = books
+        .command()?
+        .args([
+            "collection",
+            "report-evidence",
+            "--evidence",
+            &evidence.to_string(),
+        ])
+        .output()?;
+    assert!(!result.status.success());
+    Ok(())
+}
+
+fn facts(date: &str, amount_minor: i64) -> Value {
+    json!({"account":"acct_example","live":false,"date":date,"currency":"USD","amount_minor":amount_minor})
+}
+
+fn external_payment(books: &Books, number: &str) -> Result<(String, Value), Box<dyn Error>> {
+    books.data(&["account", "create", "1150", "Processor", "--type", "asset"])?;
+    let invoice = books.draft("invoice", number, 10_000)?;
+    books.issue(&invoice, "2026-01-01")?;
+    let evidence = json!({
+        "kind":"payment","facts":facts("2026-01-06",6000),"payment":"pi_agent",
+        "target":{"type":"invoice","invoice":invoice,"clearing_account":"1150"},
+    });
+    Ok((invoice, evidence))
+}
+
+#[test]
+fn agent_evidence_reuses_posting_checks_and_requires_a_bank_match() -> TestResult {
+    let books = Books::new()?;
+    let (_invoice, evidence) = external_payment(&books, "AGENT-STRIPE")?;
+    let applied = report_evidence(&books, &evidence)?;
+    assert_eq!(applied["status"], "payment_reported");
+    assert_eq!(report_evidence(&books, &evidence)?, applied);
+    let mut conflict = evidence.clone();
+    conflict["facts"]["amount_minor"] = json!(7000);
+    rejected_report(&books, &conflict)?;
+
+    let refund = json!({"kind":"refund","facts":facts("2026-01-07",1000),"refund":"re_agent","payment":"pi_agent"});
+    assert_eq!(
+        report_evidence(&books, &refund)?["status"],
+        "refund_recorded"
+    );
+    let refund_terms = json!({"refund":"re_agent","booked_on":"2026-01-08"}).to_string();
+    books.data(&["collection", "reconcile-refund", "--terms", &refund_terms])?;
+    let aging = books.aging("2026-01-15")?;
+    assert_eq!(super::row(&aging, "AGENT-STRIPE")?["open_minor"], 5000);
+    let mut wrong_account = refund.clone();
+    wrong_account["refund"] = json!("re_wrong");
+    wrong_account["facts"]["account"] = json!("acct_wrong");
+    rejected_report(&books, &wrong_account)?;
+    let mut excess = refund.clone();
+    excess["refund"] = json!("re_excess");
+    excess["facts"]["amount_minor"] = json!(5500);
+    report_evidence(&books, &excess)?;
+    let excess_terms = json!({"refund":"re_excess","booked_on":"2026-01-08"}).to_string();
+    let rejected = books
+        .command()?
+        .args(["collection", "reconcile-refund", "--terms", &excess_terms])
+        .output()?;
+    assert!(
+        !rejected.status.success(),
+        "cumulative refunds must not exceed the receipt"
+    );
+
+    let disputed = json!({"kind":"dispute","facts":facts("2026-01-08",1000),
+        "dispute":"dp_agent","payment":"pi_agent","movement":"withdrawn"});
+    assert_eq!(
+        report_evidence(&books, &disputed)?["status"],
+        "dispute_recorded"
+    );
+    assert_eq!(
+        books.data(&["collection", "disputes"])?[0]["source"],
+        "agent_reported"
+    );
+
+    complete_agent_payout(&books)?;
+    books.data(&["verify"])?;
+    Ok(())
+}
+
+fn complete_agent_payout(books: &Books) -> TestResult {
+    let payout = json!({"kind":"payout","facts":facts("2026-01-09",4600),"payout":"po_agent","fees_minor":400});
+    assert_eq!(
+        report_evidence(books, &payout)?["status"],
+        "payout_recorded"
+    );
+    assert_eq!(report_evidence(books, &payout)?["status"], "duplicate");
+    let manifest = json!({"payout":"po_agent","payments":["pi_agent"],"refunds":["re_agent"],
+        "fees_minor":400,"bank_account":"1000","fee_account":"5000"})
+    .to_string();
+    let mut wrong_fee: Value = serde_json::from_str(&manifest)?;
+    wrong_fee["fees_minor"] = json!(500);
+    let wrong = books
+        .command()?
+        .args([
+            "collection",
+            "reconcile-payout",
+            "--manifest",
+            &wrong_fee.to_string(),
+        ])
+        .output()?;
+    assert!(
+        !wrong.status.success(),
+        "selected fees must match agent evidence"
+    );
+    let posted = books.data(&["collection", "reconcile-payout", "--manifest", &manifest])?;
+    let repeat = books.data(&["collection", "reconcile-payout", "--manifest", &manifest])?;
+    assert_eq!(repeat["transaction"], posted["transaction"]);
+    assert_eq!(repeat["existing"], true);
+    let payouts = books.data(&["collection", "payouts"])?;
+    assert_eq!(payouts[0]["source"], "agent_reported");
+    assert_eq!(payouts[0]["bank_confirmed"], false);
+    assert_eq!(
+        books.data(&["collection", "exceptions"])?[0]["payout"],
+        "po_agent"
+    );
+
+    let transaction = posted["transaction"].to_string();
+    let view = books.data(&["txn", "show", &transaction])?;
+    let debit = view[0]["entries"]
+        .as_array()
+        .ok_or("missing payout entries")?
+        .iter()
+        .find(|entry| entry["account_code"] == "1000")
+        .ok_or("missing bank debit")?;
+    let entry = debit["id"].to_string();
+    let clear = |status| {
+        books.data(&[
+            "txn",
+            "clear",
+            &transaction,
+            "--entry",
+            &entry,
+            "--date",
+            "2026-01-09",
+            "--statement",
+            "bank-jan",
+            "--status",
+            status,
+        ])
+    };
+    clear("cleared")?;
+    assert_eq!(
+        books.data(&["collection", "payouts"])?[0]["bank_confirmed"],
+        false
+    );
+    assert_eq!(
+        books.data(&["collection", "exceptions"])?[0]["payout"],
+        "po_agent"
+    );
+    clear("reconciled")?;
+    assert_eq!(
+        books.data(&["collection", "payouts"])?[0]["bank_confirmed"],
+        true
+    );
+    assert_eq!(books.data(&["collection", "exceptions"])?, json!([]));
+
+    let second = json!({"kind":"payout","facts":facts("2026-01-10",4600),"payout":"po_second","fees_minor":400});
+    report_evidence(books, &second)?;
+    let duplicate_group = manifest.replace("po_agent", "po_second");
+    let result = books
+        .command()?
+        .args([
+            "collection",
+            "reconcile-payout",
+            "--manifest",
+            &duplicate_group,
+        ])
+        .output()?;
+    assert!(
+        !result.status.success(),
+        "a payment can only settle in one payout"
+    );
+    Ok(())
+}
+
+#[test]
+fn signed_delivery_upgrades_agreement_and_retains_conflicts_without_reposting() -> TestResult {
+    let books = Books::new()?;
+    let (_, evidence) = external_payment(&books, "COMPARE-STRIPE")?;
+    let applied = report_evidence(&books, &evidence)?;
+    let collection = applied["detail"]["collection"]
+        .as_str()
+        .ok_or("collection ID")?;
+    let spool = tempfile::tempdir()?;
+    let expected = |delivery, amount| {
+        event(
+            delivery,
+            "payment_intent.succeeded",
+            &json!({"id":"pi_agent","status":"succeeded","amount_received":amount,"currency":"usd"}),
+        )
+    };
+    let exact = expected("evt_confirms", 6000);
+    assert_eq!(
+        send(&books, spool.path(), "confirms", &exact, true)?["status"],
+        "duplicate"
+    );
+    assert_eq!(
+        send(&books, spool.path(), "confirms", &exact, true)?["status"],
+        "duplicate"
+    );
+    let view = books.data(&["collection", "show", collection])?;
+    assert_eq!(view["payment"]["source"], "signed");
+    assert_eq!(view["payment"]["original_source"], "agent_reported");
+    assert_eq!(view["payment"]["posting"], applied["detail"]["transaction"]);
+    assert_eq!(view["payment"]["signed_conflict"], false);
+    let conflict = expected("evt_conflict", 7100);
+    assert_eq!(
+        send(&books, spool.path(), "conflict", &conflict, true)?["status"],
+        "review"
+    );
+    assert_eq!(
+        books.data(&["collection", "exceptions"])?[0]["evidence_key"],
+        "pi_agent"
+    );
+    let disputed = books.data(&["collection", "show", collection])?;
+    assert_eq!(disputed["payment"]["source"], "agent_reported");
+    assert_eq!(disputed["payment"]["signed_conflict"], true);
+
+    assert_eq!(
+        super::row(&books.aging("2026-01-15")?, "COMPARE-STRIPE")?["open_minor"],
+        4000
+    );
+    books.data(&["verify"])?;
+    Ok(())
+}

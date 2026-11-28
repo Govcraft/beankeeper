@@ -6,7 +6,11 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Actor, AuditEntity, CollectionOutcome, Db, ReadConn, record, validation};
+use super::{
+    Actor, AuditEntity, CollectionOutcome, ReadConn, record,
+    reported::{self, Facts, Origin, ReviewedSource, Source},
+    validation,
+};
 use crate::{
     db::{
         self, PostEntryParams, PostResult, PostTransactionParams,
@@ -17,8 +21,7 @@ use crate::{
         ids::TransactionId,
     },
     error::CliError,
-    identity::{Granted, Post},
-    payments::stripe::{StripeEvent, StripeRefundId, VerifiedStripeEvent},
+    payments::stripe::{StripeEvent, StripePaymentIntentId, StripeRefundId, VerifiedStripeEvent},
     request::CalendarDateArg,
 };
 
@@ -32,32 +35,62 @@ pub(super) fn ingest(
         refund,
         payment,
         amount,
+        created,
     } = event.payload()
     else {
         return Ok(CollectionOutcome::Unrelated);
     };
+    let facts = Facts::signed(
+        event,
+        created.unwrap_or_else(|| event.created()).date_naive(),
+        *amount,
+    )?;
+    record_evidence(
+        tx,
+        actor,
+        company,
+        (refund, payment, &facts),
+        Origin::Signed(event),
+    )
+}
+
+pub(super) fn record_evidence(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    (refund, payment, facts): (&StripeRefundId, &StripePaymentIntentId, &Facts),
+    origin: Origin<'_>,
+) -> Result<CollectionOutcome, CliError> {
     Company::bind(tx.read(), company.clone())?;
     let key = refund.to_string();
-    let provider = event.account().to_string();
-    let live = event.mode().is_live();
-    let payment = payment.to_string();
-    let occurred = event.created().date_naive();
-    let currency = amount.money().currency();
-    let minor: PositiveMinorUnits = amount.money().amount().try_into()?;
+    let incoming = Evidence {
+        provider: facts.account.to_string(),
+        live: facts.live,
+        payment: payment.to_string(),
+        occurred: facts.date.into(),
+        currency: facts.currency,
+        amount: facts.amount_minor,
+        source: origin.source(),
+    };
     if let Some(old) = evidence(tx.read(), company, refund)? {
-        if old.provider == provider
-            && old.live == live
-            && old.payment == payment
-            && old.currency == currency
-            && old.amount == minor
-        {
-            return Ok(CollectionOutcome::Duplicate);
-        }
-        return Err(validation(
-            "verified refund conflicts with the recorded terms",
-        ));
+        let agrees = old.provider == incoming.provider
+            && old.live == incoming.live
+            && old.payment == incoming.payment
+            && old.currency == incoming.currency
+            && old.amount == incoming.amount
+            && (origin.source() == Source::Signed && old.source == Source::Signed
+                || old.occurred == incoming.occurred);
+        return reported::compare(tx, actor, company, &key, (old.source, origin, agrees));
     }
-    let delivery = event.id().to_string();
+    if origin.source() == Source::AgentReported {
+        let receipt = source_receipt(tx.read(), company, &incoming)?;
+        if incoming.occurred < receipt.date || incoming.amount > receipt.amount {
+            return Err(validation(
+                "reported refund must follow its receipt and cannot exceed it",
+            ));
+        }
+    }
+    let delivery = origin.delivery(&key);
     record(
         tx,
         actor,
@@ -65,15 +98,18 @@ pub(super) fn ingest(
         AuditEntity::StripeRefund,
         &key,
         &json!({
-            "provider":provider, "live":live,"payment":payment, "occurred":occurred, "currency":currency, "amount":minor, "delivery":delivery,
+            "provider":incoming.provider, "live":incoming.live,"payment":incoming.payment,
+            "occurred":incoming.occurred, "currency":incoming.currency, "amount":incoming.amount,
+            "delivery":delivery, "source":incoming.source,
         }),
     )?;
-    tx.insert("INSERT INTO stripe_refunds(company_slug,refund,account,live,payment,occurred,currency,amount,delivery)
-        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![company, key, provider, live, payment, occurred, currency, minor, delivery])?;
+    tx.insert("INSERT INTO stripe_refunds(company_slug,refund,account,live,payment,occurred,currency,amount,delivery,source)
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![company, key, incoming.provider, incoming.live,
+            incoming.payment, incoming.occurred, incoming.currency, incoming.amount, delivery,incoming.source.code()])?;
     Ok(CollectionOutcome::RefundRecorded(refund.clone()))
 }
 
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RefundSettlement {
     pub refund: StripeRefundId,
@@ -81,26 +117,13 @@ pub struct RefundSettlement {
     pub booked_on: CalendarDateArg,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct RefundPosting {
     transaction: TransactionId,
     existing: bool,
 }
 
-pub(crate) fn reconcile(
-    db: &Db,
-    actor: &Actor,
-    company: &CompanySlug,
-    terms: &RefundSettlement,
-) -> Result<RefundPosting, CliError> {
-    Granted::<Post>::with_db(db, actor, |grant| {
-        grant.mutate("sp_stripe_refund_reconcile", |tx, actor| {
-            reconcile_in_scope(tx, actor, company, terms)
-        })
-    })
-}
-
-fn reconcile_in_scope(
+pub(in crate::db::audit) fn reconcile_in_scope(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &CompanySlug,
@@ -108,7 +131,7 @@ fn reconcile_in_scope(
 ) -> Result<RefundPosting, CliError> {
     let scope = Company::bind(tx.read(), company.clone())?;
     let saved = evidence(tx.read(), company, &terms.refund)?.ok_or_else(|| {
-        CliError::NotFound("no verified Stripe refund exists in this company".into())
+        CliError::NotFound("no Stripe refund evidence exists in this company".into())
     })?;
     let date = NaiveDate::from(terms.booked_on);
     if let Some((transaction, original_date)) = tx.read().query_row(
@@ -120,6 +143,8 @@ fn reconcile_in_scope(
         }
         return Err(validation("refund was already recorded on a different date"));
     }
+    reported::ensure_no_conflict(tx.read(), company, &terms.refund.to_string())?;
+    reported::ensure_no_conflict(tx.read(), company, &saved.payment)?;
     let receipt = source_receipt(tx.read(), company, &saved)?;
     if date < saved.occurred || date < receipt.date {
         return Err(validation(
@@ -152,10 +177,17 @@ fn reconcile_in_scope(
     ];
     let key = terms.refund.to_string();
     let reference = format!("stripe-refund:{key}");
+    let source = if saved.source == Source::AgentReported || receipt.source == Source::AgentReported
+    {
+        Source::AgentReported
+    } else {
+        Source::Signed
+    };
+    let metadata = source.metadata();
     let posting = PostTransactionParams {
         company_slug: company,
         description: "Stripe refund",
-        metadata: None,
+        metadata: Some(&metadata),
         currency: saved.currency,
         date,
         entries: &entries,
@@ -177,7 +209,7 @@ fn reconcile_in_scope(
         AuditEntity::StripeRefundPosting,
         &key,
         &json!({"posting":transaction,
-        "original_payment":receipt.posting,"date":date,"invoice":receipt.invoice,"amount":saved.amount}),
+        "original_payment":receipt.posting,"date":date,"invoice":receipt.invoice,"amount":saved.amount,"source":source}),
     )?;
     tx.insert("INSERT INTO stripe_refund_postings(company_slug,refund,posting,original_payment,invoice,booked_on,amount)
         VALUES(?1,?2,?3,?4,?5,?6,?7)", params![company, key, transaction, receipt.posting, receipt.invoice, date, saved.amount])?;
@@ -194,6 +226,7 @@ struct Evidence {
     occurred: NaiveDate,
     currency: Currency,
     amount: PositiveMinorUnits,
+    source: Source,
 }
 
 fn evidence(
@@ -201,9 +234,12 @@ fn evidence(
     company: &CompanySlug,
     refund: &StripeRefundId,
 ) -> Result<Option<Evidence>, CliError> {
-    Ok(reader.query_row("SELECT account,live,payment,occurred,currency,amount FROM stripe_refunds WHERE company_slug=?1 AND refund=?2",
-        params![company, refund.to_string()], |row| Ok(Evidence { provider:row.get(0)?,live:row.get(1)?,payment:row.get(2)?,
-            occurred:db::calendar_date::read(row,3)?,currency:row.get(4)?,amount:row.get(5)? })).optional()?)
+    reader.query_row("SELECT account,live,payment,occurred,currency,amount,source FROM stripe_refunds WHERE company_slug=?1 AND refund=?2",
+        params![company, refund.to_string()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,
+            db::calendar_date::read(row,3)?,row.get(4)?,row.get(5)?,row.get::<_, String>(6)?)))
+        .optional()?.map(|(provider,live,payment,occurred,currency,amount,source)| Ok(Evidence {
+            provider,live,payment,occurred,currency,amount,source:Source::from_row(&source)?,
+        })).transpose()
 }
 
 struct SourceReceipt {
@@ -212,6 +248,7 @@ struct SourceReceipt {
     clearing: String,
     amount: PositiveMinorUnits,
     date: NaiveDate,
+    source: Source,
 }
 
 fn source_receipt(
@@ -219,14 +256,16 @@ fn source_receipt(
     company: &CompanySlug,
     evidence: &Evidence,
 ) -> Result<SourceReceipt, CliError> {
-    reader.query_row("SELECT e.posting,c.invoice,c.clearing_account,c.amount,t.date FROM collection_events e
+    reader.query_row("SELECT e.posting,c.invoice,c.clearing_account,c.amount,t.date,e.source FROM collection_events e
         JOIN invoice_collections c ON c.id=e.collection JOIN transactions t ON t.id=e.posting
         JOIN document_allocations d ON d.source_id=e.posting AND d.company_slug=c.company_slug AND d.document_id=c.invoice
         WHERE c.company_slug=?1 AND c.account=?2 AND c.live=?3 AND e.payment=?4 AND c.currency=?5
           AND d.reversed_on IS NULL",
-        params![company,evidence.provider,evidence.live,evidence.payment,evidence.currency], |row| Ok(SourceReceipt {
-            posting:row.get(0)?,invoice:row.get(1)?,clearing:row.get(2)?,amount:row.get(3)?,date:db::calendar_date::read(row,4)?,
-        })).optional()?.ok_or_else(|| validation("original Stripe payment is missing or differs from the verified refund"))
+        params![company,evidence.provider,evidence.live,evidence.payment,evidence.currency], |row| Ok((
+            row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,db::calendar_date::read(row,4)?,row.get::<_, String>(5)?,
+        ))).optional()?.map(|(posting,invoice,clearing,amount,date,source)| Ok::<_, CliError>(SourceReceipt {
+            posting,invoice,clearing,amount,date,source:Source::from_row(&source)?,
+        })).transpose()?.ok_or_else(|| validation("original Stripe payment is missing or differs from the refund"))
 }
 
 #[derive(Serialize)]
@@ -237,13 +276,15 @@ pub struct RefundView {
     currency: Currency,
     amount_minor: PositiveMinorUnits,
     transaction: Option<TransactionId>,
+    #[serde(flatten)]
+    provenance: ReviewedSource,
 }
 
 pub(crate) fn report(
     reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<Vec<RefundView>, CliError> {
-    let mut statement = reader.prepare_cached("SELECT f.refund,f.payment,f.occurred,f.currency,f.amount,r.posting
+    let mut statement = reader.prepare_cached("SELECT f.refund,f.payment,f.occurred,f.currency,f.amount,r.posting,f.source
         FROM stripe_refunds f LEFT JOIN stripe_refund_postings r ON r.company_slug=f.company_slug AND r.refund=f.refund
         WHERE f.company_slug=?1 ORDER BY f.occurred DESC,f.refund LIMIT 100")?;
     let rows = statement.query_map([company], |row| {
@@ -254,10 +295,12 @@ pub(crate) fn report(
             row.get(3)?,
             row.get(4)?,
             row.get(5)?,
+            row.get::<_, String>(6)?,
         ))
     })?;
     rows.map(|row| {
-        let (key, payment, occurred, currency, amount_minor, transaction) = row?;
+        let (key, payment, occurred, currency, amount_minor, transaction, original_source) = row?;
+        let original_source = Source::from_row(&original_source)?;
         Ok(RefundView {
             refund: key.parse().map_err(validation)?,
             payment,
@@ -265,6 +308,7 @@ pub(crate) fn report(
             currency,
             amount_minor,
             transaction,
+            provenance: original_source.review(reader, company, &key)?,
         })
     })
     .collect()

@@ -17,7 +17,10 @@ use crate::{
     db::{
         Actor, Db,
         amounts::PositiveMinorUnits,
-        audit::payment_collection::{self as store, CollectionOutcome, CollectionRequest},
+        audit::{
+            corrections::bookkeeping::{StripeChange, StripeCollection, Submission},
+            payment_collection::{self as store, CollectionOutcome, CollectionRequest},
+        },
         companies::CompanySlug,
         documents::DocumentId,
     },
@@ -41,6 +44,12 @@ pub enum CollectionCommand {
         /// Open accounting date on or after the provider event.
         #[arg(long)]
         booked_on: CalendarDateArg,
+    },
+    /// Record accounting evidence read by the agent from Stripe.
+    ReportEvidence {
+        /// Typed payment, payout, refund or dispute evidence as JSON.
+        #[arg(long, value_parser = parse_evidence)]
+        evidence: store::reported::ReportedEvidence,
     },
     /// Inspect a checkout and recorded delivery outcomes.
     Show { collection: CollectionId },
@@ -128,6 +137,7 @@ impl CollectionCommand {
             Self::CreateLink(_) => Operation::CollectionCreateLink,
             Self::Apply { .. } => Operation::CollectionApply,
             Self::ResolveReceipt { .. } => Operation::CollectionResolveReceipt,
+            Self::ReportEvidence { .. } => Operation::CollectionReportEvidence,
             Self::Show { .. } => Operation::CollectionShow,
             Self::Exceptions => Operation::CollectionExceptions,
             Self::ReconcilePayout { .. } => Operation::CollectionReconcilePayout,
@@ -191,11 +201,14 @@ impl PaymentCollectionRequest {
             CollectionCommand::Show { collection } => {
                 CollectionData::Show(store::show(db.read(), &self.company, &collection)?)
             }
-            CollectionCommand::ReconcilePayout { manifest } => CollectionData::PayoutPosting(
-                store::payout::reconcile(db, actor, &self.company, &manifest)?,
+            CollectionCommand::ReportEvidence { evidence } => CollectionData::Bookkeeping(
+                StripeCollection::ReportEvidence { evidence }.submit(db, actor, &self.company)?,
             ),
-            CollectionCommand::ReconcileRefund { terms } => CollectionData::RefundPosting(
-                store::refund::reconcile(db, actor, &self.company, &terms)?,
+            CollectionCommand::ReconcilePayout { manifest } => CollectionData::Bookkeeping(
+                StripeCollection::ReconcilePayout { manifest }.submit(db, actor, &self.company)?,
+            ),
+            CollectionCommand::ReconcileRefund { terms } => CollectionData::Bookkeeping(
+                StripeCollection::ReconcileRefund { terms }.submit(db, actor, &self.company)?,
             ),
             CollectionCommand::Disputes => {
                 CollectionData::Disputes(store::dispute::report(db.read(), &self.company)?)
@@ -256,9 +269,8 @@ enum CollectionData {
     Apply(CollectionOutcome),
     Show(store::CollectionView),
     Exceptions(Vec<store::CollectionException>),
-    PayoutPosting(store::payout::PayoutPosting),
+    Bookkeeping(Submission<StripeChange>),
     Payouts(Vec<store::payout::PayoutView>),
-    RefundPosting(store::refund::RefundPosting),
     Refunds(Vec<store::refund::RefundView>),
     Disputes(Vec<store::dispute::DisputeView>),
 }
@@ -317,4 +329,9 @@ fn parse_payout(raw: &str) -> Result<store::payout::PayoutManifest, CliError> {
 fn parse_refund(raw: &str) -> Result<store::refund::RefundSettlement, CliError> {
     serde_json::from_str(raw)
         .map_err(|error| CliError::Validation(format!("invalid refund terms: {error}")))
+}
+
+fn parse_evidence(raw: &str) -> Result<store::reported::ReportedEvidence, CliError> {
+    serde_json::from_str(raw)
+        .map_err(|error| CliError::Validation(format!("invalid reported Stripe evidence: {error}")))
 }

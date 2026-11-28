@@ -67,6 +67,24 @@ impl sealed::GrantKind for BankFeedAdmin {
     const SIGNED: bool = true;
 }
 
+/// Signed posting or owner authority to stage a configured bank feed.
+pub(crate) enum RefreshFeed {}
+
+impl sealed::GrantKind for RefreshFeed {
+    const REQUIRED: Capability = Capability::Post;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const SIGNED: bool = true;
+}
+
+/// Signed proposal or owner authority to stage a configured bank feed.
+pub(crate) enum RefreshFeedProposed {}
+
+impl sealed::GrantKind for RefreshFeedProposed {
+    const REQUIRED: Capability = Capability::Propose;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const SIGNED: bool = true;
+}
+
 /// Authority to attach source documents and post ledger entries.
 pub enum Post {}
 
@@ -107,6 +125,16 @@ impl sealed::GrantKind for Bookkeeping {
     const REQUIRED: Capability = Capability::Post;
     const SIGNED: bool = true;
     const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
+/// The agent can maintain project budgets. Existing budget credentials retain access.
+pub(crate) enum BookkeepingBudget {}
+
+impl sealed::GrantKind for BookkeepingBudget {
+    const REQUIRED: Capability = Capability::Post;
+    const SIGNED: bool = true;
+    const ALTERNATE: Option<Capability> = Some(Capability::Budget);
     const MODE: Option<WriteMode> = Some(WriteMode::Direct);
 }
 
@@ -192,6 +220,26 @@ pub enum Reconcile {}
 
 impl sealed::GrantKind for Reconcile {
     const REQUIRED: Capability = Capability::Reconcile;
+}
+
+/// Authority to apply ordinary statement and entry reconciliation directly.
+pub(crate) enum StatementReconcile {}
+
+impl sealed::GrantKind for StatementReconcile {
+    const REQUIRED: Capability = Capability::Post;
+    const ALTERNATE: Option<Capability> = Some(Capability::Reconcile);
+    const SIGNED: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
+/// Separate reconciliation and owner authorization to close a company period.
+pub(super) enum StatementClose {}
+
+impl sealed::GrantKind for StatementClose {
+    const REQUIRED: Capability = Capability::Reconcile;
+    const ADDITIONAL: Option<Capability> = Some(Capability::Admin);
+    const SIGNED: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
 }
 
 pub(crate) enum StatementApprover {}
