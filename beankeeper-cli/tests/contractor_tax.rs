@@ -280,7 +280,7 @@ fn assert_required_tax_details(books: &Books, signed_owner: &str, name: &str) ->
     ];
     let denied = books.run(&args, None)?;
     assert!(!denied.status.success());
-    let admin = books.token("ordinary-admin", "ledger/read,ledger/admin")?;
+    let admin = books.token("ordinary_admin", "ledger/read,ledger/admin")?;
     let denied = books.run(&args, Some(&admin))?;
     assert!(!denied.status.success());
     assert!(!output.exists());
@@ -302,7 +302,7 @@ fn dated_evidence_groups_party_ids_and_restricts_identity_export() -> TestResult
     let other = books.party()?;
     assert_ne!(party, other);
     let owner = books.token(
-        "tax-preparer",
+        "tax_preparer",
         "ledger/read,ledger/tax-details,ledger/reverse",
     )?;
     let name = "Restricted Fixture Name";
