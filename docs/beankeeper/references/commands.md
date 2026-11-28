@@ -574,6 +574,8 @@ When `txn post` or `txn_post` omits currency, the posting uses
 | `bk bank-feed connect`, `bk bank-feed disconnect`, `bk bank-feed sync` | Manage bank connections and poll the provider from the owner host, which supplies the provider credentials. |
 | `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
 | `bk schedule create`, `bk schedule cancel`, `bk schedule run` | Recurring template management and execution are deferred until the MCP scheduling contract is available. |
+| `bk payroll import` | Imports a local provider aggregate file and checks it against the preview digest. |
+| `bk payroll fund` | Applies an existing withdrawal to a payroll liability entry through the local CLI. |
 | `bk loan pay` | The dedicated loan-terms input and payment calculation are deferred. Agents can already post a balanced payment through `txn_post`. |
 
 Results match the CLI JSON `data` payload. JSON text content is always included;
