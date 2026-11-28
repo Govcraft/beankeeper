@@ -190,50 +190,7 @@ fn fifo_receipt_issue_return_and_billing_timestamps_are_independent() -> Result<
         receipt
     );
     let receipt_two = book.receipt("received-two", "2026-01-02", "1", 650)?;
-    let direct_stock = document_terms(
-        "bill",
-        "invalid-bill",
-        &book.vendor,
-        "2000",
-        &json!({"description":"Direct stock debit","quantity":"2.5","unit_price_minor":420,"account":"1300"}),
-    );
-    book.invalid(&["document", "draft", "--terms", &direct_stock])?;
-    let bill = issue(
-        &book,
-        &document_terms(
-            "bill",
-            "BILL-1",
-            &book.vendor,
-            "2000",
-            &json!({"description":"Receipt 1","quantity":"2.5","unit_price_minor":420,"account":"2100"}),
-        ),
-        "2026-01-02",
-    )?;
-    let receipt_id = receipt["id"].as_str().ok_or("receipt")?;
-    let link = book.data(&[
-        "inventory",
-        "match-document",
-        receipt_id,
-        "--document",
-        &bill,
-        "--line",
-        "1",
-        "--date",
-        "2026-01-02",
-    ])?;
-    assert_eq!(link["kind"], "bill");
-    assert_eq!(
-        book.valuation("2026-01-01")?["unlinked_receipts"]
-            .as_array()
-            .map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(
-        book.valuation("2026-01-02")?["unlinked_receipts"]
-            .as_array()
-            .map(Vec::len),
-        Some(1)
-    );
+    match_purchase_bill(&book, &receipt)?;
 
     let shipped = book.movement(
         "ship",
@@ -287,13 +244,67 @@ fn fifo_receipt_issue_return_and_billing_timestamps_are_independent() -> Result<
         &json!({"kind":"supplier_return","receipt":receipt_two["id"]}),
     )?;
     assert_eq!(vendor_return["cost_minor"], 163);
-    let snapshot_path = book.dir.path().join("fifo.bk-backup");
-    let snapshot = snapshot_path.to_str().ok_or("backup path")?;
-    book.data(&["backup", "--output", snapshot])?;
     let final_value = book.valuation("2026-01-06")?;
     assert_eq!(final_value["positions"][0]["quantity"], "0.75");
     assert_eq!(final_value["positions"][0]["value_minor"], 372);
     assert_eq!(final_value["control_accounts"][0]["difference_minor"], 0);
+    book.data(&["verify"])?;
+    assert_inventory_restore(&book, &final_value)
+}
+
+fn match_purchase_bill(book: &Ledger, receipt: &Value) -> Result<(), TestError> {
+    let direct_stock = document_terms(
+        "bill",
+        "invalid-bill",
+        &book.vendor,
+        "2000",
+        &json!({"description":"Direct stock debit","quantity":"2.5","unit_price_minor":420,"account":"1300"}),
+    );
+    book.invalid(&["document", "draft", "--terms", &direct_stock])?;
+    let bill = issue(
+        book,
+        &document_terms(
+            "bill",
+            "BILL-1",
+            &book.vendor,
+            "2000",
+            &json!({"description":"Receipt 1","quantity":"2.5","unit_price_minor":420,"account":"2100"}),
+        ),
+        "2026-01-02",
+    )?;
+    let receipt_id = receipt["id"].as_str().ok_or("receipt")?;
+    let link = book.data(&[
+        "inventory",
+        "match-document",
+        receipt_id,
+        "--document",
+        &bill,
+        "--line",
+        "1",
+        "--date",
+        "2026-01-02",
+    ])?;
+    assert_eq!(link["kind"], "bill");
+    assert_eq!(
+        book.valuation("2026-01-01")?["unlinked_receipts"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        book.valuation("2026-01-02")?["unlinked_receipts"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    Ok(())
+}
+
+fn assert_inventory_restore(book: &Ledger, before: &Value) -> Result<(), TestError> {
+    let snapshot_path = book.dir.path().join("fifo.bk-backup");
+    let snapshot = snapshot_path.to_str().ok_or("backup path")?;
+    book.data(&["backup", "--output", snapshot])?;
     book.movement(
         "count-out",
         "2026-01-07",
@@ -307,7 +318,7 @@ fn fifo_receipt_issue_return_and_billing_timestamps_are_independent() -> Result<
     book.data(&["restore", "--input", snapshot])?;
     assert_eq!(
         book.valuation("2026-01-07")?["positions"],
-        final_value["positions"]
+        before["positions"]
     );
     book.data(&["verify"])?;
     Ok(())
