@@ -610,21 +610,8 @@ const BOOKKEEPING_TOOLS: [&str; 4] = [
 ];
 
 #[test]
-fn http_agent_can_apply_customer_project_income_and_expenses() -> TestResult {
+fn http_bookkeeping_catalog_exposes_only_authorized_tools() -> TestResult {
     let ledger = Ledger::new()?;
-    let db = ledger.db()?;
-    Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
-        db::create_account(
-            grant,
-            &CreateAccountParams {
-                company_slug: &"acme".parse()?,
-                code: "5000",
-                name: "Hosting",
-                account_type: beankeeper::types::AccountType::Expense,
-                default_tax_category: None,
-            },
-        )
-    })?;
     let direct = token(&ledger.writer)?;
     let read = token(&ledger.reader)?;
     let mut server = Server::start(&ledger, false, None)?;
@@ -648,6 +635,31 @@ fn http_agent_can_apply_customer_project_income_and_expenses() -> TestResult {
         )?;
         assert_eq!(payload(&denied)?["code"], "FORBIDDEN");
     }
+
+    server.finish(&[direct, read])
+}
+
+#[test]
+fn http_agent_can_apply_customer_project_income_and_expenses() -> TestResult {
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "5000",
+                name: "Hosting",
+                account_type: beankeeper::types::AccountType::Expense,
+                default_tax_category: None,
+            },
+        )
+    })?;
+    let direct = token(&ledger.writer)?;
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(direct), "Agent")?;
+
+    ledger.enforce()?;
 
     let mut call = |tool: &str, args: Value| -> TestResult<Value> {
         let result = server.call(tool, args, Some(direct))?;
@@ -680,7 +692,7 @@ fn http_agent_can_apply_customer_project_income_and_expenses() -> TestResult {
             (
                 "income",
                 &customer["party"]["id"],
-                ("1000", "4000", "1500.00", "4000", 150000),
+                ("1000", "4000", "1500.00", "4000", 150_000),
             ),
             (
                 "expense",
@@ -725,7 +737,7 @@ fn http_agent_can_apply_customer_project_income_and_expenses() -> TestResult {
     assert_eq!(report["projects"][0]["revenue_minor"], 1_050_000);
     assert_eq!(report["projects"][0]["expense_minor"], 135_941);
     assert_eq!(report["projects"][0]["profit_minor"], 914_059);
-    server.finish(&[direct, read])
+    server.finish(&[direct])
 }
 
 #[test]
@@ -755,14 +767,14 @@ fn http_agent_bookkeeping_proposals_need_approval_before_changes_apply() -> Test
         &["ledger/read".into(), "ledger/post".into()],
         WriteMode::ProposeOnly,
     )?;
-    let approver = issue(
+    let reviewer = issue(
         "bookkeeping_approver",
         &["ledger/read".into(), "ledger/approve".into()],
         WriteMode::Direct,
     )?;
     ledger.enforce()?;
     let propose_token = proposer.token().expose_secret();
-    let approve_token = approver.token().expose_secret();
+    let approve_token = reviewer.token().expose_secret();
     let mut server = Server::start(&ledger, false, None)?;
     server.initialize(Some(propose_token), "Approval-mode Agent")?;
     let tools = server.tools(Some(propose_token))?;
