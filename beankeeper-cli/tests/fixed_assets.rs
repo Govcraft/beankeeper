@@ -216,7 +216,7 @@ fn existing_opening_acquisition_and_locked_charge_are_atomic() -> Result<(), Tes
         "2026-03-31",
     ])?;
     assert!(!denied.status.success());
-    let error: Value = serde_json::from_slice(&denied.stdout)?;
+    let error: Value = serde_json::from_slice(&denied.stderr)?;
     assert_eq!(error["error"]["code"], "VALIDATION");
     let view = ledger.data(&["fixed-asset", "show", asset, "--as-of", "2026-03-31"])?;
     assert_eq!(view["book_value"], 10000);
