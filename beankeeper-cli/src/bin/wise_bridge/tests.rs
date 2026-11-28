@@ -77,14 +77,16 @@ fn response(order: &Order, status: &str) -> Result<provider::Transfer> {
 }
 
 fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
-    let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        builder.permissions(std::fs::Permissions::from_mode(0o700));
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
     }
-    builder.tempdir()
+    #[cfg(not(unix))]
+    tempfile::tempdir()
 }
 
 fn fixture(p: &Path, fake: Fake) -> Result<(Bridge<Fake>, Payment)> {

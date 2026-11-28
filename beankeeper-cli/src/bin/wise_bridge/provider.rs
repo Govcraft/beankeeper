@@ -360,8 +360,8 @@ impl Provider for Wise {
         if let Some(id) = order.transfer {
             return self.get(&["transfers", &id.to_string()]).map(Some);
         }
-        let created = order.created - Days::minutes(5);
-        let start = created.to_rfc3339();
+        let start = (order.created - Days::minutes(5)).to_rfc3339();
+        let end = (order.created + Days::minutes(5)).to_rfc3339();
         let key = key(&order.payment.key)?;
         let mut found = None;
         for page in 0..MAX_PAGES {
@@ -369,21 +369,21 @@ impl Provider for Wise {
             url.query_pairs_mut()
                 .append_pair("profile", &order.profile.to_string())
                 .append_pair("createdDateStart", &start)
+                .append_pair("createdDateEnd", &end)
                 .append_pair("sourceCurrency", "USD")
                 .append_pair("targetCurrency", "USD")
                 .append_pair("limit", &PAGE_SIZE.to_string())
                 .append_pair("offset", &(page * PAGE_SIZE).to_string());
-            let rows: Vec<Transfer> = self.read(self.client.get(url))?;
+            let rows: Vec<Box<RawValue>> = self.read(self.client.get(url))?;
             let last_page = rows.len() < usize::from(PAGE_SIZE);
-            for transfer in rows
-                .into_iter()
-                .filter(|row| row.customer_transaction_id == key)
-            {
-                if found.is_some() {
-                    return Err(Error::Mismatch);
+            for row in rows {
+                if let Some(transfer) = transfer_for_key(&row, &key)? {
+                    if found.is_some() {
+                        return Err(Error::Mismatch);
+                    }
+                    transfer.verify(order)?;
+                    found = Some(transfer);
                 }
-                transfer.verify(order)?;
-                found = Some(transfer);
             }
             if last_page {
                 return Ok(found);
@@ -408,6 +408,23 @@ impl Provider for Wise {
             return Err(Error::Pending);
         }
         report.balance_transaction_id.ok_or(Error::Pending)
+    }
+}
+
+fn transfer_for_key(row: &RawValue, key: &str) -> Result<Option<Transfer>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LookupKey<'a> {
+        customer_transaction_id: Option<&'a str>,
+    }
+
+    let lookup: LookupKey<'_> = serde_json::from_str(row.get()).map_err(|_| Error::Provider)?;
+    if lookup.customer_transaction_id == Some(key) {
+        serde_json::from_str(row.get())
+            .map(Some)
+            .map_err(|_| Error::Provider)
+    } else {
+        Ok(None)
     }
 }
 
@@ -441,6 +458,20 @@ pub(super) fn key(id: &DisbursementId) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_lookup_checks_key_before_parsing_unrelated_rows() -> Result<()> {
+        let row = RawValue::from_string(
+            r#"{"customerTransactionId":"other","business":null,"type":"third_party"}"#.into(),
+        )
+        .map_err(|_| Error::Provider)?;
+        assert!(transfer_for_key(&row, "ours")?.is_none());
+        assert!(matches!(
+            transfer_for_key(&row, "other"),
+            Err(Error::Provider)
+        ));
+        Ok(())
+    }
 
     #[test]
     fn exact_balance_quote_rejects_fees_or_rounded_principal() -> Result<()> {
