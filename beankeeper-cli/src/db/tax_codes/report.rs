@@ -154,7 +154,7 @@ pub fn read_vat_register(
     }
     report.net_control_vat_minor = report
         .sales
-        .vat_minor
+        .vat
         .checked_sub(report.purchases.recovered_vat)
         .ok_or(TaxError::Amount)?;
     report.by_code = codes.into_values().collect();
