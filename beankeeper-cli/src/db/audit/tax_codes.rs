@@ -59,16 +59,15 @@ fn configure_in_scope(
             |row| row.get(0),
         )
         .optional()?;
-    let code = match code {
-        Some(code) => code,
-        None => {
-            let code = TaxCodeId::generate();
-            tx.connection().execute(
-                "INSERT INTO vat_codes(company_slug,id,name) VALUES(?1,?2,?3)",
-                params![company.slug(), code, name.as_str()],
-            )?;
-            code
-        }
+    let code = if let Some(code) = code {
+        code
+    } else {
+        let code = TaxCodeId::generate();
+        tx.connection().execute(
+            "INSERT INTO vat_codes(company_slug,id,name) VALUES(?1,?2,?3)",
+            params![company.slug(), code, name.as_str()],
+        )?;
+        code
     };
     let same_day: Option<String> = tx.read().query_row(
         "SELECT payload FROM vat_rate_revisions WHERE company_slug=?1 AND code_id=?2 AND effective_from=?3",

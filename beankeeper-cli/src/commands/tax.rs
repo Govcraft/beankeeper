@@ -97,9 +97,9 @@ impl TaxRequest {
 
     pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<TaxResponse, CliError> {
         let response = match self {
-            Self::Configure(company, name, terms) => Response::Revision(
+            Self::Configure(company, name, terms) => Response::Revision(Box::new(
                 crate::db::audit::tax_codes::configure(db, actor, &company, name, terms)?,
-            ),
+            )),
             Self::List(company) => {
                 let scope = Company::bind(db.read(), company)?;
                 Response::Revisions(tax_codes::list_rates(&scope)?)
@@ -151,7 +151,7 @@ impl From<(CompanySlug, &TaxCommand)> for TaxRequest {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum Response {
-    Revision(RateRevision),
+    Revision(Box<RateRevision>),
     Revisions(Vec<RateRevision>),
     Register(Box<VatRegister>),
 }
@@ -178,7 +178,7 @@ impl TaxResponse {
         }
         match &self.0 {
             Response::Revision(revision) => {
-                render_revisions(format, std::slice::from_ref(revision))
+                render_revisions(format, std::slice::from_ref(revision.as_ref()))
             }
             Response::Revisions(revisions) => render_revisions(format, revisions),
             Response::Register(register) => super::rule::render_rows(

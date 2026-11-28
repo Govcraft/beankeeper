@@ -352,7 +352,7 @@ pub(super) fn credit(
     actor: &Actor,
     company: &Company<'_>,
     input: CreditInput,
-    expected_vat: Option<TaxedLine>,
+    expected_vat: Option<&TaxedLine>,
 ) -> Result<DocumentOutcome, CliError> {
     periods::ensure_open(company.read(), company.slug(), input.date)?;
     let document = issued_document(company, &input.document_id)?;
@@ -373,7 +373,7 @@ pub(super) fn credit(
     let vat = original_vat
         .map(|original| original.credit(credited, input.amount_minor))
         .transpose()?;
-    if vat != expected_vat {
+    if vat.as_ref() != expected_vat {
         return Err(TaxError::StaleReview.into());
     }
     let entries = credit_entries(&document, line, input.amount_minor, vat.as_ref())?;

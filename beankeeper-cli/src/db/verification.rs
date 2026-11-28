@@ -174,6 +174,28 @@ enum Outcome {
     Skipped,
 }
 
+fn verify_commercial_subledgers(
+    reader: ReadConn<'_>,
+    version: schema::SchemaVersion,
+    checks: &mut Vec<CheckResult>,
+) -> Result<(), CliError> {
+    Check::Counterparties.when(
+        version >= schema::COUNTERPARTY_SCHEMA_VERSION,
+        checks,
+        || audit::counterparties::verify(reader),
+    )?;
+    if version >= schema::BANK_FEED_SCHEMA_VERSION {
+        Check::BankFeed.record(super::bank_feed::verify(reader), checks)?;
+    }
+    Check::OpenItems.when(version >= schema::DOCUMENT_SCHEMA_VERSION, checks, || {
+        audit::documents::verify(reader)
+    })?;
+    Check::Vat.when(version >= schema::VAT_SCHEMA_VERSION, checks, || {
+        audit::tax_codes::verify(reader)
+    })?;
+    Ok(())
+}
+
 impl VerifiedLedger {
     /// Verify the entire ledger using a single consistent read snapshot.
     ///
@@ -235,22 +257,7 @@ impl VerifiedLedger {
             Check::AccountClassifications
                 .record(audit::cash_classification::verify(reader), &mut checks)?;
         }
-        Check::Counterparties.when(
-            version >= schema::COUNTERPARTY_SCHEMA_VERSION,
-            &mut checks,
-            || audit::counterparties::verify(reader),
-        )?;
-        if version >= schema::BANK_FEED_SCHEMA_VERSION {
-            Check::BankFeed.record(super::bank_feed::verify(reader), &mut checks)?;
-        }
-        Check::OpenItems.when(
-            version >= schema::DOCUMENT_SCHEMA_VERSION,
-            &mut checks,
-            || audit::documents::verify(reader),
-        )?;
-        Check::Vat.when(version >= schema::VAT_SCHEMA_VERSION, &mut checks, || {
-            audit::tax_codes::verify(reader)
-        })?;
+        verify_commercial_subledgers(reader, version, &mut checks)?;
         Check::TransactionLinks.when(
             version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
             &mut checks,

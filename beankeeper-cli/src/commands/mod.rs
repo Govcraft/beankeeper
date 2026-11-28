@@ -358,14 +358,21 @@ fn dispatch_ledger(
         },
         _ => None,
     };
-    if let Some(request) = request {
-        let db = cli.command_db()?;
-        let meta = meta.map(|meta| cli.meta(meta.command, meta.company.as_deref()));
-        request.execute(&db, &cli.principal())?.render(cli, meta)?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    render_ledger_request(cli, meta, request)
+}
+
+fn render_ledger_request(
+    cli: &Cli,
+    meta: Option<Meta>,
+    request: Option<crate::request::LedgerRequest>,
+) -> Result<bool, CliError> {
+    let Some(request) = request else {
+        return Ok(false);
+    };
+    let db = cli.command_db()?;
+    let meta = meta.map(|meta| cli.meta(meta.command, meta.company.as_deref()));
+    request.execute(&db, &cli.principal())?.render(cli, meta)?;
+    Ok(true)
 }
 
 fn dispatch_setup(

@@ -59,7 +59,7 @@ impl ReviewedMutation {
             }
             Self::Credit(input) => settlement::credit(tx, actor, company, input, None),
             Self::VatCredit { input, vat } => {
-                settlement::credit(tx, actor, company, input, Some(*vat))
+                settlement::credit(tx, actor, company, input, Some(&vat))
             }
             Self::Revoke { id, on } => settlement::revoke(tx, actor, company, &id, on),
         }

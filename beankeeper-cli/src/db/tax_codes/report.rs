@@ -15,20 +15,24 @@ use crate::{
 
 #[derive(Debug, Default, Serialize)]
 pub struct VatTotals {
-    net_minor: i64,
-    vat_minor: i64,
-    gross_minor: i64,
-    recovered_vat_minor: i64,
+    #[serde(rename = "net_minor")]
+    net: i64,
+    #[serde(rename = "vat_minor")]
+    vat: i64,
+    #[serde(rename = "gross_minor")]
+    gross: i64,
+    #[serde(rename = "recovered_vat_minor")]
+    recovered_vat: i64,
 }
 
 impl VatTotals {
     fn observe(&mut self, evidence: &VatEvidence, line: &super::TaxedLine) -> Result<(), TaxError> {
         let sign = evidence.origin.sign();
-        add(&mut self.net_minor, line.amounts.net_minor * sign)?;
-        add(&mut self.vat_minor, line.amounts.vat_minor * sign)?;
-        add(&mut self.gross_minor, line.amounts.gross_minor * sign)?;
+        add(&mut self.net, line.amounts.net_minor * sign)?;
+        add(&mut self.vat, line.amounts.vat_minor * sign)?;
+        add(&mut self.gross, line.amounts.gross_minor * sign)?;
         if evidence.kind == DocumentKind::Bill && line.control(evidence.kind).is_some() {
-            add(&mut self.recovered_vat_minor, line.amounts.vat_minor * sign)?;
+            add(&mut self.recovered_vat, line.amounts.vat_minor * sign)?;
         }
         Ok(())
     }
@@ -151,7 +155,7 @@ pub fn read_vat_register(
     report.net_control_vat_minor = report
         .sales
         .vat_minor
-        .checked_sub(report.purchases.recovered_vat_minor)
+        .checked_sub(report.purchases.recovered_vat)
         .ok_or(TaxError::Amount)?;
     report.by_code = codes.into_values().collect();
     for (account, role) in controls {
