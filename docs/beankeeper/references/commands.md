@@ -362,7 +362,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `inform_preference_show`, `inform_preference_set` | `company`. Set also takes a `preference` |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
-| `txn_reconcile` | Check for orphaned intercompany links with `ledger/read`. Takes no arguments. |
+| `txn_reconcile` | Check for orphaned intercompany links with `ledger/read` or `ledger/reconcile`. Takes no arguments. |
 | `verify` | No arguments; verifies ledger integrity |
 | `security_create` | `company`, `symbol`, `name`, optional `currency` (default USD) |
 | `security_list` | `company`; list registered securities |

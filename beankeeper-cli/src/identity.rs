@@ -97,6 +97,9 @@ impl VerifiedAgent {
                 WriteMode::Direct => grant::permits::<Bookkeeping>(self),
                 WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
             },
+            Permission::ReadOrReconcile => {
+                Ok(self.allows(Capability::Read)? || self.allows(Capability::Reconcile)?)
+            }
             Permission::ProposalList => Ok(self.allows(Capability::Read)?
                 || self.allows(Capability::Propose)?
                 || self.allows(Capability::Approve)?
@@ -407,6 +410,7 @@ fn require_operation_grant(
     }
     let alternative = match permission {
         Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
+        Permission::ReadOrReconcile => Some(Capability::Reconcile),
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
         Permission::Chart | Permission::AgentUndo | Permission::Bookkeeping
             if identity.write_mode() == WriteMode::Direct =>

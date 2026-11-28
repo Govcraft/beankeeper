@@ -11,6 +11,7 @@ pub(crate) enum Permission {
     Posting,
     Bookkeeping,
     ProposalList,
+    ReadOrReconcile,
     ProposalReject,
     SetupStatus,
     SetupOrChart,
@@ -29,7 +30,7 @@ impl Permission {
             Self::Capability(capability) => Ok(capability),
             Self::Posting | Self::Bookkeeping => Ok(Capability::Post),
             Self::AgentUndo | Self::Reversal => Ok(Capability::Reverse),
-            Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
+            Self::ProposalList | Self::SetupStatus | Self::ReadOrReconcile => Ok(Capability::Read),
             Self::SetupOrChart | Self::Chart => Ok(Capability::Chart),
             Self::SetupOwner | Self::OwnerUndo | Self::ExplicitAdmin => Ok(Capability::Admin),
             Self::ProposalReject => Ok(Capability::Propose),
@@ -46,6 +47,9 @@ macro_rules! permission {
     };
     (Bookkeeping) => {
         Permission::Bookkeeping
+    };
+    (ReadOrReconcile) => {
+        Permission::ReadOrReconcile
     };
     (ProposalList) => {
         Permission::ProposalList
@@ -228,6 +232,7 @@ impl Operation {
             self.permission(),
             Permission::Capability(Capability::Read)
                 | Permission::ProposalList
+                | Permission::ReadOrReconcile
                 | Permission::SetupStatus
                 | Permission::Transport
         ) && !matches!(

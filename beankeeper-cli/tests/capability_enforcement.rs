@@ -275,7 +275,7 @@ fn sibling_grants_allow_only_their_own_operations_and_admin_can_disable_policy()
     let post = ledger.issue(&["ledger/post"])?;
     let reverse = ledger.issue(&["ledger/reverse"])?;
     let budget = ledger.issue(&["ledger/budget"])?;
-    let reconcile = ledger.issue(&["ledger/read", "ledger/reconcile"])?;
+    let reconcile = ledger.issue(&["ledger/reconcile"])?;
     let admin = ledger.issue(&["ledger/admin"])?;
     ledger.enable()?;
     ledger.run(&posting(), Some(&post))?;
