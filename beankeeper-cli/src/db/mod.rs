@@ -9,6 +9,7 @@ pub(crate) mod calendar_date;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
+pub mod counterparties;
 pub(crate) mod fx;
 pub mod holds;
 pub mod ids;
