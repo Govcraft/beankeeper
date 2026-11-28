@@ -299,7 +299,7 @@ fn replay(
             }
         };
         if date >= dates.from() && date <= dates.to() {
-            record_effect(item, row, date, action, &effect, &components, plan);
+            record_effect(item, row, (date, action), &effect, &components, plan);
         }
     }
     Ok(())
@@ -472,8 +472,7 @@ fn has_cash_payment(
 fn record_effect(
     item: &IssuedDocument,
     row: &AllocationHistory,
-    date: NaiveDate,
-    action: ReplayAction,
+    (date, action): (NaiveDate, ReplayAction),
     effect: &Applied,
     components: &[CashComponent<'_>],
     plan: &mut LinePlan,
