@@ -5,10 +5,12 @@ CREATE TABLE disbursements (
     state TEXT NOT NULL CHECK(state IN ('draft','approved','submission_uncertain','submitted','settled','failed','returned','rejected')),
     settlement_posting INTEGER UNIQUE,
     return_posting INTEGER UNIQUE,
+    provider_order TEXT UNIQUE,
     details TEXT NOT NULL CHECK(json_valid(details))
         CHECK(id IS json_extract(details,'$.id'))
         CHECK(vendor_id IS json_extract(details,'$.vendor'))
         CHECK(state IS json_extract(details,'$.state.status'))
+        CHECK(provider_order IS json_extract(details,'$.observed.order_id'))
         CHECK(settlement_posting IS json_extract(details,'$.settlement_posting'))
         CHECK(return_posting IS json_extract(details,'$.return_posting')),
     receipt INTEGER NOT NULL UNIQUE REFERENCES audit_log(id),

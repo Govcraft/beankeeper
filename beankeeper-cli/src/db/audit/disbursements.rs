@@ -217,7 +217,7 @@ pub(crate) fn dispatch(
         .as_ref()
         .ok_or_else(|| invalid("approval was revoked"))?;
     let evidence = if submit {
-        Some(host.submit(&record, review)?)
+        Some(host.submit(slug, &record, review)?)
     } else {
         host.lookup(id)?
     };
@@ -272,6 +272,8 @@ fn observe(
                 .as_ref()
                 .ok_or_else(|| invalid("approval was revoked"))?;
             if event.key != before.id
+                || event.company != *slug
+                || event.cash_account != before.terms.cash_account
                 || event.currency != before.currency
                 || event.amount_minor != before.amount_minor
                 || event.destination != review.destination
@@ -503,12 +505,13 @@ fn persist(
         AuditLinks::None,
     )?;
     tx.connection().execute(
-        "INSERT INTO disbursements(company_slug,id,vendor_id,state,settlement_posting,return_posting,details,receipt)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+        "INSERT INTO disbursements(company_slug,id,vendor_id,state,settlement_posting,return_posting,details,receipt,provider_order)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(company_slug,id) DO UPDATE SET state=excluded.state,
            settlement_posting=excluded.settlement_posting, return_posting=excluded.return_posting,
-           details=excluded.details,receipt=excluded.receipt",
-        params![company.slug(), after.id, after.vendor, after.status(), after.settlement_posting, after.return_posting, details, receipt],
+           details=excluded.details,receipt=excluded.receipt,provider_order=excluded.provider_order",
+        params![company.slug(), after.id, after.vendor, after.status(), after.settlement_posting,
+            after.return_posting, details, receipt, after.observed.as_ref().map(|event| event.order_id.to_string())],
     )?;
     Ok(())
 }

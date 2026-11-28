@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     db::{
         amounts::PositiveMinorUnits,
-        companies::Company,
+        companies::{Company, CompanySlug},
         counterparties::CounterpartyId,
         documents::{AllocateItem, DocumentId},
         ids::TransactionId,
@@ -83,6 +83,8 @@ pub(crate) enum ProviderStatus {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderEvidence {
     pub(crate) key: DisbursementId,
+    pub(crate) company: CompanySlug,
+    pub(crate) cash_account: AccountCode,
     pub(crate) order_id: ProviderTransferId,
     pub(crate) status: ProviderStatus,
     pub(crate) on: NaiveDate,

@@ -124,6 +124,7 @@ fn serve_payment(mut stream: TcpStream, state: &HostState) -> TestResult {
         assert_eq!(previous, 0, "the same payment must never be sent twice");
         *state.payment.lock().map_err(|_| "fixture provider lock")? = Some(json!({
             "key": args["key"], "order_id":"fake-order-1", "status":"settled", "on":"2026-01-05",
+            "company":args["company"], "cash_account":args["cash_account"],
             "amount_minor":args["amount_minor"], "currency":args["currency"], "destination":args["destination"]
         }));
         // The host has settled the payment, but its initial response never arrives.

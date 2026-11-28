@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     db::{
+        companies::CompanySlug,
         counterparties::CounterpartyId,
         disbursements::{Disbursement, ProviderEvidence, Review},
     },
@@ -35,6 +36,8 @@ struct Destination {
 #[derive(Serialize)]
 struct Payment<'a> {
     key: &'a DisbursementId,
+    company: &'a CompanySlug,
+    cash_account: &'a beankeeper::types::AccountCode,
     vendor: &'a CounterpartyId,
     destination: &'a DestinationFingerprint,
     amount_minor: i64,
@@ -87,12 +90,15 @@ impl Host {
 
     pub(super) fn submit(
         &self,
+        company: &CompanySlug,
         record: &Disbursement,
         review: &Review,
     ) -> Result<ProviderEvidence, CliError> {
         let url = self.endpoint(&["payments"])?;
         let payment = Payment {
             key: &record.id,
+            company,
+            cash_account: &record.terms.cash_account,
             vendor: &record.vendor,
             destination: &review.destination,
             amount_minor: record.amount_minor.minor_units(),
