@@ -20,7 +20,7 @@ use crate::db::{
 use crate::error::CliError;
 
 mod proposal;
-pub(crate) use proposal::{RenameProposal, approve, list, reject};
+pub use proposal::{RenameProposal, approve, get, list, reject};
 
 /// A requested label is already used by a different account in this book.
 #[derive(Debug)]

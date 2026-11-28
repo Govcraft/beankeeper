@@ -50,6 +50,10 @@ pub use hash_version::{HashVersion, UnsupportedHashVersion};
 mod posting;
 pub(super) use posting::persist_posting;
 pub(crate) mod account_rename;
+pub use account_rename::{
+    RenameProposal, approve as approve_rename, get as get_rename, list as list_renames,
+    reject as reject_rename,
+};
 pub(crate) mod cash_classification;
 pub(crate) mod corrections;
 pub use corrections::{
@@ -63,6 +67,10 @@ pub(crate) mod contractor_tax;
 pub(crate) mod counterparties;
 pub(crate) mod disbursements;
 pub(crate) mod documents;
+pub use documents::{
+    ApprovalAction as DocumentApproval, ReviewRecord as DocumentProposal, decide_document,
+    get as get_document_proposal, list as list_document_proposals,
+};
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
 pub(super) mod expense_claims;

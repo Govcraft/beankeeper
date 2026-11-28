@@ -289,7 +289,7 @@ impl DocumentRequest {
                     .collect();
                 Ok(Response::Aging { as_of, items })
             }
-            Action::Reviews => documents::review_requests(company, actor).map(Response::Reviews),
+            Action::Reviews => documents::list(company, actor, true).map(Response::Reviews),
             Action::Mutation(_) | Action::Review(..) => {
                 Err(CliError::Database("expected a document read".into()))
             }
