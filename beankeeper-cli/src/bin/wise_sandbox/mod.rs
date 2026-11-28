@@ -248,12 +248,12 @@ impl<P: Provider> Bridge<P> {
     }
 
     fn submit(&self, payment: Payment) -> Result<Evidence> {
-        let mut stored = self.store.lock().map_err(|_| Error::Storage)?;
+        let stored = self.store.lock().map_err(|_| Error::Storage)?;
         if let Some(order) = stored.read(&payment.key)? {
             if payment != order.payment {
                 return Err(Error::Mismatch);
             }
-            return self.lookup_order(&mut stored, order);
+            return self.lookup_order(&stored, order);
         }
         let order = self.prepare_order(payment)?;
         // INSERT is durable before create. A competing process cannot claim the key.
@@ -268,9 +268,9 @@ impl<P: Provider> Bridge<P> {
             stored.save(&order)?;
             order.funding_receipt = Some(self.provider.fund(&order, transfer.id)?);
             stored.save(&order)?;
-            return self.lookup_order(&mut stored, order);
+            return self.lookup_order(&stored, order);
         }
-        self.record(&mut stored, order, transfer)
+        Self::record(&stored, order, &transfer)
     }
 
     fn prepare_order(&self, payment: Payment) -> Result<Order> {
@@ -305,22 +305,17 @@ impl<P: Provider> Bridge<P> {
     }
 
     fn lookup(&self, key: &DisbursementId) -> Result<Evidence> {
-        let mut store = self.store.lock().map_err(|_| Error::Storage)?;
+        let store = self.store.lock().map_err(|_| Error::Storage)?;
         let order = store.read(key)?.ok_or(Error::Missing)?;
-        self.lookup_order(&mut store, order)
+        self.lookup_order(&store, order)
     }
 
-    fn lookup_order(&self, store: &mut Store, order: Order) -> Result<Evidence> {
+    fn lookup_order(&self, store: &Store, order: Order) -> Result<Evidence> {
         let transfer = self.provider.find(&order)?.ok_or(Error::Pending)?;
-        self.record(store, order, transfer)
+        Self::record(store, order, &transfer)
     }
 
-    fn record(
-        &self,
-        store: &mut Store,
-        mut order: Order,
-        transfer: provider::Transfer,
-    ) -> Result<Evidence> {
+    fn record(store: &Store, mut order: Order, transfer: &provider::Transfer) -> Result<Evidence> {
         transfer.verify(&order)?;
         order.transfer = Some(transfer.id);
         let observed = project_status(
