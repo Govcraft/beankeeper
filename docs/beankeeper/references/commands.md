@@ -275,6 +275,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
+| `tax_configure` | Configure a company VAT code and effective-dated revision |
+| `tax_list`, `tax_report` | Inspect historical VAT rates and reconcile a GBP VAT register against control accounts |
 | `document_show`, `document_print`, `document_list`, `document_allocations`, `document_aging`, `document_proposals` | Inspect issued terms, allocations, due-date aging and document proposals |
 | `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
@@ -543,7 +545,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `company_create`, `company_delete`, `bank_feed_post`, `bank_feed_link`,
+Read-only mode removes `company_create`, `company_delete`, `tax_configure`, `bank_feed_post`, `bank_feed_link`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,

@@ -29,6 +29,7 @@ pub(crate) mod snapshot;
 pub mod spend_limits;
 pub mod standing;
 pub mod statement;
+pub mod tax_codes;
 pub mod transactions;
 mod txn_link_id;
 mod txn_link_kind;

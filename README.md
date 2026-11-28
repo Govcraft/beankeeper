@@ -535,6 +535,8 @@ unencrypted ledger. `BEANKEEPER_DB`, `--passphrase-file`, and a separate
 never tool arguments. Append `"--read-only"` to `args` to register only read tools;
 mutation tools are absent and cannot be called.
 
+For VAT on GBP invoices and bills, see [configured UK invoice VAT](docs/document-vat.md).
+
 ### Available tools
 
 | Tools | Purpose |
@@ -558,6 +560,8 @@ mutation tools are absent and cannot be called.
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
+| `tax_configure` | Configure a company VAT code and effective-dated revision |
+| `tax_list`, `tax_report` | Inspect historical VAT rates and reconcile a GBP VAT register against control accounts |
 | `document_show`, `document_print`, `document_list`, `document_allocations`, `document_aging`, `document_proposals` | Inspect issued terms, allocations, due-date aging and document proposals |
 | `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
 | `account_list`, `account_show`, `account_create`, `account_rename`, `account_classify` | Inspect, create, rename, and classify accounts |

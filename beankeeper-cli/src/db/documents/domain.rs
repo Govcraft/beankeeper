@@ -389,6 +389,9 @@ pub struct DocumentLine {
     /// Account on the other side of AR or AP.
     #[schemars(with = "String")]
     pub account: AccountCode,
+    /// Owner-selected VAT code and price mode for this line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax: Option<crate::db::tax_codes::LineTax>,
 }
 
 /// Complete draft revision eligible for approval.
@@ -470,6 +473,9 @@ pub struct IssuedDocument {
     pub posting_id: TransactionId,
     /// Sealed lines and subtotals.
     pub lines: Vec<IssuedLine>,
+    /// Immutable per-line VAT rates and net, VAT and gross amounts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vat: Vec<crate::db::tax_codes::TaxedLine>,
     /// Total in integer minor units.
     pub total_minor: PositiveMinorUnits,
 }

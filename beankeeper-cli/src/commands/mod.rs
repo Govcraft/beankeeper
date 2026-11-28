@@ -39,6 +39,7 @@ mod setup_statement;
 pub mod standing;
 pub(crate) mod statement_source;
 pub mod summary;
+pub mod tax;
 pub mod txn;
 pub mod txn_clear;
 pub mod txn_import;
@@ -80,6 +81,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Rule(args) => args.command.operation(),
         Command::Counterparty(args) => args.command.operation(),
         Command::Document(args) => args.command.operation(),
+        Command::Tax(command) => command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -325,6 +327,7 @@ fn dispatch_ledger(
         Command::Counterparty(args) => Some(LedgerRequest::Counterparty(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
+        Command::Tax(command) => Some(tax::ledger_request(cli, command)?),
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
@@ -355,14 +358,21 @@ fn dispatch_ledger(
         },
         _ => None,
     };
-    if let Some(request) = request {
-        let db = cli.command_db()?;
-        let meta = meta.map(|meta| cli.meta(meta.command, meta.company.as_deref()));
-        request.execute(&db, &cli.principal())?.render(cli, meta)?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    render_ledger_request(cli, meta, request)
+}
+
+fn render_ledger_request(
+    cli: &Cli,
+    meta: Option<Meta>,
+    request: Option<crate::request::LedgerRequest>,
+) -> Result<bool, CliError> {
+    let Some(request) = request else {
+        return Ok(false);
+    };
+    let db = cli.command_db()?;
+    let meta = meta.map(|meta| cli.meta(meta.command, meta.company.as_deref()));
+    request.execute(&db, &cli.principal())?.render(cli, meta)?;
+    Ok(true)
 }
 
 fn dispatch_setup(
@@ -501,6 +511,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Rule(_)
         | Command::Counterparty(_)
         | Command::Document(_)
+        | Command::Tax(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)

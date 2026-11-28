@@ -735,6 +735,10 @@ EXAMPLES:\n  \
     /// Manage invoices, bills and allocations.
     Document(crate::commands::document::DocumentArgs),
 
+    /// Configure UK invoice VAT and review its ledger evidence.
+    #[command(subcommand)]
+    Tax(crate::commands::tax::TaxCommand),
+
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
     BookkeepingPolicy(BookkeepingPolicyCommand),

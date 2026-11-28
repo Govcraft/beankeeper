@@ -325,6 +325,19 @@ fn printable(document: &IssuedDocument) -> String {
             subtotal
         )
     }));
+    let display =
+        |minor| beankeeper::types::Money::from_minor(i128::from(minor), document.currency);
+    lines.extend(document.vat.iter().map(|row| {
+        format!(
+            "Line {} ({}, {}%): net {}, VAT {}, gross {}",
+            row.number,
+            row.revision.name,
+            row.revision.terms.rate,
+            display(row.amounts.net_minor),
+            display(row.amounts.vat_minor),
+            display(row.amounts.gross_minor),
+        )
+    }));
     lines.push(format!("Total: {}", document.total()));
     lines.join("\n")
 }
