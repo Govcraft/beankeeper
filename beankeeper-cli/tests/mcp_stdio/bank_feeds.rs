@@ -94,7 +94,8 @@ fn bank_feed_administration_uses_the_shared_signed_catalog_and_host_credentials(
     assert_no_administration(&mut read_only, &connect, &args)?;
 
     let mut direct = client(&path, &passphrase, &poster, false)?;
-    let direct_tools = tool_names(&direct.request("tools/list", &json!({}))?)?;
+    let direct_catalog = direct.request("tools/list", &json!({}))?;
+    let direct_tools = tool_names(&direct_catalog)?;
     assert!(direct_tools.contains("bank_feed_sync"));
     assert!(!direct_tools.contains("bank_feed_connect"));
     assert!(!direct_tools.contains("bank_feed_disconnect"));
