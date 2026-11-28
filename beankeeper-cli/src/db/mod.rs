@@ -12,6 +12,7 @@ pub mod companies;
 pub mod connection;
 pub mod counterparties;
 pub mod documents;
+pub(crate) mod expense_claims;
 pub(crate) mod fixed_assets;
 pub(crate) mod fx;
 pub mod holds;

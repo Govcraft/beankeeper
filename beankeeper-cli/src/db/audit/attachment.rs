@@ -19,7 +19,7 @@ pub(in crate::db) fn store_attachment(
     })
 }
 
-fn insert_attachment(
+pub(in crate::db) fn insert_attachment(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     params: &StoreAttachmentParams<'_>,

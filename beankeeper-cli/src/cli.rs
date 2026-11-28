@@ -738,6 +738,8 @@ EXAMPLES:\n  \
     /// Configure UK invoice VAT and review its ledger evidence.
     #[command(subcommand)]
     Tax(crate::commands::tax::TaxCommand),
+    /// Import and review receipts and expense claims.
+    ExpenseClaim(crate::commands::expense_claim::ExpenseArgs),
 
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
@@ -3184,6 +3186,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Rule(args) => args.company.as_ref(),
         Command::Counterparty(args) => args.company.as_ref(),
         Command::Document(args) => args.company.as_ref(),
+        Command::ExpenseClaim(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
         Command::FixedAsset(args) => args.company.as_ref(),

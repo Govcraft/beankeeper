@@ -52,6 +52,11 @@ use crate::error::CliError;
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
 type Date = Text<CalendarDate>;
+pub(crate) use crate::commands::expense_claim::wire::{
+    ExpenseAmendInput, ExpenseCreateInput, ExpenseIntakeInput, ExpensePaymentInput,
+    ExpenseReceiptInput, ExpenseRejectInput, ExpenseRevisionInput, ExpenseShowInput,
+    ExpenseVoidInput,
+};
 pub(crate) use crate::commands::fixed_asset::wire::{
     FixedAssetAt, FixedAssetDispose, FixedAssetList, FixedAssetRegister,
 };

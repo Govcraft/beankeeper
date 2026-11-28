@@ -16,6 +16,8 @@ mod documents;
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;
 
+#[path = "mcp_stdio/expense_claims.rs"]
+mod expense_claims;
 mod fixed_assets;
 #[path = "mcp_stdio/fx.rs"]
 mod fx;
@@ -844,6 +846,17 @@ const LEDGER_TOOLS: &[&str] = &[
     "fixed_asset_preview",
     "fixed_asset_depreciate",
     "fixed_asset_dispose",
+    "expense_claim_receipt_intake",
+    "expense_claim_receipt_show",
+    "expense_claim_create",
+    "expense_claim_amend",
+    "expense_claim_submit",
+    "expense_claim_approve",
+    "expense_claim_reject",
+    "expense_claim_record_payment",
+    "expense_claim_void",
+    "expense_claim_show",
+    "expense_claim_list",
     "fx_post",
     "fx_revalue",
     "ledger_setup_status",
@@ -1601,7 +1614,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 42);
+    assert_eq!(names.len(), 45);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
@@ -3301,7 +3314,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 42);
+    assert_eq!(names.len(), 45);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3467,7 +3480,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 42);
+    assert_eq!(names.len(), 45);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

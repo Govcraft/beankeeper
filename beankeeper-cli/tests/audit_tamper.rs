@@ -615,6 +615,7 @@ const VERIFICATION_CHECKS: &[&str] = &[
     "statement_reconciliations",
     "payroll_runs",
     "fixed_assets",
+    "expense_claims",
     "foreign_keys",
     "sqlite_integrity",
     "row_counts",
