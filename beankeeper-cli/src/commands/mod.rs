@@ -168,11 +168,15 @@ pub fn operation(cmd: &Command) -> Operation {
         },
         Command::Report(args) => report_operation(&args.command),
         Command::GroupReport(command) => command.operation(),
-        Command::Audit(args) => match &args.command {
-            AuditCommand::Log(_) => Operation::AuditLog,
-            AuditCommand::Receipts(_) => Operation::AuditReceipts,
-            AuditCommand::Undo(_) => Operation::AuditUndo,
-        },
+        Command::Audit(args) => audit_operation(&args.command),
+    }
+}
+
+const fn audit_operation(command: &AuditCommand) -> Operation {
+    match command {
+        AuditCommand::Log(_) => Operation::AuditLog,
+        AuditCommand::Receipts(_) => Operation::AuditReceipts,
+        AuditCommand::Undo(_) => Operation::AuditUndo,
     }
 }
 

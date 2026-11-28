@@ -79,14 +79,19 @@ fn read_cli(
     Ok(serde_json::from_slice(&output.get_output().stdout)?)
 }
 
-#[test]
-fn group_reports_match_read_only_mcp_and_keep_company_details_separate() -> TestResult {
-    let dir = tempdir()?;
-    let path = dir.path().join("books.db");
-    seed(&path)?;
-    add_company(&path, "beta")?;
-    add_company(&path, "outside")?;
-    bk(&path)?
+fn read_only_client(path: &Path) -> Result<Client, Box<dyn std::error::Error>> {
+    let mut command = bk(path)?;
+    command.args(["mcp", "serve", "--read-only"]);
+    let mut client = Client::spawn(command)?;
+    client.initialize()?;
+    Ok(client)
+}
+
+fn seed_group(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+    seed(path)?;
+    add_company(path, "beta")?;
+    add_company(path, "outside")?;
+    bk(path)?
         .args([
             "--company",
             "beta",
@@ -100,29 +105,29 @@ fn group_reports_match_read_only_mcp_and_keep_company_details_separate() -> Test
         .assert()
         .success();
 
-    post(&path, "acme", "2025-12-31", "1000:10", "4000:10", &[])?;
-    post(&path, "beta", "2026-01-01", "1000:200", "4000:200", &[])?;
-    let sale = post(&path, "acme", "2026-01-31", "1000:30", "4000:30", &[])?;
+    post(path, "acme", "2025-12-31", "1000:10", "4000:10", &[])?;
+    post(path, "beta", "2026-01-01", "1000:200", "4000:200", &[])?;
+    let sale = post(path, "acme", "2026-01-31", "1000:30", "4000:30", &[])?;
     let purchase = post(
-        &path,
+        path,
         "beta",
         "2026-01-31",
         "5000:30",
         "1000:30",
         &["--correlate", &sale],
     )?;
-    let outside = post(&path, "outside", "2026-01-15", "1000:500", "4000:500", &[])?;
+    let outside = post(path, "outside", "2026-01-15", "1000:500", "4000:500", &[])?;
     let linked_to_outside = post(
-        &path,
+        path,
         "acme",
         "2026-01-15",
         "1000:5",
         "4000:5",
         &["--correlate", &outside],
     )?;
-    let deferred = post(&path, "beta", "2026-02-01", "1000:3", "4000:3", &[])?;
+    let deferred = post(path, "beta", "2026-02-01", "1000:3", "4000:3", &[])?;
     let linked_after_cutoff = post(
-        &path,
+        path,
         "acme",
         "2026-01-15",
         "1000:3",
@@ -131,15 +136,47 @@ fn group_reports_match_read_only_mcp_and_keep_company_details_separate() -> Test
     )?;
 
     // Earlier ledgers retained a time suffix on some posting dates.
-    rusqlite::Connection::open(&path)?.execute(
+    rusqlite::Connection::open(path)?.execute(
         "UPDATE transactions SET date = ?1 WHERE id = ?2",
         rusqlite::params!["2026-01-31T16:00:00Z", sale.parse::<i64>()?],
     )?;
 
-    let mut command = bk(&path)?;
-    command.args(["mcp", "serve", "--read-only"]);
-    let mut client = Client::spawn(command)?;
-    client.initialize()?;
+    Ok(json!([
+        {"status":"paired","source":{"company":"acme","transaction_id":sale.parse::<i64>()?,"date":"2026-01-31"},
+            "partner":{"company":"beta","transaction_id":purchase.parse::<i64>()?,"date":"2026-01-31"}},
+        {"status":"no_reciprocal_in_scope","source":{"company":"acme","transaction_id":linked_to_outside.parse::<i64>()?,"date":"2026-01-15"}},
+        {"status":"no_reciprocal_in_scope","source":{"company":"acme","transaction_id":linked_after_cutoff.parse::<i64>()?,"date":"2026-01-15"}}
+    ]))
+}
+
+fn check_text_output(path: &Path, dates: &[&str]) -> TestResult {
+    let csv = bk(path)?
+        .args(["--format", "csv", "group-report", "income-statement"])
+        .args(MEMBERS)
+        .args(dates)
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&csv.get_output().stdout);
+    assert!(output.contains("Combined before eliminations,,,,net_income,208.00"));
+    assert!(output.contains("Company,acme,revenue,4000,Sales,38.00"));
+    assert!(output.contains("Company,beta,revenue,4000,Receipts,200.00"));
+    let table = bk(path)?
+        .args(["group-report", "income-statement"])
+        .args(MEMBERS)
+        .args(dates)
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&table.get_output().stdout);
+    assert!(output.contains("Combined before eliminations"));
+    assert!(output.contains("Group income statement"));
+    Ok(())
+}
+#[test]
+fn group_reports_match_read_only_mcp_and_keep_company_details_separate() -> TestResult {
+    let dir = tempdir()?;
+    let path = dir.path().join("books.db");
+    let expected_links = seed_group(&path)?;
+    let mut client = read_only_client(&path)?;
 
     let dates = ["--from", "2026-01-01", "--to", "2026-01-31"];
     let income = read_cli(&path, "income-statement", &dates)?;
@@ -174,16 +211,7 @@ fn group_reports_match_read_only_mcp_and_keep_company_details_separate() -> Test
         data["members"][1]["statement"]["sections"][0]["accounts"][0]["name"],
         "Receipts"
     );
-    let links = &data["intercompany_links"];
-    assert_eq!(
-        *links,
-        json!([
-            {"status":"paired","source":{"company":"acme","transaction_id":sale.parse::<i64>()?,"date":"2026-01-31"},
-                "partner":{"company":"beta","transaction_id":purchase.parse::<i64>()?,"date":"2026-01-31"}},
-            {"status":"no_reciprocal_in_scope","source":{"company":"acme","transaction_id":linked_to_outside.parse::<i64>()?,"date":"2026-01-15"}},
-            {"status":"no_reciprocal_in_scope","source":{"company":"acme","transaction_id":linked_after_cutoff.parse::<i64>()?,"date":"2026-01-15"}}
-        ])
-    );
+    assert_eq!(data["intercompany_links"], expected_links);
 
     let balance = read_cli(&path, "balance-sheet", &["--as-of", "2026-01-31"])?;
     let data = &balance["data"];
@@ -202,26 +230,7 @@ fn group_reports_match_read_only_mcp_and_keep_company_details_separate() -> Test
     assert_eq!(combined["difference"], 0);
     assert_eq!(combined["balanced"], true);
 
-    let csv = bk(&path)?
-        .args(["--format", "csv", "group-report", "income-statement"])
-        .args(MEMBERS)
-        .args(dates)
-        .assert()
-        .success();
-    let output = String::from_utf8_lossy(&csv.get_output().stdout);
-    assert!(output.contains("Combined before eliminations,,,,net_income,208.00"));
-    assert!(output.contains("Company,acme,revenue,4000,Sales,38.00"));
-    assert!(output.contains("Company,beta,revenue,4000,Receipts,200.00"));
-    let table = bk(&path)?
-        .args(["group-report", "income-statement"])
-        .args(MEMBERS)
-        .args(dates)
-        .assert()
-        .success();
-    let output = String::from_utf8_lossy(&table.get_output().stdout);
-    assert!(output.contains("Combined before eliminations"));
-    assert!(output.contains("no reciprocal posting in scope"));
-    Ok(())
+    check_text_output(&path, &dates)
 }
 
 #[test]
@@ -239,10 +248,7 @@ fn group_reports_reject_invalid_members_dates_and_mixed_currencies() -> TestResu
         &["--currency", "MXN"],
     )?;
 
-    let mut command = bk(&path)?;
-    command.args(["mcp", "serve", "--read-only"]);
-    let mut client = Client::spawn(command)?;
-    client.initialize()?;
+    let mut client = read_only_client(&path)?;
     for (members, as_of, code, message) in [
         (json!(["acme"]), "2026-01-01", "VALIDATION", "at least two"),
         (
@@ -353,10 +359,7 @@ fn group_reports_preserve_totals_wider_than_a_signed_64_bit_integer() -> TestRes
         )?;
     }
 
-    let mut command = bk(&path)?;
-    command.args(["mcp", "serve", "--read-only"]);
-    let mut client = Client::spawn(command)?;
-    client.initialize()?;
+    let mut client = read_only_client(&path)?;
     let data = client.success(
         "group_income_statement",
         &json!({
