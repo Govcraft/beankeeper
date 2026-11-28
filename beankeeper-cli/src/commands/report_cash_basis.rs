@@ -182,19 +182,37 @@ fn read(
         .map(|item| item.posting_id)
         .collect::<BTreeSet<_>>();
     let mut payments: BTreeMap<DocumentId, Vec<AllocationHistory>> = BTreeMap::new();
+    let mut applied = BTreeMap::<TransactionId, i128>::new();
+    let control_accounts = selected
+        .values()
+        .map(|doc| doc.control_account.as_str())
+        .collect();
     for row in history {
         if !selected.contains_key(&row.allocation.document_id) {
             continue;
         }
         if row.allocation.kind == AllocationKind::Credit {
             excluded.insert(row.allocation.source_id);
+        } else {
+            let total = applied.entry(row.allocation.source_id).or_default();
+            *total = total
+                .checked_add(i128::from(row.allocation.amount_minor.minor_units()))
+                .ok_or_else(|| {
+                    CliError::Validation("allocated amounts exceed the supported range".into())
+                })?;
         }
         payments
             .entry(row.allocation.document_id.clone())
             .or_default()
             .push(row);
     }
-    let mut plan = direct_activity(reader, company, dates, currency, &cash, &excluded)?;
+    let sources = SourceRules {
+        cash: &cash,
+        excluded: &excluded,
+        control_accounts: &control_accounts,
+        applied: &applied,
+    };
+    let mut plan = direct_activity(reader, company, dates, currency, &sources)?;
     for (document, history) in payments {
         let item = selected
             .get(&document)
@@ -414,13 +432,57 @@ struct JournalLeg {
     amount: db::amounts::PositiveMinorUnits,
 }
 
+struct SourceRules<'a> {
+    cash: &'a BTreeSet<String>,
+    excluded: &'a BTreeSet<TransactionId>,
+    control_accounts: &'a BTreeSet<&'a str>,
+    applied: &'a BTreeMap<TransactionId, i128>,
+}
+
+impl SourceRules<'_> {
+    fn has_unapplied_cash(
+        &self,
+        transaction: TransactionId,
+        legs: &[JournalLeg],
+    ) -> Result<bool, CliError> {
+        if !legs.iter().any(|leg| self.cash.contains(&leg.account))
+            || !legs.iter().all(|leg| {
+                self.cash.contains(&leg.account)
+                    || self.control_accounts.contains(leg.account.as_str())
+            })
+        {
+            return Ok(false);
+        }
+        let cash_net = legs
+            .iter()
+            .filter(|leg| self.cash.contains(&leg.account))
+            .try_fold(0_i128, |net, leg| {
+                let amount = i128::from(leg.amount.minor_units());
+                let signed = if leg.direction == DebitOrCredit::Debit {
+                    amount
+                } else {
+                    -amount
+                };
+                net.checked_add(signed).ok_or_else(|| {
+                    CliError::Validation("cash movement exceeds the supported range".into())
+                })
+            })?;
+        Ok(cash_net.unsigned_abs()
+            > self
+                .applied
+                .get(&transaction)
+                .copied()
+                .unwrap_or_default()
+                .unsigned_abs())
+    }
+}
+
 fn direct_activity(
     reader: ReadConn<'_>,
     company: &Company<'_>,
     dates: DateRange,
     currency: Currency,
-    cash: &BTreeSet<String>,
-    excluded: &BTreeSet<TransactionId>,
+    rules: &SourceRules<'_>,
 ) -> Result<LinePlan, CliError> {
     let mut query = reader.prepare(
         "SELECT t.id, t.date, e.account_code, a.type, e.direction, e.amount
@@ -433,7 +495,7 @@ fn direct_activity(
     let mut postings: BTreeMap<_, Vec<_>> = BTreeMap::new();
     while let Some(row) = rows.next()? {
         let transaction = row.get(0)?;
-        if excluded.contains(&transaction) {
+        if rules.excluded.contains(&transaction) {
             continue;
         }
         let date = db::calendar_date::read(row, 1)?;
@@ -457,12 +519,18 @@ fn direct_activity(
         let income =
             |leg: &JournalLeg| matches!(leg.kind, AccountType::Revenue | AccountType::Expense);
         if !legs.iter().any(income) {
+            if rules.has_unapplied_cash(transaction, &legs)? {
+                plan.issues.push(Exclusion {
+                    transaction,
+                    reason: "unapplied_cash_movement",
+                });
+            }
             continue;
         }
-        let direct = legs.iter().any(|leg| cash.contains(&leg.account))
+        let direct = legs.iter().any(|leg| rules.cash.contains(&leg.account))
             && legs
                 .iter()
-                .all(|leg| income(leg) || cash.contains(&leg.account));
+                .all(|leg| income(leg) || rules.cash.contains(&leg.account));
         if direct {
             plan.events
                 .extend(legs.into_iter().filter(income).map(|leg| Recognized {
