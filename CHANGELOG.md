@@ -6,6 +6,13 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-11-28
+
+This release advances the ledger schema to v55. It adds reviewed statements,
+agent-reported Stripe evidence, and new proposal types for maintaining
+accounting records. Make and verify a backup before upgrading. Restore a
+pre-upgrade backup before opening the ledger with an older binary.
+
 ### Added
 
 - Give managed agents access to clearing entries and completing monthly statements. Approval mode freezes exact entries and balances for independent review. ([#367](https://github.com/Govcraft/beankeeper/issues/367))
