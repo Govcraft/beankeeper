@@ -44,3 +44,14 @@ CREATE TRIGGER disbursement_attempts_no_delete BEFORE DELETE ON disbursement_att
 BEGIN SELECT RAISE(ABORT,'payment attempts cannot be deleted'); END;
 CREATE TRIGGER disbursement_attempts_no_update BEFORE UPDATE ON disbursement_attempts
 BEGIN SELECT RAISE(ABORT,'payment attempts cannot be edited'); END;
+
+-- Keep the original accounts usable while a live transfer can still settle or
+-- return. Drafts and fully recorded returns require no future journal.
+CREATE TRIGGER protect_disbursement_accounts BEFORE UPDATE OF archived ON accounts
+WHEN NEW.archived=1 AND OLD.archived=0 AND EXISTS (
+    SELECT 1 FROM disbursements d WHERE d.company_slug=OLD.company_slug
+      AND (json_extract(d.details,'$.terms.cash_account')=OLD.code OR json_extract(d.details,'$.payable_account')=OLD.code)
+      AND (d.state IN ('approved','submission_uncertain','submitted','settled')
+           OR (d.state='returned' AND d.return_posting IS NULL))
+)
+BEGIN SELECT RAISE(ABORT,'disbursement can still require a journal on this account'); END;

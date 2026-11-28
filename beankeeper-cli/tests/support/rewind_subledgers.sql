@@ -1,3 +1,4 @@
+DROP TRIGGER protect_disbursement_accounts;
 DROP TABLE disbursement_bills;
 DROP TABLE disbursements;
 DROP TABLE disbursement_attempts;

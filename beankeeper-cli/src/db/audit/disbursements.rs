@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     db::{
         Db,
-        accounts::get_account,
+        accounts::get_active_account,
         amounts::PositiveMinorUnits,
         companies::{Company, CompanySlug},
         connection::{ReadConn, open_existing_keyed},
@@ -410,7 +410,7 @@ fn validate_terms(
     if terms.bills.is_empty() || terms.bills.len() > 100 {
         return Err(invalid("provide one to 100 issued bill allocations"));
     }
-    let cash = get_account(company, terms.cash_account.as_str())?;
+    let cash = get_active_account(company, terms.cash_account.as_str())?;
     if !cash.cash_class.is_cash() {
         return Err(invalid("disbursements require a classified cash account"));
     }
@@ -461,6 +461,7 @@ fn validate_terms(
     }
     let (vendor, payable, currency) =
         scope.ok_or_else(|| invalid("at least one bill is required"))?;
+    get_active_account(company, payable.as_str())?;
     if find_counterparty(company, &vendor)?.is_archived() {
         return Err(invalid("the vendor is archived"));
     }
