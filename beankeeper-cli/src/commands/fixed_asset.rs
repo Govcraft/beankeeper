@@ -245,7 +245,7 @@ impl FixedAssetRequest {
                 .into(),
             Action::List(date) => db
                 .read_snapshot(|reader| fixed_assets::list(&Company::bind(reader, book())?, date))
-                .map(AssetData::Register)?,
+                .map(|register| AssetData::Register(Box::new(register)))?,
             Action::Preview(id, date) => db
                 .read_snapshot(|reader| {
                     fixed_assets::preview(&Company::bind(reader, book())?, &id, date)
@@ -285,7 +285,7 @@ fn direct<T>(
 #[serde(untagged)]
 pub(crate) enum AssetData {
     Asset(Box<fixed_assets::AssetView>),
-    Register(fixed_assets::RegisterView),
+    Register(Box<fixed_assets::RegisterView>),
     Charges(Vec<fixed_assets::Depreciation>),
 }
 

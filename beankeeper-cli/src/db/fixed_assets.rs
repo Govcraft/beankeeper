@@ -270,7 +270,8 @@ pub(in crate::db) fn guard_profile(
     company: &CompanySlug,
     currency: Option<Currency>,
 ) -> Result<(), CliError> {
-    if reader.schema_version()? >= super::schema::FIXED_ASSETS_SCHEMA_VERSION
+    if let Some(currency) = currency
+        && reader.schema_version()? >= super::schema::FIXED_ASSETS_SCHEMA_VERSION
         && reader.query_row(
             "SELECT EXISTS(SELECT 1 FROM fixed_assets WHERE company_slug=?1 AND json_extract(details,'$.currency') IS NOT ?2)",
             params![company,currency], |row| row.get::<_, bool>(0),

@@ -30,6 +30,8 @@ CREATE TABLE fixed_asset_movements (
     UNIQUE(company_slug,asset_id,kind,date)
 ) STRICT;
 
+CREATE INDEX fixed_asset_movements_company_date ON fixed_asset_movements(company_slug,date);
+
 CREATE UNIQUE INDEX fixed_asset_one_disposal ON fixed_asset_movements(company_slug,asset_id)
     WHERE kind = 'disposal';
 
