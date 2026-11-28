@@ -211,7 +211,9 @@ impl BankFeedProvider for PlaidProvider {
         let request = PlaidRequest {
             access_token: self.credentials.access_token.expose_secret(),
             account_id: self.account.as_str(),
-            cursor: cursor.map(SyncCursor::as_str),
+            cursor: cursor
+                .map(SyncCursor::as_str)
+                .filter(|value| !value.is_empty()),
             count: 500,
         };
         let response = self
@@ -349,13 +351,18 @@ fn parse_page(bytes: &[u8], account: &ProviderAccountKey) -> Result<Page, FeedEr
         serde_json::from_slice(bytes).map_err(|_| FeedError::InvalidResponse)?;
     // Plaid returns an empty cursor while an Item's first transaction pull
     // is pending. Preserve the ledger's cursor instead of treating it as data.
-    if response.next_cursor.is_empty()
-        && !response.has_more
-        && response.added.is_empty()
-        && response.modified.is_empty()
-        && response.removed.is_empty()
-    {
-        return Err(FeedError::NotReady);
+    if response.next_cursor.is_empty() {
+        return Err(
+            if response.has_more
+                || !response.added.is_empty()
+                || !response.modified.is_empty()
+                || !response.removed.is_empty()
+            {
+                FeedError::InvalidResponse
+            } else {
+                FeedError::NotReady
+            },
+        );
     }
     let cursor = response
         .next_cursor
