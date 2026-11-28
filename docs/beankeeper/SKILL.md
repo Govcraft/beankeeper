@@ -589,6 +589,8 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk agent issue/list/revoke` | Issue attestations, inspect claims and revoke credentials |
 | `bk agent limit set/show/clear` | Manage per-agent, per-company/currency spend limits |
 | `bk policy show/set` | Inspect or change capability enforcement |
+| `bk tax configure` | Set an effective-dated UK invoice VAT code in a GBP book |
+| `bk tax list/report` | List rate revisions or export VAT evidence and control-account reconciliation |
 | `bk document show` | Work with issued invoices, bills and payment allocations |
 | `bk document print` | Work with issued invoices, bills and payment allocations |
 | `bk document list` | Work with issued invoices, bills and payment allocations |
