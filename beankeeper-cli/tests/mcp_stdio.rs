@@ -8,6 +8,8 @@ mod audit_receipts;
 mod cash_classification;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
+#[path = "mcp_stdio/counterparties.rs"]
+mod counterparties;
 
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;

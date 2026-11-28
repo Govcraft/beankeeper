@@ -59,6 +59,9 @@ pub struct SummaryArgs {
     /// Show open card holds older than this many days.
     #[arg(long, default_value_t)]
     pub stale_hold_age_days: StaleHoldAge,
+    /// Match receivables and payables within each counterparty.
+    #[arg(long)]
+    pub group_by_counterparty: bool,
     /// Payable liability account (repeatable). Defaults to names containing payable.
     #[arg(long = "payable-account")]
     pub payable_account: Vec<String>,
@@ -237,6 +240,7 @@ pub struct SummaryRequest {
     accounts: SummaryAccounts,
     chart: ChartRequest,
     stale_hold_age: StaleHoldAge,
+    group_by_counterparty: bool,
 }
 
 /// Optional exact account selections, grouped by their role in the summary.
@@ -276,7 +280,13 @@ impl SummaryRequest {
             accounts,
             chart,
             stale_hold_age,
+            group_by_counterparty: false,
         })
+    }
+
+    pub(crate) fn with_counterparty_grouping(mut self, enabled: bool) -> Self {
+        self.group_by_counterparty = enabled;
+        self
     }
 }
 
@@ -337,6 +347,7 @@ impl TryFrom<(&CompanySlug, &SummaryArgs, ChartRequest)> for SummaryRequest {
             chart,
             args.stale_hold_age_days,
         )
+        .map(|request| request.with_counterparty_grouping(args.group_by_counterparty))
     }
 }
 
@@ -638,12 +649,17 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
     let prior = activity(periods.prior)?;
     let comparison = model::comparison(&current, &prior, currency)?;
     let movers = model::movers(&current, &prior, currency)?;
+    let parties = request
+        .group_by_counterparty
+        .then(|| db::counterparties::linked_party_labels(&scope))
+        .transpose()?;
     let attention = attention::compute(&attention::AttentionContext {
         conn: reader,
         company: scope.slug(),
         currency,
         as_of: periods.current.to,
         stale_hold_age,
+        parties: parties.as_ref(),
         cash: &cash,
         receivables: &receivables,
         payables: &payables,

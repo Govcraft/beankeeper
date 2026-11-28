@@ -5,6 +5,7 @@ mod audit_snapshot;
 pub mod backup;
 pub mod budget;
 pub mod company;
+pub mod counterparty;
 pub mod export;
 pub mod fx;
 pub mod import_ofx;
@@ -68,6 +69,7 @@ pub fn operation(cmd: &Command) -> Operation {
             crate::cli::LoanCommand::Pay(_) => Operation::LoanPay,
         },
         Command::Rule(args) => args.command.operation(),
+        Command::Counterparty(args) => args.command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -302,6 +304,9 @@ fn dispatch_ledger(
                 Ok(request.map(LedgerRequest::Rule))
             });
         }
+        Command::Counterparty(args) => Some(LedgerRequest::Counterparty(
+            (require_company(cli)?.clone(), args.command.clone()).into(),
+        )),
         Command::BookkeepingPolicy(command) => Some(LedgerRequest::Standing(
             (require_company(cli)?, command).into(),
         )),
@@ -470,6 +475,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Fx(_)
         | Command::Budget(_)
         | Command::Rule(_)
+        | Command::Counterparty(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)

@@ -1,6 +1,6 @@
 //! Validated customer and vendor records scoped to one book.
 
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use rusqlite::{
@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 
-use super::companies::Company;
+use super::{companies::Company, ids::TransactionId};
 
 /// A company-scoped customer or vendor identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(try_from = "String", into = "String")]
 #[schemars(with = "String")]
 pub struct CounterpartyId(MagicTypeId);
@@ -231,8 +233,7 @@ contact_text!(
 /// Default calendar days from issue date to due date. Zero is due on receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "u16", into = "u16")]
-#[schemars(range(min = 0, max = 365))]
-pub struct PaymentTerms(u16);
+pub struct PaymentTerms(#[schemars(range(min = 0, max = 365))] u16);
 
 impl PaymentTerms {
     /// Returns the calendar days allowed for payment.
@@ -462,4 +463,259 @@ pub(super) fn read_counterparty(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cou
         },
         archived: row.get(6)?,
     })
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ContactField<T> {
+    #[default]
+    Keep,
+    Set(T),
+    Clear,
+}
+
+impl<T> ContactField<T> {
+    fn apply(self, previous: Option<T>) -> Option<T> {
+        match self {
+            Self::Keep => previous,
+            Self::Set(next) => Some(next),
+            Self::Clear => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContactPatch {
+    pub name: Option<CounterpartyName>,
+    pub role: Option<CounterpartyRole>,
+    #[serde(default)]
+    pub email: ContactField<ContactEmail>,
+    #[serde(default)]
+    pub address: ContactField<PostalAddress>,
+    #[serde(default)]
+    pub payment_terms: ContactField<PaymentTerms>,
+}
+
+pub(super) fn apply_contact_change(
+    mut current: Counterparty,
+    patch: ContactPatch,
+) -> Result<Counterparty, ContactError> {
+    current.require_active()?;
+    let details = &mut current.details;
+    if let Some(name) = patch.name {
+        details.name = name;
+    }
+    if let Some(role) = patch.role {
+        details.role = role;
+    }
+    details.email = patch.email.apply(details.email.take());
+    details.address = patch.address.apply(details.address.take());
+    details.payment_terms = patch.payment_terms.apply(details.payment_terms);
+    Ok(current)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PartyPage<T> {
+    pub items: Vec<T>,
+    pub next_offset: Option<u32>,
+}
+
+/// The bounded maximum number of counterparty rows in a page.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct PartyPageLimit(#[schemars(range(min = 1, max = 100))] u16);
+
+impl Default for PartyPageLimit {
+    fn default() -> Self {
+        Self(50)
+    }
+}
+
+impl TryFrom<u16> for PartyPageLimit {
+    type Error = CliError;
+
+    fn try_from(raw: u16) -> Result<Self, Self::Error> {
+        if (1..=100).contains(&raw) {
+            Ok(Self(raw))
+        } else {
+            Err(CliError::Validation(
+                "counterparty page size must be from 1 through 100".into(),
+            ))
+        }
+    }
+}
+
+impl From<PartyPageLimit> for u16 {
+    fn from(value: PartyPageLimit) -> Self {
+        value.0
+    }
+}
+
+impl FromStr for PartyPageLimit {
+    type Err = CliError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        raw.parse::<u16>()
+            .map_err(|_| CliError::Validation("invalid counterparty page size".into()))?
+            .try_into()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PartyPageRequest {
+    pub limit: PartyPageLimit,
+    pub offset: u32,
+}
+
+impl PartyPageRequest {
+    fn finish<T>(self, mut items: Vec<T>) -> Result<PartyPage<T>, CliError> {
+        let count = usize::from(self.limit.0);
+        let next_offset = if items.len() > count {
+            items.truncate(count);
+            Some(
+                self.offset
+                    .checked_add(u32::from(self.limit.0))
+                    .ok_or_else(|| {
+                        CliError::Validation(
+                            "counterparty page offset exceeds the supported range".into(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        Ok(PartyPage { items, next_offset })
+    }
+}
+
+pub(crate) fn list_counterparties(
+    company: &Company<'_>,
+    search: Option<&CounterpartyName>,
+    with_archived: bool,
+    page: PartyPageRequest,
+) -> Result<PartyPage<Counterparty>, CliError> {
+    let mut statement = company.read().connection().prepare(
+        "SELECT id, name, role, email, address, payment_terms, archived FROM counterparties
+         WHERE company_slug = ?1 AND (?2 IS NULL OR instr(lower(name), lower(?2)) > 0)
+           AND (?3 OR NOT archived)
+         ORDER BY name COLLATE NOCASE, id LIMIT ?4 OFFSET ?5",
+    )?;
+    let rows = statement
+        .query_map(
+            params![
+                company.slug(),
+                search.map(CounterpartyName::as_str),
+                with_archived,
+                u32::from(page.limit.0) + 1,
+                page.offset
+            ],
+            read_counterparty,
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    page.finish(rows)
+}
+
+/// The legacy annotation from which to suggest transaction associations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyPartyLabel {
+    /// The transaction's customer annotation.
+    Customer,
+    /// The transaction's vendor annotation.
+    Vendor,
+}
+
+impl LegacyPartyLabel {
+    fn selectors(self) -> (&'static str, CounterpartyRole) {
+        match self {
+            Self::Customer => ("$.customer", CounterpartyRole::Customer),
+            Self::Vendor => ("$.vendor", CounterpartyRole::Vendor),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PartySuggestion {
+    pub transaction_id: super::ids::TransactionId,
+    pub legacy_label: String,
+    pub candidates: Vec<CounterpartyId>,
+    pub additional_candidates: bool,
+}
+
+pub(crate) fn suggest_counterparties(
+    company: &Company<'_>,
+    label: LegacyPartyLabel,
+    page: PartyPageRequest,
+) -> Result<PartyPage<PartySuggestion>, CliError> {
+    let (metadata_path, role) = label.selectors();
+    let conn = company.read().connection();
+    let mut statement = conn.prepare(
+        "SELECT t.id, trim(json_extract(CASE WHEN json_valid(t.metadata) THEN t.metadata END, ?2))
+         FROM posted_transactions t
+         LEFT JOIN transaction_counterparties tc ON tc.company_slug = t.company_slug AND tc.transaction_id = t.id
+         WHERE t.company_slug = ?1 AND tc.transaction_id IS NULL
+           AND json_type(CASE WHEN json_valid(t.metadata) THEN t.metadata END, ?2) = 'text'
+           AND trim(json_extract(CASE WHEN json_valid(t.metadata) THEN t.metadata END, ?2)) <> ''
+         ORDER BY t.id LIMIT ?3 OFFSET ?4",
+    )?;
+    let mut candidates = conn.prepare(
+        "SELECT id FROM counterparties WHERE company_slug = ?1 AND name = ?2 COLLATE NOCASE
+         AND NOT archived AND role IN (?3, 'both') ORDER BY id LIMIT 101",
+    )?;
+    let rows = statement.query_map(
+        params![
+            company.slug(),
+            metadata_path,
+            u32::from(page.limit.0) + 1,
+            page.offset
+        ],
+        |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
+    )?;
+    let mut suggestions = Vec::new();
+    for row in rows {
+        let (transaction_id, legacy_label) = row?;
+        let mut matches: Vec<_> = candidates
+            .query_map(
+                params![company.slug(), legacy_label, role.as_str()],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        let additional_candidates = matches.len() > 100;
+        matches.truncate(100);
+        suggestions.push(PartySuggestion {
+            transaction_id,
+            legacy_label,
+            candidates: matches,
+            additional_candidates,
+        });
+    }
+    page.finish(suggestions)
+}
+
+pub(crate) struct LinkedParties(BTreeMap<TransactionId, (CounterpartyId, CounterpartyName)>);
+
+impl LinkedParties {
+    pub(crate) fn group_label(
+        &self,
+        transaction: TransactionId,
+        legacy: impl FnOnce() -> String,
+    ) -> String {
+        self.0.get(&transaction).map_or_else(
+            || format!("{} (legacy)", legacy()),
+            |(id, name)| format!("{name} [{id}]"),
+        )
+    }
+}
+
+pub(crate) fn linked_party_labels(company: &Company<'_>) -> Result<LinkedParties, CliError> {
+    let mut statement = company.read().connection().prepare(
+        "SELECT link.transaction_id, party.id, party.name FROM transaction_counterparties link
+         JOIN counterparties party ON party.company_slug = link.company_slug AND party.id = link.counterparty_id
+         WHERE link.company_slug = ?1",
+    )?;
+    let rows = statement.query_map([company.slug()], |row| {
+        Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+    })?;
+    Ok(LinkedParties(rows.collect::<rusqlite::Result<_>>()?))
 }

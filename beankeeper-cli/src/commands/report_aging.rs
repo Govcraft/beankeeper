@@ -1497,6 +1497,7 @@ struct AgingScope<'a> {
     buckets: Buckets,
     method: MatchMethod,
     group_by: Option<&'a str>,
+    parties: Option<&'a db::counterparties::LinkedParties>,
     link_key: Option<&'a str>,
     filters: &'a [MetadataFilter],
     /// Codes of every selected account.
@@ -1518,9 +1519,17 @@ fn age_account(
         if r.matches_filter {
             keep.insert(r.id);
         }
-        let key = scope
-            .group_by
-            .map(|k| counterparty_from_metadata(r.metadata.as_deref(), k));
+        let metadata_label = |key| counterparty_from_metadata(r.metadata.as_deref(), key);
+        let key = scope.parties.map_or_else(
+            || scope.group_by.map(metadata_label),
+            |parties| {
+                let key = scope.group_by.unwrap_or(match scope.kind {
+                    AgingKind::Receivable => "customer",
+                    AgingKind::Payable => "vendor",
+                });
+                Some(parties.group_label(r.id, || metadata_label(key)))
+            },
+        );
         let links = scope.link_key.map_or(LinkSpec::None, |k| {
             parse_link_spec(r.metadata.as_deref(), k)
         });
@@ -1563,6 +1572,7 @@ pub(crate) struct AgingSelection {
     pub as_of: crate::request::LocalDate,
     pub buckets: Option<String>,
     pub group_by: Option<String>,
+    pub group_by_counterparty: bool,
     pub currency: Option<Currency>,
     pub method: MatchMethod,
     pub link_key: Option<String>,
@@ -1582,6 +1592,7 @@ pub(crate) struct AgingRequest {
 struct AgingProjection {
     matching: AgingMatching,
     grouping: AgingGrouping,
+    group_by_counterparty: bool,
     filters: Vec<MetadataFilter>,
     detail: bool,
     include_children: bool,
@@ -1762,6 +1773,7 @@ impl TryFrom<AgingSelection> for AgingRequest {
             projection: AgingProjection {
                 matching: (selection.method, selection.link_key).try_into()?,
                 grouping: (selection.group_by, selection.across).into(),
+                group_by_counterparty: selection.group_by_counterparty,
                 filters: metadata_filter::parse_filters(&selection.filters)?,
                 detail: selection.detail,
                 include_children: selection.include_children,
@@ -1774,12 +1786,22 @@ impl TryFrom<&crate::cli::AgingCommandArgs> for AgingRequest {
     type Error = CliError;
 
     fn try_from(args: &crate::cli::AgingCommandArgs) -> Result<Self, Self::Error> {
+        if args.group_across_accounts
+            && args.group_by_metadata.is_none()
+            && !args.group_by_counterparty
+        {
+            return Err(CliError::Usage(
+                "--group-across-accounts requires --group-by-counterparty or --group-by-metadata"
+                    .into(),
+            ));
+        }
         AgingSelection {
             accounts: args.account.as_slice().try_into()?,
             include_children: args.include_children,
             as_of: args.as_of.map(NaiveDate::from).into(),
             buckets: args.buckets.clone(),
             group_by: args.group_by_metadata.clone(),
+            group_by_counterparty: args.group_by_counterparty,
             currency: args.currency,
             method: args.method.map(Into::into).unwrap_or_default(),
             link_key: args.link_key.clone(),
@@ -1801,6 +1823,7 @@ impl TryFrom<&AgingOptions<'_>> for AgingRequest {
             as_of: options.as_of.into(),
             buckets: Some(options.buckets.to_owned()),
             group_by: options.group_by_metadata.map(str::to_owned),
+            group_by_counterparty: false,
             currency: options.currency,
             method: options.method,
             link_key: options.link_key.map(str::to_owned),
@@ -1863,6 +1886,11 @@ impl AgingRequest {
             .map(|account| account.code.clone())
             .collect();
         let kind = common_kind(&accounts)?;
+        let parties = self
+            .projection
+            .group_by_counterparty
+            .then(|| db::counterparties::linked_party_labels(company))
+            .transpose()?;
         let company = company.slug().as_str();
         let currency = resolve_currency(reader, company, self.currency)?;
         let method = self.projection.matching.method();
@@ -1873,6 +1901,7 @@ impl AgingRequest {
             buckets: self.buckets,
             method,
             group_by: self.projection.grouping.key(),
+            parties: parties.as_ref(),
             link_key: self.projection.matching.link_key(),
             filters: &self.projection.filters,
             selected: &selected,
@@ -1904,7 +1933,11 @@ impl AgingResponse {
             kind: report.kind,
             as_of: &as_of,
             currency: self.currency,
-            group_by: self.projection.grouping.key(),
+            group_by: if self.projection.group_by_counterparty {
+                Some("counterparty")
+            } else {
+                self.projection.grouping.key()
+            },
             link_key: self.projection.matching.link_key(),
             detail: self.projection.detail,
             across: self.projection.grouping.across(),

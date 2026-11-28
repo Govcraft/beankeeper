@@ -20,6 +20,7 @@ use crate::{
         audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
         budget::{BudgetRequest, BudgetResponse},
         company::{CompanyRequest, CompanyResponse},
+        counterparty::{CounterpartyRequest, CounterpartyResponse},
         fx::{FxRequest, FxResponse},
         investment::{InvestmentRequest, InvestmentResponse},
         period::{PeriodRequest, PeriodResponse},
@@ -52,6 +53,7 @@ pub enum LedgerRequest {
     AuditReceipts(ReceiptRequest),
     Budget(BudgetRequest),
     Company(CompanyRequest),
+    Counterparty(CounterpartyRequest),
     Investment(InvestmentRequest),
     Period(PeriodRequest),
     Reconcile(ReconcileRequest),
@@ -74,6 +76,7 @@ pub enum LedgerResponse {
     AuditReceipts(ReceiptResponse),
     Budget(BudgetResponse),
     Company(CompanyResponse),
+    Counterparty(Operation, CompanySlug, CounterpartyResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Period(Operation, CompanySlug, PeriodResponse),
     Reconcile(Operation, CompanySlug, ReconcileResponse),
@@ -98,6 +101,7 @@ impl LedgerRequest {
             Self::AuditReceipts(request) => request.operation(),
             Self::Budget(request) => request.operation(),
             Self::Company(request) => request.operation(),
+            Self::Counterparty(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Period(request) => request.operation(),
             Self::Reconcile(request) => request.operation(),
@@ -168,6 +172,11 @@ impl LedgerRequest {
                 .map(LedgerResponse::AuditReceipts),
             Self::Budget(request) => request.execute(db, actor).map(LedgerResponse::Budget),
             Self::Company(request) => request.execute(db, actor).map(LedgerResponse::Company),
+            Self::Counterparty(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Counterparty(operation, company, response))
+            }
             Self::Investment(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -220,6 +229,9 @@ impl LedgerResponse {
             Self::AuditReceipts(response) => response.render(cli),
             Self::Budget(response) => response.render(cli),
             Self::Company(response) => response.render(cli),
+            Self::Counterparty(operation, company, response) => {
+                response.render(cli, *operation, company)
+            }
             Self::Investment(operation, company, response) => {
                 response.render(cli, *operation, company.as_str())
             }

@@ -54,6 +54,7 @@ pub(crate) mod corrections;
 pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
+pub(crate) mod counterparties;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
 pub(crate) mod grant;
@@ -170,6 +171,8 @@ audit_labels! {
         Entry => "entry",
         Transaction => "transaction",
         TransactionLink => "transaction_link",
+        Counterparty => "counterparty",
+        TransactionCounterparty => "transaction_counterparty",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -201,6 +204,8 @@ impl AuditEntity {
             | Self::Entry
             | Self::Transaction
             | Self::TransactionLink
+            | Self::Counterparty
+            | Self::TransactionCounterparty
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -246,6 +251,10 @@ audit_labels! {
         AccountDelete => "account_delete" | "account-delete",
         AccountRename => "account_rename" | "account-rename",
         AccountClassify => "account_classify",
+        CounterpartyCreate => "counterparty_create",
+        CounterpartyAmend => "counterparty_amend",
+        CounterpartyArchive => "counterparty_archive",
+        CounterpartyAssociate => "counterparty_associate",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",

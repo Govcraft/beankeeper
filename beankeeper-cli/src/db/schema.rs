@@ -9,7 +9,7 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 39;
+const LATEST_VERSION: i64 = 40;
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -39,6 +39,7 @@ pub(super) const FX_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(37);
 pub(super) const RESTORE_SCHEMA_VERSION: SchemaVersion =
     SchemaVersion::known(RESTORE_VERSION_NUMBER);
 pub(crate) const CASH_CLASS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(39);
+pub(super) const COUNTERPARTY_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(40);
 /// Earliest ledger that supports the read-only setup operations.
 pub(crate) const OLDEST_SETUP_READ_SCHEMA: SchemaVersion = SchemaVersion::known(20);
 
@@ -332,6 +333,10 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
         migrate_with_writer(conn, CASH_CLASS_SCHEMA_VERSION, apply_cash_class_schema)?;
     }
 
+    if version < COUNTERPARTY_SCHEMA_VERSION {
+        migrate_with_writer(conn, COUNTERPARTY_SCHEMA_VERSION, apply_counterparty_schema)?;
+    }
+
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -339,6 +344,23 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
     );
 
     Ok(())
+}
+
+fn apply_counterparty_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(
+            conn,
+            AuditTable::Counterparties,
+            COUNTERPARTY_SCHEMA_VERSION,
+        )?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/counterparties.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_cash_class_schema(conn: &Connection) -> Result<(), CliError> {
@@ -361,7 +383,15 @@ fn apply_cash_class_schema(conn: &Connection) -> Result<(), CliError> {
             AuditTable::CashClassification,
             CASH_CLASS_SCHEMA_VERSION,
         )?;
-        conn.execute_batch("CREATE TRIGGER protect_cash_class_update BEFORE UPDATE OF cash_class ON accounts
+        install_cash_class_guard(conn)?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
+}
+
+fn install_cash_class_guard(conn: &Connection) -> Result<(), CliError> {
+    conn.execute_batch("CREATE TRIGGER protect_cash_class_update BEFORE UPDATE OF cash_class ON accounts
             WHEN NEW.cash_class <> OLD.cash_class AND NOT EXISTS (
                 SELECT 1 FROM bookkeeping_audit event WHERE event.id = (SELECT MAX(id) FROM audit_log)
                 AND event.company_slug = NEW.company_slug AND event.entity = 'account'
@@ -369,10 +399,7 @@ fn apply_cash_class_schema(conn: &Connection) -> Result<(), CliError> {
                 AND json_extract(event.before, '$.cash_class') IS OLD.cash_class
                 AND json_extract(event.after, '$.cash_class') IS NEW.cash_class)
             BEGIN SELECT RAISE(ABORT, 'cash classification requires an audit receipt'); END;")?;
-        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
-        conn.pragma_update(None, "defer_foreign_keys", false)?;
-        Ok(())
-    })
+    Ok(())
 }
 
 fn apply_restore_migration(conn: &Connection) -> Result<(), CliError> {
@@ -2109,12 +2136,15 @@ enum AuditTable {
     StatementReconciliation,
     LedgerRestore,
     CashClassification,
+    Counterparties,
 }
 
 impl From<AuditTable> for AuditHistory {
     fn from(table: AuditTable) -> Self {
         match table {
-            AuditTable::LedgerRestore | AuditTable::CashClassification => Self::Bookkeeping,
+            AuditTable::LedgerRestore
+            | AuditTable::CashClassification
+            | AuditTable::Counterparties => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2226,6 +2256,22 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
     }
     if table >= AuditTable::CashClassification {
         let _ = write!(action, ",'{}'", AuditAction::AccountClassify);
+    }
+    if table >= AuditTable::Counterparties {
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::Counterparty,
+            AuditEntity::TransactionCounterparty
+        );
+        let _ = write!(
+            action,
+            ",'{}','{}','{}','{}'",
+            AuditAction::CounterpartyCreate,
+            AuditAction::CounterpartyAmend,
+            AuditAction::CounterpartyArchive,
+            AuditAction::CounterpartyAssociate
+        );
     }
     (entity, action)
 }
@@ -2369,7 +2415,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
