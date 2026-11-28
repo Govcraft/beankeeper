@@ -107,6 +107,52 @@ pub(crate) enum StripeCollection {
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
+pub(crate) enum StripeChange {
+    Evidence(payment_collection::CollectionOutcome),
+    Payout(payment_collection::payout::PayoutPosting),
+    Refund(payment_collection::refund::RefundPosting),
+}
+
+impl StripeCollection {
+    pub(crate) fn submit(
+        self,
+        db: &Db,
+        actor: &Actor,
+        company: &CompanySlug,
+    ) -> Result<Submission<StripeChange>, CliError> {
+        submit::<grant::Bookkeeping, _>(
+            db,
+            actor,
+            company,
+            Bookkeeping::StripeCollection(self.clone()),
+            |tx, actor, scope| self.apply(tx, actor, scope),
+        )
+    }
+
+    fn apply(
+        self,
+        tx: &AuditedTx<'_>,
+        actor: &Actor,
+        scope: &Company<'_>,
+    ) -> Result<StripeChange, CliError> {
+        match self {
+            Self::ReportEvidence { evidence } => {
+                evidence.apply(tx, actor, scope).map(StripeChange::Evidence)
+            }
+            Self::ReconcilePayout { manifest } => {
+                payment_collection::payout::reconcile_in_scope(tx, actor, scope.slug(), &manifest)
+                    .map(StripeChange::Payout)
+            }
+            Self::ReconcileRefund { terms } => {
+                payment_collection::refund::reconcile_in_scope(tx, actor, scope.slug(), &terms)
+                    .map(StripeChange::Refund)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
 pub(crate) enum Submission<T> {
     Applied(T),
     Pending(PendingCorrection),
