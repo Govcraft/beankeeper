@@ -1128,13 +1128,13 @@ mod tests {
     }
 
     #[test]
-    fn demo_data_populates_and_balances() {
-        let db = Db::open_in_memory().expect("open in-memory db");
-        seed_companies(&db, &fixture_actor("initializer")).expect("create demo companies");
-        populate_demo_data(&db).expect("populate demo data");
+    fn demo_data_populates_and_balances() -> Result<(), Box<dyn std::error::Error>> {
+        let db = Db::open_in_memory()?;
+        seed_companies(&db, &fixture_actor("initializer"))?;
+        populate_demo_data(&db)?;
 
         // Verify all three companies exist
-        let companies = crate::db::list_companies(db.read()).expect("list companies");
+        let companies = crate::db::list_companies(db.read())?;
         assert_eq!(companies.len(), 3);
 
         let expected_accounts = [
@@ -1145,19 +1145,14 @@ mod tests {
 
         for (slug, expected_count) in &expected_accounts {
             // Verify accounts exist
-            let scope = crate::db::companies::Company::bind(
-                db.read(),
-                slug.parse().expect("fixture company"),
-            )
-            .expect("bind demo company");
+            let scope = crate::db::companies::Company::bind(db.read(), slug.parse()?)?;
             let accounts = crate::db::list_accounts(
                 &scope,
                 &crate::db::ListAccountParams {
                     type_filter: None,
                     name_filter: None,
                 },
-            )
-            .expect("list accounts");
+            )?;
             assert_eq!(
                 accounts.len(),
                 *expected_count,
@@ -1166,17 +1161,12 @@ mod tests {
 
             // Verify trial balance is balanced
             let balances = crate::db::compute_trial_balance(
-                &crate::db::companies::Company::bind(
-                    db.read(),
-                    slug.parse().expect("fixture company"),
-                )
-                .expect("resolve fixture company"),
+                &crate::db::companies::Company::bind(db.read(), slug.parse()?)?,
                 None,
                 None,
                 None,
                 beankeeper::types::Currency::USD,
-            )
-            .expect("trial balance");
+            )?;
             let total_debits: i64 = balances.iter().map(|b| b.debit_total).sum();
             let total_credits: i64 = balances.iter().map(|b| b.credit_total).sum();
             assert_eq!(
@@ -1185,22 +1175,23 @@ mod tests {
             );
             assert!(total_debits > 0, "{slug}: should have non-zero balances");
         }
+        Ok(())
     }
 
     #[test]
-    fn demo_intercompany_correlations_are_linked() {
-        let db = Db::open_in_memory().expect("open in-memory db");
-        seed_companies(&db, &fixture_actor("initializer")).expect("create demo companies");
-        populate_demo_data(&db).expect("populate demo data");
+    fn demo_intercompany_correlations_are_linked() -> Result<(), Box<dyn std::error::Error>> {
+        let db = Db::open_in_memory()?;
+        seed_companies(&db, &fixture_actor("initializer"))?;
+        populate_demo_data(&db)?;
 
         // No orphaned correlations — every intercompany pair should be fully linked
         let orphans =
-            crate::db::find_orphaned_correlations(db.read(), crate::db::companies::AllCompanies)
-                .expect("find orphans");
+            crate::db::find_orphaned_correlations(db.read(), crate::db::companies::AllCompanies)?;
         assert!(
             orphans.is_empty(),
             "expected no orphaned correlations, found {}: {orphans:?}",
             orphans.len()
         );
+        Ok(())
     }
 }

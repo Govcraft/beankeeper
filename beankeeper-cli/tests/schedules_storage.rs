@@ -224,7 +224,7 @@ fn due_posts_preserve_template_complete_at_end_and_are_idempotent() -> TestResul
                 grant,
                 &"acme".parse()?,
                 "1000",
-                beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                beankeeper_cli::confirmation::Confirmed::forced(true)?,
             )
         })
         .is_err()
@@ -326,7 +326,7 @@ fn cancellation_is_scoped_audited_and_does_not_remove_postings() -> TestResult {
             audit::delete_company(
                 grant,
                 &"acme".parse()?,
-                beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                beankeeper_cli::confirmation::Confirmed::forced(true)?,
             )
         })
         .is_err()

@@ -518,8 +518,10 @@ fn cli_and_mcp_return_the_same_validation_error_for_blank_actor_filters() -> Tes
     client.initialize()?;
 
     for blank in ["", "  \t", "\u{2003}"] {
-        let parse_error = Cli::try_parse_from(["bk", "audit", "log", "--by-actor", blank])
-            .expect_err("blank actor must fail in clap");
+        let Err(parse_error) = Cli::try_parse_from(["bk", "audit", "log", "--by-actor", blank])
+        else {
+            return Err("blank actor must fail in clap".into());
+        };
         assert!(
             parse_error
                 .source()
@@ -2286,8 +2288,9 @@ fn invalid_currency_fails_at_both_parse_boundaries_with_validation_code() -> Tes
         "XXX",
         "--format=json",
     ];
-    let parse_error = Cli::try_parse_from(std::iter::once("bk").chain(args))
-        .expect_err("invalid currency must fail in clap");
+    let Err(parse_error) = Cli::try_parse_from(std::iter::once("bk").chain(args)) else {
+        return Err("invalid currency must fail in clap".into());
+    };
     assert!(matches!(
         parse_error.source().and_then(|cause| cause.downcast_ref::<CurrencyError>()),
         Some(CurrencyError::UnsupportedCode { code }) if code == "XXX"
@@ -2339,8 +2342,9 @@ fn cli_and_mcp_reject_invalid_calendar_dates_at_the_parameter_boundary() -> Test
             "month",
             "--format=json",
         ];
-        let parse_error = Cli::try_parse_from(std::iter::once("bk").chain(args))
-            .expect_err("invalid date must fail in clap");
+        let Err(parse_error) = Cli::try_parse_from(std::iter::once("bk").chain(args)) else {
+            return Err("invalid date must fail in clap".into());
+        };
         assert!(
             parse_error
                 .source()

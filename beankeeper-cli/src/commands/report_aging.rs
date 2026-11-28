@@ -3018,9 +3018,10 @@ mod tests {
     }
 
     #[test]
-    fn combine_rejects_different_ranges_even_when_bucket_counts_match() {
+    fn combine_rejects_different_ranges_even_when_bucket_counts_match()
+    -> Result<(), Box<dyn std::error::Error>> {
         let account = AccountAging {
-            account: account("1110", "asset"),
+            account: account("1110", "asset")?,
             report: report_for(
                 vec![(None, mv(1, "2026-01-01", 100))],
                 d("2026-02-01"),
@@ -3035,6 +3036,7 @@ mod tests {
             vec![account],
         );
         assert!(matches!(result, Err(CliError::Validation(_))));
+        Ok(())
     }
 
     #[test]
@@ -3505,16 +3507,16 @@ mod tests {
         assert_eq!(gbp.code(), "GBP");
     }
 
-    fn account(code: &str, ty: &str) -> db::AccountRow {
-        db::AccountRow {
-            company_slug: "c".parse().expect("fixture company"),
+    fn account(code: &str, ty: &str) -> Result<db::AccountRow, Box<dyn std::error::Error>> {
+        Ok(db::AccountRow {
+            company_slug: "c".parse()?,
             code: code.to_string(),
             name: format!("Account {code}"),
             account_type: ty.parse().unwrap_or_else(|error| panic!("{error}")),
             cash_class: beankeeper::types::CashClass::default(),
             created_at: String::new(),
             default_tax_category: None,
-        }
+        })
     }
 
     fn strings(v: &[&str]) -> Vec<String> {
@@ -3555,10 +3557,10 @@ mod tests {
     }
 
     #[test]
-    fn common_kind_rejects_mixes_and_non_ar_ap() {
-        let asset = account("1100", "asset");
-        let asset2 = account("1200", "asset");
-        let liability = account("2000", "liability");
+    fn common_kind_rejects_mixes_and_non_ar_ap() -> Result<(), Box<dyn std::error::Error>> {
+        let asset = account("1100", "asset")?;
+        let asset2 = account("1200", "asset")?;
+        let liability = account("2000", "liability")?;
         assert_eq!(
             common_kind(&[asset.clone(), asset2]).ok(),
             Some(AgingKind::Receivable)
@@ -3573,10 +3575,11 @@ mod tests {
             "{mixed:?}"
         );
         assert!(matches!(
-            common_kind(&[asset, account("4000", "revenue")]),
+            common_kind(&[asset, account("4000", "revenue")?]),
             Err(CliError::Validation(_))
         ));
         assert!(common_kind(&[]).is_err());
+        Ok(())
     }
 
     #[test]
@@ -3615,7 +3618,7 @@ mod tests {
     }
 
     #[test]
-    fn combine_sums_accounts_and_merges_counterparties() {
+    fn combine_sums_accounts_and_merges_counterparties() -> Result<(), Box<dyn std::error::Error>> {
         let as_of = d("2026-06-30");
         let east = report_for(
             vec![
@@ -3637,11 +3640,11 @@ mod tests {
         );
         let accounts = vec![
             AccountAging {
-                account: account("1110", "asset"),
+                account: account("1110", "asset")?,
                 report: east.clone(),
             },
             AccountAging {
-                account: account("1120", "asset"),
+                account: account("1120", "asset")?,
                 report: west.clone(),
             },
         ];
@@ -3670,5 +3673,6 @@ mod tests {
         assert_eq!(codes, ["1110"]);
         assert_eq!(r.groups[1].counterparty.as_deref(), Some("B"));
         assert_eq!(r.groups[1].items[0].0, "1110");
+        Ok(())
     }
 }

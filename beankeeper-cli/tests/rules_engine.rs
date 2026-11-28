@@ -555,7 +555,7 @@ fn rule_mutations_roll_back_when_audit_recording_fails() -> TestResult {
                 grant,
                 &"acme".parse()?,
                 rule.id(),
-                beankeeper_cli::confirmation::Confirmed::forced(true).expect("forced confirmation")
+                beankeeper_cli::confirmation::Confirmed::forced(true)?
             )
             .is_err()
         );

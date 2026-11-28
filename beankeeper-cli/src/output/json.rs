@@ -1231,9 +1231,9 @@ mod tests {
     }
 
     #[test]
-    fn render_accounts_normal_balance() {
+    fn render_accounts_normal_balance() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![AccountRow {
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
@@ -1247,12 +1247,13 @@ mod tests {
         assert!(json.contains(r#""company": "acme""#));
         assert!(json.contains(r#""type": "asset""#));
         assert!(json.contains(r#""normal_balance": "debit""#));
+        Ok(())
     }
 
     #[test]
-    fn render_accounts_revenue_is_credit() {
+    fn render_accounts_revenue_is_credit() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![AccountRow {
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             code: "4000".into(),
             name: "Revenue".into(),
             account_type: beankeeper::types::AccountType::Revenue,
@@ -1263,13 +1264,14 @@ mod tests {
         let json = render_accounts(&rows, test_meta(Operation::AccountList, Some("acme")))
             .unwrap_or_default();
         assert!(json.contains(r#""normal_balance": "credit""#));
+        Ok(())
     }
 
     #[test]
-    fn render_transactions_with_entries() {
+    fn render_transactions_with_entries() -> Result<(), Box<dyn std::error::Error>> {
         let txns = vec![TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             description: "Sale".into(),
             metadata: None,
             currency: Currency::USD,
@@ -1291,7 +1293,7 @@ mod tests {
                     id: crate::db::ids::fixture_id(1),
                     transaction_id: crate::db::ids::fixture_id(1),
                     account_code: "1000".into(),
-                    company_slug: "acme".parse().expect("fixture company"),
+                    company_slug: "acme".parse()?,
                     direction: beankeeper::types::DebitOrCredit::Debit,
                     amount: 5000_i64
                         .try_into()
@@ -1305,7 +1307,7 @@ mod tests {
                     id: crate::db::ids::fixture_id(2),
                     transaction_id: crate::db::ids::fixture_id(1),
                     account_code: "4000".into(),
-                    company_slug: "acme".parse().expect("fixture company"),
+                    company_slug: "acme".parse()?,
                     direction: beankeeper::types::DebitOrCredit::Credit,
                     amount: 5000_i64
                         .try_into()
@@ -1324,13 +1326,14 @@ mod tests {
         assert!(json.contains(r#""account_code": "1000""#));
         assert!(json.contains(r#""direction": "debit""#));
         assert!(json.contains(r#""amount": 5000"#));
+        Ok(())
     }
 
     #[test]
-    fn render_transactions_missing_entries() {
+    fn render_transactions_missing_entries() -> Result<(), Box<dyn std::error::Error>> {
         let txns = vec![TransactionRow {
             id: crate::db::ids::fixture_id(99),
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             description: "Orphan".into(),
             metadata: None,
             currency: Currency::USD,
@@ -1351,6 +1354,7 @@ mod tests {
         )
         .unwrap_or_default();
         assert!(json.contains(r#""entries": []"#));
+        Ok(())
     }
 
     #[test]

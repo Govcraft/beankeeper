@@ -799,10 +799,11 @@ mod tests {
     // -- format_amount --
 
     #[test]
-    fn budgets_use_each_rows_currency() {
+    fn budgets_use_each_rows_currency() -> Result<(), Box<dyn std::error::Error>> {
+        let company_slug: crate::db::companies::CompanySlug = "acme".parse()?;
         let rows = [Currency::USD, Currency::JPY, Currency::BHD].map(|currency| BudgetRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: company_slug.clone(),
             account_code: "5000".into(),
             currency,
             year: 2026,
@@ -815,6 +816,7 @@ mod tests {
         for amount in ["12.34", "1,234", "1.234"] {
             assert!(table.contains(amount), "{table}");
         }
+        Ok(())
     }
 
     #[test]
@@ -912,9 +914,9 @@ mod tests {
     }
 
     #[test]
-    fn render_accounts_shows_normal_balance() {
+    fn render_accounts_shows_normal_balance() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![AccountRow {
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
@@ -928,6 +930,7 @@ mod tests {
         assert!(out.contains("Asset"));
         assert!(out.contains("Debit"));
         assert!(!out.contains("1 account"));
+        Ok(())
     }
 
     // -- render_transaction_list --
@@ -941,10 +944,10 @@ mod tests {
     }
 
     #[test]
-    fn render_transaction_list_shows_id_and_date() {
+    fn render_transaction_list_shows_id_and_date() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             description: "Test sale".into(),
             metadata: None,
             currency: Currency::USD,
@@ -963,15 +966,16 @@ mod tests {
         assert!(out.contains("2025-03-15"));
         assert!(out.contains("Test sale"));
         assert!(!out.contains("1 transaction"));
+        Ok(())
     }
 
     // -- render_transaction_detail --
 
     #[test]
-    fn render_transaction_detail_balanced() {
+    fn render_transaction_detail_balanced() -> Result<(), Box<dyn std::error::Error>> {
         let txn = TransactionRow {
             id: crate::db::ids::fixture_id(42),
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             description: "Cash sale".into(),
             metadata: Some("INV-001".into()),
             currency: Currency::USD,
@@ -990,7 +994,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(1),
                 transaction_id: crate::db::ids::fixture_id(42),
                 account_code: "1000".into(),
-                company_slug: "acme".parse().expect("fixture company"),
+                company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Debit,
                 amount: 5000_i64
                     .try_into()
@@ -1004,7 +1008,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(2),
                 transaction_id: crate::db::ids::fixture_id(42),
                 account_code: "4000".into(),
-                company_slug: "acme".parse().expect("fixture company"),
+                company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Credit,
                 amount: 5000_i64
                     .try_into()
@@ -1015,7 +1019,7 @@ mod tests {
                 posting_status: crate::db::holds::EntryStatus::Posted,
             },
         ];
-        let out = render_transaction_detail(&txn, &entries, false).expect("representable totals");
+        let out = render_transaction_detail(&txn, &entries, false)?;
         assert!(out.contains("42"));
         assert!(out.contains("Cash sale"));
         assert!(out.contains("INV-001"));
@@ -1023,13 +1027,14 @@ mod tests {
         assert!(out.contains("CR"));
         assert!(out.contains("50.00"));
         assert!(out.contains("[ok] BALANCED"));
+        Ok(())
     }
 
     #[test]
-    fn render_transaction_detail_unbalanced() {
+    fn render_transaction_detail_unbalanced() -> Result<(), Box<dyn std::error::Error>> {
         let txn = TransactionRow {
             id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             description: "Bad".into(),
             metadata: None,
             currency: Currency::USD,
@@ -1048,7 +1053,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(1),
                 transaction_id: crate::db::ids::fixture_id(1),
                 account_code: "1000".into(),
-                company_slug: "acme".parse().expect("fixture company"),
+                company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Debit,
                 amount: 5000_i64
                     .try_into()
@@ -1062,7 +1067,7 @@ mod tests {
                 id: crate::db::ids::fixture_id(2),
                 transaction_id: crate::db::ids::fixture_id(1),
                 account_code: "4000".into(),
-                company_slug: "acme".parse().expect("fixture company"),
+                company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Credit,
                 amount: 3000_i64
                     .try_into()
@@ -1073,7 +1078,7 @@ mod tests {
                 posting_status: crate::db::holds::EntryStatus::Posted,
             },
         ];
-        let out = render_transaction_detail(&txn, &entries, false).expect("representable totals");
+        let out = render_transaction_detail(&txn, &entries, false)?;
         assert!(out.contains("[!!] UNBALANCED"));
         let debit = EntryRow {
             amount: i64::MAX
@@ -1087,17 +1092,17 @@ mod tests {
                 .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
             ..entries[1].clone()
         };
-        let wide = render_transaction_detail(&txn, &[debit.clone(), debit, credit], false)
-            .expect("totals fit the wide Amount type");
+        let wide = render_transaction_detail(&txn, &[debit.clone(), debit, credit], false)?;
         assert!(wide.contains("Total Debits:  184,467,440,737,095,516.14"));
         assert!(wide.contains("Total Credits: 92,233,720,368,547,758.07"));
         assert!(wide.contains("[!!] UNBALANCED"));
+        Ok(())
     }
 
     // -- render_trial_balance --
 
     #[test]
-    fn render_trial_balance_balanced() {
+    fn render_trial_balance_balanced() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![
             BalanceRow {
                 code: "1000".into(),
@@ -1114,17 +1119,17 @@ mod tests {
                 credit_total: 10000,
             },
         ];
-        let out = render_trial_balance(&rows, Currency::USD, false, None)
-            .expect("test totals are representable");
+        let out = render_trial_balance(&rows, Currency::USD, false, None)?;
         assert!(out.contains("Trial Balance (USD)"));
         assert!(out.contains("1000"));
         assert!(out.contains("Cash"));
         assert!(out.contains("100.00"));
         assert!(out.contains("[ok] BALANCED"));
+        Ok(())
     }
 
     #[test]
-    fn render_trial_balance_unbalanced() {
+    fn render_trial_balance_unbalanced() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![BalanceRow {
             code: "1000".into(),
             name: "Cash".into(),
@@ -1132,13 +1137,13 @@ mod tests {
             debit_total: 10000,
             credit_total: 5000,
         }];
-        let out = render_trial_balance(&rows, Currency::USD, false, None)
-            .expect("test totals are representable");
+        let out = render_trial_balance(&rows, Currency::USD, false, None)?;
         assert!(out.contains("[!!] UNBALANCED"));
+        Ok(())
     }
 
     #[test]
-    fn render_trial_balance_jpy() {
+    fn render_trial_balance_jpy() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![BalanceRow {
             code: "1000".into(),
             name: "Cash".into(),
@@ -1146,11 +1151,11 @@ mod tests {
             debit_total: 5000,
             credit_total: 5000,
         }];
-        let out = render_trial_balance(&rows, Currency::JPY, false, None)
-            .expect("test totals are representable");
+        let out = render_trial_balance(&rows, Currency::JPY, false, None)?;
         assert!(out.contains("Trial Balance (JPY)"));
         assert!(out.contains("5,000"));
         assert!(out.contains("[ok] BALANCED"));
+        Ok(())
     }
 
     // -- render_account_balance --

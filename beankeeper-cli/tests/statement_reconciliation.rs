@@ -1484,8 +1484,15 @@ fn typed_proof_locks_clearings_and_carries_forward_without_the_audit_snapshot()
          (entry_id, company_slug, amount, cleared_date, statement_ref)
          SELECT entry_id, company_slug, amount, cleared_date, statement_ref FROM entry_clearings WHERE id = ?1",
     ] {
-        let error = conn.execute(mutation, [clearing]).expect_err("table must hold the lock");
-        assert!(error.to_string().contains("clearing belongs to a completed statement"), "{error}");
+        let result = conn.execute(mutation, [clearing]);
+        assert!(
+            result.as_ref().is_err_and(|error| {
+                error
+                    .to_string()
+                    .contains("clearing belongs to a completed statement")
+            }),
+            "table must hold the lock: {result:?}"
+        );
     }
     for mutation in [
         "UPDATE statement_reconciliations SET opening_balance = 1, cleared_net = cleared_net - 1 WHERE receipt = ?1",

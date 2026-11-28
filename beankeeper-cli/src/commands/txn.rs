@@ -749,7 +749,7 @@ mod tests {
         *invalid_retry
             .iter_mut()
             .find(|argument| **argument == "4000:12.50")
-            .expect("fixture credit") = "4000:12.49";
+            .ok_or_else(|| CliError::NotFound("fixture credit".into()))? = "4000:12.49";
         assert!(
             matches!(execute_args(&db, &invalid_retry), Err(CliError::Validation(message))
                 if message.contains("transaction is unbalanced"))
