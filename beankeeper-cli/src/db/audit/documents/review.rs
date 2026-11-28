@@ -19,7 +19,7 @@ use crate::{
             savepoint::AuditedTx,
         },
         companies::{Company, CompanySlug},
-        documents::{AllocationId, DocumentReviewId, decode},
+        documents::{AllocationId, DocumentDraft, DocumentRecord, DocumentReviewId, decode},
         ids::{ReceiptId, TransactionId},
     },
     error::CliError,
@@ -130,6 +130,39 @@ impl ReviewRecord {
     #[must_use]
     pub const fn is_pending(&self) -> bool {
         matches!(self.status, ReviewState::Pending)
+    }
+
+    /// Load the exact audited draft revision named by an issuance proposal.
+    ///
+    /// # Errors
+    /// Returns an error if the review's frozen draft revision cannot be verified.
+    pub fn issuance_terms(&self, company: &Company<'_>) -> Result<Option<DocumentDraft>, CliError> {
+        let ReviewedMutation::Issue(intent) = &self.request.mutation else {
+            return Ok(None);
+        };
+        let reader = company.read();
+        let raw: String = reader
+            .query_row(
+                &format!(
+                    "SELECT after FROM {} WHERE company_slug=?1 AND entity='document'
+                 AND entity_id=?2 AND action IN ('document_draft','document_amend')
+                 AND json_extract(after, '$.revision')=?3 ORDER BY id DESC LIMIT 1",
+                    reader.bookkeeping_audit()
+                ),
+                params![company.slug(), intent.id, u32::from(intent.revision)],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CliError::Database("frozen document draft is missing from audit history".into())
+            })?;
+        let record: DocumentRecord = decode(&raw)?;
+        if record.id != intent.id || record.revision != intent.revision {
+            return Err(CliError::Database(
+                "frozen document draft differs from the review request".into(),
+            ));
+        }
+        Ok(Some(record.draft))
     }
 
     /// The proposed document operation in plain language.
