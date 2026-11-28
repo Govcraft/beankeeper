@@ -1029,6 +1029,9 @@ pub(crate) struct IncomeStatementInput {
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
+    pub basis: Option<crate::commands::report_cash_basis::AccountingBasis>,
+    #[serde(default)]
+    pub allow_incomplete: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

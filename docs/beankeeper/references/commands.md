@@ -2236,3 +2236,51 @@ be submitted again. Approval retries return the first approval result.
 `report aging` remains the general-ledger view using posting dates. Choose the
 typed report for document due dates. The two views overlap on postings created
 by invoices and bills, so their totals should not be combined.
+
+## Cash basis and cash forecast
+
+An income statement uses journal dates unless you select cash basis:
+
+```sh
+bk --company acme --json report income-statement --basis cash \
+  --from 2026-02-01 --to 2026-02-28 --compare previous
+```
+
+Cash basis recognizes simple classified-cash journals through their original
+revenue and expense lines. Invoice and bill payments are recognized on
+the effective dates of their explicit allocations. A partial payment is
+split over remaining lines in exact minor units. Credits reduce the open
+amount eligible for recognition. Reversing an allocation removes the
+cash recognition on its effective reversal date. The existing accrual
+statement and cash-flow statement keep their behavior.
+
+Unsupported mixed journals or settlements fail the cash-basis report by
+default. Use `--allow-incomplete` to inspect a partial result and see
+which transaction IDs need review. The initial cash-basis report covers
+classified cash and typed document settlements. Use the accrual report
+and source schedules for accounting policies outside those inputs.
+
+A forecast projects movement after a selected cash balance date:
+
+```sh
+bk --company acme --json report cash-forecast --as-of 2026-02-01 \
+  --through 2026-03-31 --cadence monthly
+```
+
+The forecast includes future posted movements, unposted schedule
+occurrences, and invoice and bill balances still open after applying
+allocations posted through the horizon. Transfers between selected cash
+accounts net to zero. Overdue items without an expected date remain
+visible as unscheduled. Identical amounts on the same date between an
+open item and a schedule appear as possible overlaps for review.
+
+Add an adjustment for an emitted `source_id` to compare a scenario against
+the baseline. Repeat `--adjust` for different sources. Supported forms are
+`SOURCE=move:YYYY-MM-DD`, `SOURCE=amount:VALUE` in major currency units,
+`SOURCE=unschedule`, and `SOURCE=omit`. Adjustments do not post transactions
+or change documents. The report shows the lowest daily closing balance
+and the first date cash is projected to fall below zero.
+
+MCP uses the same report request. Set `basis: "cash"` for
+`kind: "income-statement"`, or use `kind: "cash-forecast"` with
+`as_of`, `through`, and optional `cadence` and `adjust`.

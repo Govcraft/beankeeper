@@ -201,6 +201,7 @@ pub(crate) enum ReportQuery {
     IncomeStatement {
         scope: ReportScope,
         window: ReportWindow,
+        basis: super::super::report_cash_basis::BasisMode,
     },
     BalanceSheet {
         scope: ReportScope,
@@ -372,8 +373,14 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 period,
                 compare,
                 explain_change,
+                basis,
+                allow_incomplete,
             } => Self::IncomeStatement {
                 scope: scope(from, to, currency)?,
+                basis: super::super::report_cash_basis::BasisMode::resolve(
+                    *basis,
+                    *allow_incomplete,
+                )?,
                 window: (*period, *compare, account(explain_change)).try_into()?,
             },
             ReportCommand::BalanceSheet {

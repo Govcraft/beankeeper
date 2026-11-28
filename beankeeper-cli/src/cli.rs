@@ -2631,6 +2631,12 @@ EXAMPLES:\n  \
         /// Explain the change for one account code, including transactions and payees.
         #[arg(long)]
         explain_change: Option<String>,
+        /// Recognition basis. Defaults to the existing accrual report.
+        #[arg(long, value_enum, default_value = "accrual")]
+        basis: crate::commands::report_cash_basis::AccountingBasis,
+        /// Show cash-basis coverage gaps instead of failing.
+        #[arg(long)]
+        allow_incomplete: bool,
     },
 
     /// Generate a balance sheet.

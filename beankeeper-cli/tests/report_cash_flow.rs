@@ -563,3 +563,102 @@ fn cash_forecast_schedules_moves_a_receipt_and_skips_cash_transfers()
     assert_eq!(scenario["data"]["scenario"]["periods"][0]["closing"], 7_000);
     Ok(())
 }
+
+#[test]
+fn one_invoice_is_accrual_income_at_issue_and_cash_income_as_paid()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, path) = empty_ledger();
+    let read = |args: &[&str]| -> Result<Value, serde_json::Error> {
+        let mut command = vec!["--json"];
+        command.extend_from_slice(args);
+        serde_json::from_str(&ok(&path, &command))
+    };
+    let party = read(&[
+        "counterparty",
+        "create",
+        "--name",
+        "Customer",
+        "--role",
+        "customer",
+    ])?;
+    let terms = serde_json::json!({
+        "kind":"invoice", "number":"CASH-1", "counterparty_id":party["data"]["party"]["id"],
+        "control_account":"1100", "due_date":"2026-02-15",
+        "lines":[{"description":"Service","quantity":"1","unit_price_minor":10000,"account":"4000"}]
+    })
+    .to_string();
+    let draft = read(&["document", "draft", "--terms", &terms])?;
+    let id = draft["data"]["record"]["id"]
+        .as_str()
+        .ok_or("missing invoice")?;
+    read(&["document", "issue", id, "--date", "2026-01-15"])?;
+    let payment = read(&[
+        "txn",
+        "post",
+        "-d",
+        "Deposit",
+        "--date",
+        "2026-02-09",
+        "--debit",
+        "1000:40",
+        "--credit",
+        "1100:40",
+    ])?;
+    let payment_id = payment["data"]["id"].to_string();
+    let allocation = serde_json::json!([{"document_id":id,"amount_minor":4000}]).to_string();
+    read(&[
+        "document",
+        "allocate",
+        &payment_id,
+        "--date",
+        "2026-02-09",
+        "--allocations",
+        &allocation,
+    ])?;
+    let accrual = read(&[
+        "report",
+        "income-statement",
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+    ])?;
+    assert_eq!(accrual["data"]["net_income"], 10_000);
+    let cash = read(&[
+        "report",
+        "income-statement",
+        "--basis",
+        "cash",
+        "--from",
+        "2026-02-01",
+        "--to",
+        "2026-02-28",
+        "--compare",
+        "previous",
+    ])?;
+    assert_eq!(cash["data"]["current"]["net_income"], 4_000);
+    assert_eq!(cash["data"]["prior"]["net_income"], 0);
+    assert_eq!(cash["data"]["net_income_change"], 4_000);
+    let forecast = read(&[
+        "report",
+        "cash-forecast",
+        "--as-of",
+        "2026-02-01",
+        "--through",
+        "2026-02-28",
+    ])?;
+    let events = forecast["data"]["events"]
+        .as_array()
+        .ok_or("missing forecast events")?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["source"]["kind"] == "open_item" && event["movement"] == 6_000)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["source"]["kind"] == "posted" && event["movement"] == 4_000)
+    );
+    Ok(())
+}

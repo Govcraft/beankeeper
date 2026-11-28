@@ -121,6 +121,10 @@ impl TryFrom<ReportOptions> for ReportQuery {
             },
             ReportOptions::IncomeStatement(input) => Self::IncomeStatement {
                 scope: scope(input.from, input.to, input.currency)?,
+                basis: crate::commands::report_cash_basis::BasisMode::resolve(
+                    input.basis.unwrap_or_default(),
+                    input.allow_incomplete,
+                )?,
                 window: (
                     input.period.map(Into::into),
                     input.compare.map(Text::into_inner),

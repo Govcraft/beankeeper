@@ -25,6 +25,7 @@ pub mod reconcile;
 pub mod reference;
 pub mod report;
 pub mod report_aging;
+pub(crate) mod report_cash_basis;
 pub mod report_cash_flow;
 pub(crate) mod report_compare;
 pub mod report_currency;
