@@ -272,10 +272,17 @@ fn payments_are_reviewed_and_a_lost_response_is_reconciled_once_after_restart() 
     let id = draft["id"].as_str().ok_or("missing payment ID")?;
     let choice = json!({"company":"acme","id":id});
     let approval = json!({"company":"acme","id":id,"destination":DESTINATION});
-    assert_eq!(
-        failure(&mut drafter, "disbursement_dispatch", &choice)?["code"],
-        "FORBIDDEN"
-    );
+    let catalog = drafter.request("tools/list", &json!({}))?;
+    assert!(!tool_names(&catalog)?.contains("disbursement_dispatch"));
+    let withheld = drafter.call("disbursement_dispatch", &choice)?;
+    assert!(withheld.get("error").is_some(), "{withheld}");
+    let outcome = books
+        .cli(Some(&draft_token))?
+        .args(["disbursement", "dispatch", id])
+        .output()?;
+    assert!(!outcome.status.success());
+    let error: Value = serde_json::from_slice(&outcome.stderr)?;
+    assert_eq!(error["error"]["code"], "FORBIDDEN");
     assert_eq!(
         reviewer.success("disbursement_preview", &choice)?["destination"],
         DESTINATION
