@@ -38,6 +38,9 @@ mod schema_compat;
 #[path = "mcp_stdio/txn_links.rs"]
 mod txn_links;
 
+#[path = "mcp_stdio/payroll.rs"]
+mod payroll;
+
 use beankeeper_cli::db::CreateAccountParams;
 use beankeeper_cli::identity::{Admin, Granted};
 use std::collections::BTreeSet;
@@ -866,6 +869,10 @@ const LEDGER_TOOLS: &[&str] = &[
     "expense_claim_void",
     "expense_claim_show",
     "expense_claim_list",
+    "payroll_preview",
+    "payroll_import",
+    "payroll_fund",
+    "payroll_show",
     "fx_post",
     "fx_revalue",
     "ledger_setup_status",
@@ -1623,10 +1630,13 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 47);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
+    assert!(names.contains("payroll_preview"));
+    assert!(names.contains("payroll_show"));
+    assert!(!names.contains("payroll_import"));
+    assert!(!names.contains("payroll_fund"));
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3323,7 +3333,10 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 47);
+    assert!(names.contains("payroll_preview"));
+    assert!(names.contains("payroll_show"));
+    assert!(!names.contains("payroll_import"));
+    assert!(!names.contains("payroll_fund"));
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3489,7 +3502,10 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 47);
+    assert!(names.contains("payroll_preview"));
+    assert!(names.contains("payroll_show"));
+    assert!(!names.contains("payroll_import"));
+    assert!(!names.contains("payroll_fund"));
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

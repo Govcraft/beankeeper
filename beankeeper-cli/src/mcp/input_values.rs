@@ -96,6 +96,14 @@ impl TextValue for AccountCode {
     }
 }
 
+impl TextValue for crate::db::audit::payroll::PayrollRunId {
+    const NAME: &'static str = "payroll run ID";
+
+    fn schema() -> Schema {
+        json_schema!({"type":"string", "pattern":"^payroll_[0-9a-z]{26}$"})
+    }
+}
+
 impl TextValue for Sha256Hex {
     const NAME: &'static str = "SHA-256 digest";
 

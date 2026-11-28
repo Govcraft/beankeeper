@@ -28,6 +28,7 @@ use crate::{
         fixed_asset::{FixedAssetRequest, FixedAssetResponse},
         fx::{FxRequest, FxResponse},
         investment::{InvestmentRequest, InvestmentResponse},
+        payroll::{PayrollRequest, PayrollResponse},
         period::{PeriodRequest, PeriodResponse},
         reconcile::{ReconcileRequest, ReconcileResponse},
         report::{ReportRequest, ReportResponse},
@@ -67,6 +68,7 @@ pub enum LedgerRequest {
     Tax(TaxRequest),
     Expense(ExpenseRequest),
     Investment(InvestmentRequest),
+    Payroll(PayrollRequest),
     Period(PeriodRequest),
     Reconcile(ReconcileRequest),
     Report(ReportRequest),
@@ -96,6 +98,7 @@ pub enum LedgerResponse {
     Tax(Operation, CompanySlug, TaxResponse),
     Expense(ExpenseResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
+    Payroll(PayrollResponse),
     Period(Operation, CompanySlug, PeriodResponse),
     Reconcile(Operation, CompanySlug, ReconcileResponse),
     Report(ReportResponse),
@@ -127,6 +130,7 @@ impl LedgerRequest {
             Self::Tax(request) => request.operation(),
             Self::Expense(request) => request.operation(),
             Self::Investment(request) => request.operation(),
+            Self::Payroll(request) => request.operation(),
             Self::Period(request) => request.operation(),
             Self::Reconcile(request) => request.operation(),
             Self::Report(request) => request.operation(),
@@ -223,6 +227,7 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Investment(operation, company, response))
             }
+            Self::Payroll(request) => request.execute(db, actor).map(LedgerResponse::Payroll),
             Self::Period(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -289,6 +294,7 @@ impl LedgerResponse {
             Self::Investment(operation, company, response) => {
                 response.render(cli, *operation, company.as_str())
             }
+            Self::Payroll(response) => response.render(cli),
             Self::Period(operation, company, response) => {
                 response.render(cli, *operation, company.as_str())
             }

@@ -17,7 +17,7 @@ pub mod import_ofx;
 pub mod init;
 pub mod investment;
 pub mod loan;
-mod payroll;
+pub mod payroll;
 pub mod period;
 pub mod policy;
 mod posting_output;
