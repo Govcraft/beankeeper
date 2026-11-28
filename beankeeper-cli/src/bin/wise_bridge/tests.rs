@@ -76,6 +76,17 @@ fn response(order: &Order, status: &str) -> Result<provider::Transfer> {
     .map_err(|_| Error::Provider)
 }
 
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir()
+}
+
 fn fixture(p: &Path, fake: Fake) -> Result<(Bridge<Fake>, Payment)> {
     let vendor: CounterpartyId = "party_01j00000000000000000000000"
         .parse()
@@ -112,7 +123,7 @@ fn fixture(p: &Path, fake: Fake) -> Result<(Bridge<Fake>, Payment)> {
 #[test]
 fn durable_lookup_ignores_duplicate_submit_and_retains_return_history()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = private_tempdir()?;
     let path = temp.path().join("bridge.db");
     let fake = Fake::new(false, false);
     let (bridge, payment) = fixture(&path, fake.clone())?;
@@ -138,7 +149,7 @@ fn durable_lookup_ignores_duplicate_submit_and_retains_return_history()
 fn ambiguous_create_or_funding_never_reposts_after_restart()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     for lose_create in [true, false] {
-        let temp = tempfile::tempdir()?;
+        let temp = private_tempdir()?;
         let path = temp.path().join("bridge.db");
         let fake = Fake::new(lose_create, !lose_create);
         let (bridge, payment) = fixture(&path, fake.clone())?;
@@ -166,7 +177,7 @@ fn ambiguous_create_or_funding_never_reposts_after_restart()
 #[test]
 fn host_authentication_rejects_incorrect_token()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = private_tempdir()?;
     let (bridge, _) = fixture(&temp.path().join("state.db"), Fake::new(false, false))?;
     let mut headers = HeaderMap::new();
     assert!(matches!(
@@ -197,7 +208,7 @@ fn live_requires_explicit_acknowledgement_and_separate_state()
         Environment::Live
     );
     assert_eq!(Environment::Live.origin(), "https://api.wise.com/2026Q4/");
-    let temp = tempfile::tempdir()?;
+    let temp = private_tempdir()?;
     let path = temp.path().join("state.db");
     let (bridge, payment) = fixture(&path, Fake::new(false, false))?;
     let recipient = bridge.config.recipient(&payment.vendor)?;
