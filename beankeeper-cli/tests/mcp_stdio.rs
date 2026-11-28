@@ -3609,7 +3609,9 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert!(names.contains("txn_reverse"));
     assert!(names.contains("audit_undo"));
     assert!(names.contains("txn_reconcile"));
-    for forbidden in ["txn_clear", "budget_set", "account_create"] {
+    assert!(names.contains("txn_clear"));
+    assert!(names.contains("reconcile_statement"));
+    for forbidden in ["budget_set", "account_create"] {
         assert!(!names.contains(forbidden));
     }
     let posted = writer.success("txn_post", &posting("enforced"))?;

@@ -9,13 +9,15 @@ use crate::{
     cli::{Cli, OutputFormat, resolve_format},
     db::{
         Actor, Db,
-        audit::statement::{self, StatementReceipt},
+        audit::{
+            corrections::{PendingCorrection, bookkeeping::Submission, reconciliation},
+            statement::{self, StatementReceipt},
+        },
         companies::{Company, CompanySlug},
         ids::EntryId,
         statement::{StatementMonth, StatementRef, UnreconciledMonth, unreconciled_months},
     },
     error::CliError,
-    identity::{Granted, Reconcile},
     operation::Operation,
     output::{amounts::format_money, json},
     request::{CurrencySetting, LocalDate},
@@ -137,12 +139,14 @@ impl ReconcileRequest {
     pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<ReconcileResponse, CliError> {
         match self {
             Self::Statement(company, input) => {
-                let receipt = Granted::<Reconcile>::with_db(db, actor, |grant| {
-                    statement::reconcile(grant, &company, input)
-                })?;
-                Ok(ReconcileResponse::Statement(Box::new(
-                    CompletedStatement::new(&company, receipt),
-                )))
+                match reconciliation::complete(db, actor, &company, input)? {
+                    Submission::Applied(receipt) => Ok(ReconcileResponse::Statement(Box::new(
+                        CompletedStatement::new(&company, receipt),
+                    ))),
+                    Submission::Pending(proposal) => Ok(ReconcileResponse::Pending(
+                        PendingStatementApproval(proposal),
+                    )),
+                }
             }
             Self::List(company, account, currency) => {
                 let scope = Company::bind(db.read(), company)?;
@@ -175,7 +179,14 @@ pub enum ReconcileResponse {
     Statement(Box<CompletedStatement>),
     /// Statement history and outstanding months.
     List(StatementList),
+    /// Awaiting an independent decision. No statement has been reconciled.
+    Pending(PendingStatementApproval),
 }
+
+/// A proposed statement awaiting approval.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct PendingStatementApproval(PendingCorrection);
 
 /// Completed statement with a short explanation and a link to the ledger activity.
 #[derive(Serialize)]
@@ -306,6 +317,10 @@ impl ReconcileResponse {
             ),
             _ if cli.verbosity.quiet => (),
             OutputFormat::Table => match self {
+                Self::Pending(proposal) => println!(
+                    "Statement reconciliation proposal {} is pending approval.",
+                    proposal.0.id()
+                ),
                 Self::Statement(statement) => println!("{}", statement.message),
                 Self::List(list) => {
                     println!("{}", list.message);
@@ -325,6 +340,15 @@ impl ReconcileResponse {
     fn write_csv(&self) -> Result<(), CliError> {
         let mut writer = csv::Writer::from_writer(std::io::stdout());
         let (statements, pending) = match self {
+            Self::Pending(proposal) => {
+                writer
+                    .write_record(["status", "proposal_id"])
+                    .map_err(|error| csv_error(&error))?;
+                writer
+                    .write_record(["pending", proposal.0.id().as_str()])
+                    .map_err(|error| csv_error(&error))?;
+                return writer.flush().map_err(Into::into);
+            }
             Self::Statement(statement) => (std::slice::from_ref(statement.as_ref()), &[][..]),
             Self::List(list) => (
                 list.statements.as_slice(),

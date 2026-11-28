@@ -1113,13 +1113,19 @@ limits the clearings to that reference. Use `entry_ids` or `references` to
 limit the selection further. The CLI equivalents are repeatable `--entry-id`
 or `--reference`.
 
+Use `txn_clear` and `reconcile_statement` with the managed agent's posting
+access. In proposal-only mode, show the pending proposal ID and ask the owner
+to review the exact entries and totals in the Desktop review queue. Record
+that the statement is complete only after approval. Refresh the evidence and
+submit a new proposal if entries or totals change.
+
 The workflow adds the selected signed clearings dated in the statement month
 to the prior completed statement balance. The first run uses net reconciled
 clearings dated before the month as the opening. If a match succeeds, tell the
 owner the ending balance and receipt. Offer the Desktop link if they want to
 inspect the activity. Use `audit_undo` or `bk audit undo RECEIPT` to unlock a
 completed statement. The `close_period` option also locks posting for the
-company and requires `ledger/admin` both to set and to restore its cutoff.
+company. It requires direct `ledger/reconcile` and `ledger/admin` to set the cutoff. Restoring the cutoff also requires `ledger/admin`.
 
 On `STATEMENT_DISCREPANCY`, use the expected and actual ending balances and
 the exact delta in `details` to help locate unmatched activity. Beankeeper

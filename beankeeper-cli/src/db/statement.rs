@@ -105,7 +105,7 @@ fn invalid_key() -> CliError {
 }
 
 /// A nonblank identifier from a bank or card statement.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String")]
 pub struct StatementRef(Box<str>);
 
@@ -143,7 +143,8 @@ impl fmt::Display for StatementRef {
 }
 
 /// Which matched clearings to count on a statement.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StatementSelection {
     /// Include every eligible clearing dated in the statement month.
     #[default]
@@ -172,7 +173,8 @@ impl TryFrom<(Option<Vec<EntryId>>, Option<Vec<TransactionReference>>)> for Stat
 }
 
 /// Whether the completed statement should also advance the company posting cutoff.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StatementClose {
     /// Complete only the account's statement.
     #[default]
@@ -238,6 +240,10 @@ impl Serialize for StatementBalance {
 }
 
 impl StatementBalance {
+    pub(super) const fn minor_units(self) -> i64 {
+        self.0
+    }
+
     pub(super) fn read(row: &Row<'_>, index: usize) -> rusqlite::Result<Self> {
         Ok(Self(row.get(index)?, row.get("currency")?))
     }

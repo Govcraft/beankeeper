@@ -194,6 +194,26 @@ impl sealed::GrantKind for Reconcile {
     const REQUIRED: Capability = Capability::Reconcile;
 }
 
+/// Authority to apply ordinary statement and entry reconciliation directly.
+pub(crate) enum StatementReconcile {}
+
+impl sealed::GrantKind for StatementReconcile {
+    const REQUIRED: Capability = Capability::Post;
+    const ALTERNATE: Option<Capability> = Some(Capability::Reconcile);
+    const SIGNED: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
+/// Separate reconciliation and owner authorization to close a company period.
+pub(super) enum StatementClose {}
+
+impl sealed::GrantKind for StatementClose {
+    const REQUIRED: Capability = Capability::Reconcile;
+    const ADDITIONAL: Option<Capability> = Some(Capability::Admin);
+    const SIGNED: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
 pub(crate) enum StatementApprover {}
 
 impl sealed::GrantKind for StatementApprover {

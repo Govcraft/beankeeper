@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Give managed agents access to clearing entries and completing monthly statements. Approval mode freezes exact entries and balances for independent review. ([#367](https://github.com/Govcraft/beankeeper/issues/367))
+
 ## [0.42.0] - 2026-11-28
 
 This release advances the ledger schema from v51 to v52 for bookkeeping

@@ -1673,6 +1673,13 @@ cutoff if the statement still controls it. Undo later statements for the same
 account and currency first. Statement history remains available in
 `reconcile list`, which also shows account months that still need a statement.
 
+Managed agents with posting access can run `txn_clear` and
+`reconcile_statement`. The existing `ledger/reconcile` grant also supports
+both in direct mode. In proposal-only mode, inspect the exact clearings and
+totals in the review queue before approval. A change to those details makes
+the old proposal stale. Combining a statement with a company period close
+requires direct `ledger/reconcile` and `ledger/admin` access.
+
 Agents can use the equivalent `reconcile_statement`, `reconcile_list` and
 `audit_undo` MCP tools. Results include exact amounts and optional links to
 the account's activity in Desktop.

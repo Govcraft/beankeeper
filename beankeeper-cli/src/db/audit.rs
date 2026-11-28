@@ -1733,7 +1733,11 @@ pub(crate) fn with_reconciliation<T>(
     })
 }
 
-impl Reconciliation<'_> {
+impl<'a> Reconciliation<'a> {
+    pub(super) const fn new(tx: &'a savepoint::AuditedTx<'a>, actor: &'a Actor) -> Self {
+        Self { tx, actor }
+    }
+
     pub(crate) fn read(&self) -> ReadConn<'_> {
         self.tx.read()
     }
