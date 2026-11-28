@@ -22,6 +22,7 @@ use crate::{
             IssuedCounterparty, IssuedDocument, JournalPlan, find_document, plan_issue,
         },
         fx, periods,
+        tax_codes::{self, TaxError, TaxedLine, VatEvidence, VatOrigin},
         transactions::{ConflictStrategy, PostEntryParams, PostResult, PostTransactionParams},
     },
     error::CliError,
@@ -35,6 +36,8 @@ pub(super) struct IssueIntent {
     pub due_date: DueDate,
     pub currency: Currency,
     pub counterparty: IssuedCounterparty,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vat: Vec<TaxedLine>,
 }
 
 fn validate_accounts(
@@ -165,7 +168,7 @@ pub(super) fn prepare_issue(
     issue_date: NaiveDate,
 ) -> Result<IssueIntent, CliError> {
     periods::ensure_open(company.read(), company.slug(), issue_date)?;
-    validate_accounts(company, &record.draft)?;
+    let plan = validate_accounts(company, &record.draft)?;
     let counterparty = terms(company, &record.draft)?;
     let due_date = DueDate::resolve(
         issue_date,
@@ -173,6 +176,7 @@ pub(super) fn prepare_issue(
         counterparty.payment_terms,
     )?;
     let currency = functional_currency(company)?;
+    let vat = tax_codes::prepare_tax(company, &record.draft, &plan, currency, issue_date)?;
     Ok(IssueIntent {
         id: record.id.clone(),
         revision: record.revision,
@@ -180,6 +184,7 @@ pub(super) fn prepare_issue(
         due_date,
         currency,
         counterparty,
+        vat,
     })
 }
 
@@ -198,6 +203,9 @@ pub(super) fn apply_issue(
         {
             return Err(DocumentError::StaleDraft.into());
         }
+        if issued.vat != intent.vat {
+            return Err(TaxError::StaleReview.into());
+        }
         return repeat_issue(&before, issued, intent.date);
     }
     let current = prepare_issue(company, &before, intent.date)?;
@@ -208,7 +216,14 @@ pub(super) fn apply_issue(
     {
         return Err(DocumentError::StaleDraft.into());
     }
-    let plan = validate_accounts(company, &before.draft)?;
+    if current.vat != intent.vat {
+        return Err(TaxError::StaleReview.into());
+    }
+    let plan = tax_codes::with_issue_tax(
+        validate_accounts(company, &before.draft)?,
+        &before.draft,
+        &intent.vat,
+    )?;
     let entries: Vec<_> = plan
         .legs
         .into_iter()
@@ -260,6 +275,7 @@ pub(super) fn apply_issue(
         control_account: before.draft.control_account.clone(),
         posting_id,
         lines: plan.lines,
+        vat: intent.vat,
         total_minor: plan.total,
     };
     let mut record = before.clone();
@@ -280,6 +296,14 @@ fn persist_issue(
     let currency = issued.currency;
     let posting = issued.posting_id;
     let date = issued.issue_date;
+    let vat = VatEvidence {
+        origin: VatOrigin::Issue,
+        effective_on: date,
+        document_id: issued.id.clone(),
+        posting_id: posting,
+        kind: issued.kind,
+        lines: issued.vat.clone(),
+    };
     record.issued = Some(issued);
     let receipt = persist_event(
         tx,
@@ -305,6 +329,7 @@ fn persist_issue(
             record.id
         ],
     )?;
+    crate::db::audit::tax_codes::persist_evidence(tx, actor, company, &vat)?;
     Ok(DocumentOutcome::Document {
         record: Box::new(record.clone()),
         receipt_id: Some(receipt),

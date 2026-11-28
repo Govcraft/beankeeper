@@ -35,6 +35,10 @@ pub(super) enum ReviewedMutation {
         items: Vec<AllocateItem>,
     },
     Credit(CreditInput),
+    VatCredit {
+        input: CreditInput,
+        vat: Box<crate::db::tax_codes::TaxedLine>,
+    },
     Revoke {
         id: AllocationId,
         on: NaiveDate,
@@ -53,7 +57,10 @@ impl ReviewedMutation {
             Self::Allocate { source, on, items } => {
                 settlement::apply_payment(tx, actor, company, source, on, items)
             }
-            Self::Credit(input) => settlement::credit(tx, actor, company, input),
+            Self::Credit(input) => settlement::credit(tx, actor, company, input, None),
+            Self::VatCredit { input, vat } => {
+                settlement::credit(tx, actor, company, input, Some(*vat))
+            }
             Self::Revoke { id, on } => settlement::revoke(tx, actor, company, &id, on),
         }
     }

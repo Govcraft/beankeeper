@@ -2,12 +2,13 @@
 
 use std::collections::BTreeSet;
 
+use beankeeper::types::{AccountCode, DebitOrCredit};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{DocumentOutcome, persist_event};
+use super::{DocumentOutcome, persist_event, review::ReviewedMutation};
 use crate::{
     db::{
         amounts::PositiveMinorUnits,
@@ -19,12 +20,13 @@ use crate::{
         counterparties::CounterpartyId,
         documents::{
             AllocationHistory, AllocationId, AllocationKind, CapacityFor, DocumentError,
-            DocumentId, DocumentNumber, EffectiveAllocation, IssuedDocument, find_document,
-            opposite_side, peak_applied, read_allocation,
+            DocumentId, DocumentNumber, EffectiveAllocation, IssuedDocument, IssuedLine,
+            find_document, opposite_side, peak_applied, read_allocation,
         },
         holds::EntryStatus,
         ids::{ReceiptId, TransactionId},
         periods,
+        tax_codes::{self, TaxError, TaxedLine, VatEvidence, VatOrigin},
         transactions::{
             ConflictStrategy, PostEntryParams, PostResult, PostTransactionParams, get_transaction,
         },
@@ -320,11 +322,37 @@ fn save_allocation(
     })
 }
 
+pub(super) fn prepare_credit(
+    company: &Company<'_>,
+    input: CreditInput,
+) -> Result<ReviewedMutation, CliError> {
+    let document = issued_document(company, &input.document_id)?;
+    let Some(original) = document.vat.iter().find(|line| line.number == input.line) else {
+        return Ok(ReviewedMutation::Credit(input));
+    };
+    let credited = credited_gross(company, &input)?;
+    let vat = original.credit(credited, input.amount_minor)?;
+    Ok(ReviewedMutation::VatCredit {
+        input,
+        vat: Box::new(vat),
+    })
+}
+
+fn credited_gross(company: &Company<'_>, input: &CreditInput) -> Result<i64, CliError> {
+    Ok(company.read().query_row(
+        "SELECT COALESCE(SUM(amount_minor),0) FROM document_allocations
+         WHERE company_slug=?1 AND document_id=?2 AND credit_line=?3",
+        params![company.slug(), input.document_id, input.line],
+        |row| row.get(0),
+    )?)
+}
+
 pub(super) fn credit(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,
     input: CreditInput,
+    expected_vat: Option<TaxedLine>,
 ) -> Result<DocumentOutcome, CliError> {
     periods::ensure_open(company.read(), company.slug(), input.date)?;
     let document = issued_document(company, &input.document_id)?;
@@ -334,27 +362,21 @@ pub(super) fn credit(
         .checked_sub(1)
         .and_then(|index| document.lines.get(index as usize))
         .ok_or_else(|| CliError::Validation("unknown document line number".into()))?;
-    let credited: i64 = company.read().query_row(
-        "SELECT COALESCE(SUM(amount_minor),0) FROM document_allocations
-         WHERE company_slug=?1 AND document_id=?2 AND credit_line=?3",
-        params![company.slug(), input.document_id, input.line],
-        |row| row.get(0),
-    )?;
-    if i128::from(credited) + i128::from(input.amount_minor) > i128::from(line.subtotal_minor) {
+    let credited = credited_gross(company, &input)?;
+    let original_vat = document.vat.iter().find(|tax| tax.number == input.line);
+    let gross = original_vat.map_or(line.subtotal_minor.minor_units(), |tax| {
+        tax.amounts.gross_minor
+    });
+    if i128::from(credited) + i128::from(input.amount_minor) > i128::from(gross) {
         return Err(DocumentError::AllocationExceedsBalance.into());
     }
-    let leg = |account: &beankeeper::types::AccountCode, direction| PostEntryParams {
-        account_code: account.as_str().to_owned(),
-        direction,
-        amount: input.amount_minor,
-        memo: Some(line.line.description.to_string()),
-        tax_category: None,
-    };
-    let charge = document.kind.charge_side();
-    let entries = [
-        leg(&document.control_account, opposite_side(charge)),
-        leg(&line.line.account, charge),
-    ];
+    let vat = original_vat
+        .map(|original| original.credit(credited, input.amount_minor))
+        .transpose()?;
+    if vat != expected_vat {
+        return Err(TaxError::StaleReview.into());
+    }
+    let entries = credit_entries(&document, line, input.amount_minor, vat.as_ref())?;
     let source = match post_in_audited_scope(
         tx,
         &PostTransactionParams {
@@ -386,6 +408,15 @@ pub(super) fn credit(
         document.counterparty.id,
         source,
     )?;
+    let vat_evidence = VatEvidence {
+        origin: VatOrigin::Credit,
+        document_id: input.document_id.clone(),
+        posting_id: source,
+        effective_on: input.date,
+        kind: document.kind,
+        lines: vat.into_iter().collect(),
+    };
+    crate::db::audit::tax_codes::persist_evidence(tx, actor, company, &vat_evidence)?;
     let result = save_allocation(
         tx,
         actor,
@@ -403,6 +434,43 @@ pub(super) fn credit(
         items: vec![result],
         unapplied_minor: None,
     })
+}
+
+fn credit_entries(
+    document: &IssuedDocument,
+    line: &IssuedLine,
+    gross: PositiveMinorUnits,
+    vat: Option<&TaxedLine>,
+) -> Result<Vec<PostEntryParams>, CliError> {
+    let leg = |account: &AccountCode, direction: DebitOrCredit, amount| PostEntryParams {
+        account_code: account.as_str().to_owned(),
+        direction,
+        amount,
+        memo: Some(line.line.description.to_string()),
+        tax_category: None,
+    };
+    let charge = document.kind.charge_side();
+    let mut entries = vec![leg(&document.control_account, opposite_side(charge), gross)];
+    let mut ordinary = gross.minor_units();
+    if let Some(tax) = vat
+        && tax.amounts.vat_minor > 0
+        && let Some(control) = tax.control(document.kind)
+    {
+        entries.push(leg(
+            control,
+            charge,
+            tax_codes::positive(tax.amounts.vat_minor)?,
+        ));
+        ordinary -= tax.amounts.vat_minor;
+    }
+    if ordinary > 0 {
+        entries.push(leg(
+            &line.line.account,
+            charge,
+            tax_codes::positive(ordinary)?,
+        ));
+    }
+    Ok(entries)
 }
 
 pub(super) fn revoke(

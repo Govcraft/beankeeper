@@ -76,6 +76,7 @@ enum Check {
 
     PayrollRuns,
     OpenItems,
+    Vat,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -103,6 +104,7 @@ impl Check {
             Self::Counterparties => "counterparties",
             Self::BankFeed => "bank_feed",
             Self::OpenItems => "open_items",
+            Self::Vat => "vat",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
@@ -246,6 +248,9 @@ impl VerifiedLedger {
             &mut checks,
             || audit::documents::verify(reader),
         )?;
+        Check::Vat.when(version >= schema::VAT_SCHEMA_VERSION, &mut checks, || {
+            audit::tax_codes::verify(reader)
+        })?;
         Check::TransactionLinks.when(
             version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
             &mut checks,

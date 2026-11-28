@@ -1773,3 +1773,21 @@ pub(crate) struct DocumentRejectionInput {
     pub id: crate::db::documents::DocumentReviewId,
     pub reason: String,
 }
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TaxConfigureInput {
+    pub company: Company,
+    pub code: crate::db::tax_codes::TaxCodeName,
+    pub terms: crate::db::tax_codes::RateTerms,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TaxReportInput {
+    pub company: Company,
+    pub from: Text<CalendarDate>,
+    pub to: Text<CalendarDate>,
+    #[schemars(with = "Option<String>")]
+    pub currency: Option<beankeeper::types::Currency>,
+}

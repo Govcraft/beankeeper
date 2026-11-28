@@ -69,6 +69,7 @@ pub mod restore;
 pub(super) mod savepoint;
 pub mod setup;
 pub(crate) mod statement;
+pub(crate) mod tax_codes;
 pub mod txn_links;
 
 pub(super) use attachment::store_attachment;
@@ -185,6 +186,8 @@ audit_labels! {
         Document => "document",
         DocumentAllocation => "document_allocation",
         DocumentReview => "document_review",
+        VatRate => "vat_rate",
+        VatEvidence => "vat_evidence",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -226,6 +229,8 @@ impl AuditEntity {
             | Self::Document
             | Self::DocumentAllocation
             | Self::DocumentReview
+            | Self::VatRate
+            | Self::VatEvidence
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -284,6 +289,8 @@ audit_labels! {
         DocumentPropose => "document_propose",
         DocumentApprove => "document_approve",
         DocumentReject => "document_reject",
+        VatRateConfigured => "vat_rate_configured",
+        VatRecorded => "vat_recorded",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",

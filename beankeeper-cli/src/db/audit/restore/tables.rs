@@ -59,6 +59,9 @@ table_set!(RestorableTable {
     DocumentReviews => "document_review_requests",
     FixedAssets => "fixed_assets",
     FixedAssetMovements => "fixed_asset_movements",
+    VatCodes => "vat_codes",
+    VatRateRevisions => "vat_rate_revisions",
+    VatEvidence => "vat_evidence",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

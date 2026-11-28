@@ -117,7 +117,7 @@ fn mutate(
         DocumentMutation::Allocate(source, on, items) => {
             review::ReviewedMutation::Allocate { source, on, items }
         }
-        DocumentMutation::Credit(input) => review::ReviewedMutation::Credit(input),
+        DocumentMutation::Credit(input) => settlement::prepare_credit(&company, input)?,
         DocumentMutation::Revoke(id, on) => review::ReviewedMutation::Revoke { id, on },
     };
     match execution {
