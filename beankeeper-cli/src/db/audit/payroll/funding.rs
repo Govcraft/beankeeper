@@ -344,6 +344,19 @@ pub(super) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
           AND json_extract(a.after, '$.payment_entry') = f.payment_entry
           AND json_extract(a.after, '$.amount_minor') = f.amount)
         UNION ALL
+        SELECT 1 FROM payroll_funding f
+        JOIN payroll_runs r ON r.id = f.run_id
+        LEFT JOIN txn_proposals pending ON pending.id = r.proposal_id
+        JOIN entries l ON l.id = f.liability_entry
+        JOIN entries p ON p.id = f.payment_entry
+        JOIN posted_transactions pay ON pay.id = p.transaction_id
+        JOIN posted_transactions liability ON liability.id = l.transaction_id
+        WHERE r.company_slug <> f.company_slug OR l.company_slug <> f.company_slug
+          OR p.company_slug <> f.company_slug OR l.transaction_id = p.transaction_id
+          OR l.account_code <> p.account_code OR l.direction <> 'credit' OR p.direction <> 'debit'
+          OR pay.currency <> liability.currency
+          OR COALESCE(r.transaction_id, pending.transaction_id) IS NOT l.transaction_id
+        UNION ALL
         SELECT 1 FROM {audit} a WHERE a.entity = 'payroll_funding'
           AND NOT EXISTS (SELECT 1 FROM payroll_funding f WHERE f.id = a.entity_id AND f.company_slug = a.company_slug)
         UNION ALL

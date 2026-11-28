@@ -408,9 +408,13 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
               OR NOT EXISTS (
                 SELECT 1 FROM transactions t WHERE t.id = r.transaction_id AND t.company_slug = r.company_slug
                   AND t.reference = 'payroll:' || r.source_key
+                  AND t.currency = json_extract(r.evidence, '$.currency')
+                  AND t.date = json_extract(r.evidence, '$.date')
                 UNION ALL
                 SELECT 1 FROM txn_proposals p WHERE p.id = r.proposal_id AND p.company_slug = r.company_slug
-                  AND p.reference = 'payroll:' || r.source_key)
+                  AND p.reference = 'payroll:' || r.source_key
+                  AND p.currency = json_extract(r.evidence, '$.currency')
+                  AND json_extract(p.payload, '$.date') = json_extract(r.evidence, '$.date'))
             UNION ALL
             SELECT 1 FROM {audit} a
             WHERE a.entity = 'payroll_run'
