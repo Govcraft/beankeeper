@@ -56,6 +56,7 @@ pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
 pub(crate) mod counterparties;
+pub(crate) mod documents;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
 pub(crate) mod grant;
@@ -178,6 +179,9 @@ audit_labels! {
         Counterparty => "counterparty",
         TransactionCounterparty => "transaction_counterparty",
         BankFeed => "bank_feed",
+        Document => "document",
+        DocumentAllocation => "document_allocation",
+        DocumentReview => "document_review",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -214,6 +218,9 @@ impl AuditEntity {
             | Self::Counterparty
             | Self::TransactionCounterparty
             | Self::BankFeed
+            | Self::Document
+            | Self::DocumentAllocation
+            | Self::DocumentReview
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -264,6 +271,14 @@ audit_labels! {
         CounterpartyAmend => "counterparty_amend",
         CounterpartyArchive => "counterparty_archive",
         CounterpartyAssociate => "counterparty_associate",
+        DocumentDraft => "document_draft",
+        DocumentAmend => "document_amend",
+        DocumentIssue => "document_issue",
+        DocumentAllocate => "document_allocate",
+        DocumentUnallocate => "document_unallocate",
+        DocumentPropose => "document_propose",
+        DocumentApprove => "document_approve",
+        DocumentReject => "document_reject",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",
@@ -2074,7 +2089,7 @@ fn reverse_in_scope(
     let date = undo_of.map_or(p.date, |_| {
         receipts::UndoPostingDate::from((p.date, original.date)).into()
     });
-    recategorize::MoveHistory::load(&company, p.id, None)?.check_reversal(p.id, date)?;
+    check_reversal_history(&company, p.id, date)?;
     super::holds::check_reversal(tx, &original, date)?;
     validate_reversal(conn, p.id, date, original.date)?;
     if super::fx::evidence(tx.read(), p.company_slug, p.id)?.is_some() {
@@ -2195,6 +2210,15 @@ fn existing_reversal(
         transaction: p.id,
         reversal,
     }))
+}
+
+fn check_reversal_history(
+    company: &Company<'_>,
+    transaction: TransactionId,
+    date: chrono::NaiveDate,
+) -> Result<(), CliError> {
+    documents::guard_linked_reversal(company, transaction, date)?;
+    recategorize::MoveHistory::load(company, transaction, None)?.check_reversal(transaction, date)
 }
 
 /// Check dates and individual clearings, including partial reconciliations.

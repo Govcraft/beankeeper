@@ -588,6 +588,20 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk agent issue/list/revoke` | Issue attestations, inspect claims and revoke credentials |
 | `bk agent limit set/show/clear` | Manage per-agent, per-company/currency spend limits |
 | `bk policy show/set` | Inspect or change capability enforcement |
+| `bk document show` | Work with issued invoices, bills and payment allocations |
+| `bk document print` | Work with issued invoices, bills and payment allocations |
+| `bk document list` | Work with issued invoices, bills and payment allocations |
+| `bk document allocations` | Work with issued invoices, bills and payment allocations |
+| `bk document aging` | Work with issued invoices, bills and payment allocations |
+| `bk document proposals` | Work with issued invoices, bills and payment allocations |
+| `bk document draft` | Work with issued invoices, bills and payment allocations |
+| `bk document amend` | Work with issued invoices, bills and payment allocations |
+| `bk document issue` | Work with issued invoices, bills and payment allocations |
+| `bk document allocate` | Work with issued invoices, bills and payment allocations |
+| `bk document credit` | Work with issued invoices, bills and payment allocations |
+| `bk document revoke` | Work with issued invoices, bills and payment allocations |
+| `bk document approve` | Work with issued invoices, bills and payment allocations |
+| `bk document reject` | Work with issued invoices, bills and payment allocations |
 | `bk counterparty create` | Add a customer, vendor, or both to a company |
 | `bk counterparty list` | Search and page through company counterparties |
 | `bk counterparty show` | Inspect an active or archived counterparty by ID |

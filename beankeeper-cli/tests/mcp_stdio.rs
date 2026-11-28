@@ -10,6 +10,8 @@ mod cash_classification;
 mod corrections;
 #[path = "mcp_stdio/counterparties.rs"]
 mod counterparties;
+#[path = "mcp_stdio/documents.rs"]
+mod documents;
 
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;
@@ -793,6 +795,20 @@ const LEDGER_TOOLS: &[&str] = &[
     "counterparty_list",
     "counterparty_show",
     "counterparty_suggest",
+    "document_show",
+    "document_print",
+    "document_list",
+    "document_allocations",
+    "document_aging",
+    "document_proposals",
+    "document_draft",
+    "document_amend",
+    "document_issue",
+    "document_allocate",
+    "document_credit",
+    "document_revoke",
+    "document_approve",
+    "document_reject",
     "account_list",
     "account_show",
     "account_create",
@@ -1575,7 +1591,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 31);
+    assert_eq!(names.len(), 37);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3272,7 +3288,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 31);
+    assert_eq!(names.len(), 37);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3438,7 +3454,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 31);
+    assert_eq!(names.len(), 37);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

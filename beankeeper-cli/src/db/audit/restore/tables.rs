@@ -54,6 +54,9 @@ table_set!(RestorableTable {
 
     PayrollRuns => "payroll_runs",
     PayrollFunding => "payroll_funding",
+    BookDocuments => "book_documents",
+    DocumentAllocations => "document_allocations",
+    DocumentReviews => "document_review_requests",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

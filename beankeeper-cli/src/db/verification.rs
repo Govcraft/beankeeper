@@ -75,6 +75,7 @@ enum Check {
     BankFeed,
 
     PayrollRuns,
+    OpenItems,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -100,6 +101,7 @@ impl Check {
             Self::AccountClassifications => "account_classifications",
             Self::Counterparties => "counterparties",
             Self::BankFeed => "bank_feed",
+            Self::OpenItems => "open_items",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::StatementReconciliations => "statement_reconciliations",
@@ -237,6 +239,11 @@ impl VerifiedLedger {
         if version >= schema::BANK_FEED_SCHEMA_VERSION {
             Check::BankFeed.record(super::bank_feed::verify(reader), &mut checks)?;
         }
+        Check::OpenItems.when(
+            version >= schema::DOCUMENT_SCHEMA_VERSION,
+            &mut checks,
+            || audit::documents::verify(reader),
+        )?;
         Check::TransactionLinks.when(
             version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
             &mut checks,

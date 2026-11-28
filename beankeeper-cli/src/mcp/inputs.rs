@@ -1681,3 +1681,92 @@ pub(crate) struct BankFeedLink {
     #[serde(flatten)]
     pub args: FeedLinkArgs,
 }
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentDraftInput {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub terms: crate::db::documents::DocumentDraft,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentAmendInput {
+    pub company: Company,
+    pub id: crate::db::documents::DocumentId,
+    pub revision: crate::db::documents::DocumentRevision,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub terms: crate::db::documents::DocumentDraft,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentIssueInput {
+    pub company: Company,
+    pub id: crate::db::documents::DocumentId,
+    pub date: Date,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentSelector {
+    pub company: Company,
+    pub id: crate::db::documents::DocumentId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentAsOfInput {
+    pub company: Company,
+    pub as_of: Option<Date>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentAgingInput {
+    pub company: Company,
+    pub as_of: Option<Date>,
+    pub kind: Option<crate::db::documents::DocumentKind>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentAllocateInput {
+    pub company: Company,
+    pub source: TransactionId,
+    pub date: Date,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub allocations: Vec<crate::db::audit::documents::AllocateItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentCreditInput {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub credit: crate::db::audit::documents::CreditInput,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentRevokeInput {
+    pub company: Company,
+    pub id: crate::db::documents::AllocationId,
+    pub date: Date,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentApprovalInput {
+    pub company: Company,
+    pub id: crate::db::documents::DocumentReviewId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DocumentRejectionInput {
+    pub company: Company,
+    pub id: crate::db::documents::DocumentReviewId,
+    pub reason: String,
+}
