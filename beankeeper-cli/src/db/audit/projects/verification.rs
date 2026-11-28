@@ -51,7 +51,8 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
         projection(reader, entity, table, key, extra)?;
     }
     matches_snapshot(reader, SPLITS_SQL, [], "project distribution")?;
-    matches_snapshot(reader, SOURCES_SQL, [], "project invoice source")
+    matches_snapshot(reader, SOURCES_SQL, [], "project invoice source")?;
+    matches_snapshot(reader, POSTING_SQL, [], "project billing")
 }
 
 fn projection(
@@ -125,4 +126,26 @@ const SOURCES_SQL: &str = "
        OR s.expected_minor IS NOT json_extract(a.data,'$.amount_minor')
        OR s.claimed_on IS NOT json_extract(a.data,'$.claimed_on')
        OR s.released_on IS NOT json_extract(a.data,'$.released_on')
+    LIMIT 1";
+
+const POSTING_SQL: &str = "
+    SELECT s.document_id
+    FROM project_invoice_sources s
+    JOIN project_invoice_drafts draft USING(company_slug,document_id)
+    JOIN book_documents doc ON doc.company_slug=s.company_slug AND doc.id=s.document_id
+    JOIN projects job ON job.company_slug=draft.company_slug AND job.id=draft.project_id
+    LEFT JOIN project_time_entries work ON work.company_slug=s.company_slug AND work.id=s.time_id
+    LEFT JOIN project_splits expense ON expense.company_slug=s.company_slug AND expense.id=s.split_id
+    WHERE s.claimed_on IS NOT doc.issue_date
+      OR doc.draft IS NOT json_extract(draft.data,'$.terms')
+      OR (doc.issue_date IS NOT NULL AND (draft.cancelled=1 OR doc.currency IS NOT json_extract(job.data,'$.currency')))
+      OR COALESCE(work.project_id,expense.project_id) IS NOT draft.project_id
+      OR (s.claimed_on IS NOT NULL AND s.time_id IS NOT NULL
+          AND (work.approved_on IS NULL OR work.approved_on>s.claimed_on))
+      OR (s.split_id IS NOT NULL AND (expense.billable!=1 OR expense.amount_minor IS NOT s.expected_minor))
+      OR s.released_on IS NOT (
+        SELECT CASE WHEN SUM(credit.amount_minor)=s.expected_minor THEN MAX(credit.effective_on) END
+        FROM document_allocations credit WHERE credit.company_slug=s.company_slug
+           AND credit.document_id=s.document_id AND credit.credit_line=s.line_number
+      )
     LIMIT 1";

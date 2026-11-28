@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Books {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     path: PathBuf,
     party: String,
 }
@@ -18,7 +18,7 @@ impl Books {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("books.db");
         let mut books = Self {
-            _directory: directory,
+            directory,
             path,
             party: String::new(),
         };
@@ -213,7 +213,8 @@ fn split_expense_margin_budget_and_reversal_tie_to_ledger() -> TestResult {
     assert_eq!(row(&before, &oak)?["budget_remaining_minor"], -1000);
     assert_eq!(row(&before, &pine)?["expense_minor"], 3000);
     assert_eq!(before["unallocated"]["expense_minor"], 1000);
-    books.data(&["txn", "reverse", &posting, "--date", "2026-01-07"])?;
+    bill_and_release_expense(&books, &oak, &posting)?;
+    books.data(&["txn", "reverse", &posting, "--date", "2026-01-14"])?;
     let after = books.report()?;
     assert_eq!(row(&after, &oak)?["expense_minor"], 0);
     assert_eq!(row(&after, &pine)?["expense_minor"], 0);
@@ -221,6 +222,20 @@ fn split_expense_margin_budget_and_reversal_tie_to_ledger() -> TestResult {
     assert_eq!(after["unallocated"]["expense_minor"], 0);
     assert_eq!(books.unbilled(&oak, "2026-01-05")?[0]["amount_minor"], 6000);
     books.data(&["verify"])?;
+    Ok(())
+}
+
+fn bill_and_release_expense(books: &Books, project: &str, posting: &str) -> TestResult {
+    let source = books.unbilled(project, "2026-01-10")?[0]["source"].clone();
+    assert_eq!(source["kind"], "expense");
+    let id = books.draft(project, "EXPENSE", &[source])?;
+    books.data(&["document", "issue", &id, "--date", "2026-01-11"])?;
+    books
+        .command()?
+        .args(["txn", "reverse", posting, "--date", "2026-01-12"])
+        .assert()
+        .code(3);
+    books.credit(&id, "EXPENSE-CREDIT", 6000, "2026-01-13")?;
     Ok(())
 }
 
@@ -253,9 +268,7 @@ fn issue_race(books: &Books, first: &str, second: &str) -> Result<String, Box<dy
     assert_ne!(
         first_result.status.success(),
         second_result.status.success(),
-        "issue race: {:?}, {:?}",
-        first_result,
-        second_result
+        "issue race: {first_result:?}, {second_result:?}"
     );
     let (winner, failed) = if first_result.status.success() {
         (first, second_result)
@@ -315,5 +328,31 @@ fn invoice_source_claim_is_atomic_and_credit_controls_rebilling() -> TestResult 
         .assert()
         .code(3);
     books.data(&["verify"])?;
+    Ok(())
+}
+
+#[test]
+fn restore_reinstates_project_report_and_claim_state() -> TestResult {
+    let books = Books::new()?;
+    let project = books.project("oak")?;
+    let source = approved_work(&books, &project)?;
+    let invoice = books.draft(&project, "RESTORE", &[source])?;
+    books.data(&["document", "issue", &invoice, "--date", "2026-01-11"])?;
+    let original = books.report()?;
+    let backup = books.directory.path().join("projects.bk-backup");
+    let path = backup.to_str().ok_or("missing backup path")?;
+    books.data(&["backup", "--output", path])?;
+    books.credit(&invoice, "FULL-CREDIT", 9000, "2026-01-12")?;
+    let credited = books.report()?;
+    assert_eq!(row(&credited, &project)?["profit_minor"], 0);
+    let restored = books.data(&["restore", "--input", path])?;
+    assert_eq!(books.report()?, original);
+    assert_eq!(books.unbilled(&project, "2026-01-12")?, json!([]));
+    books.data(&["restore-undo", &restored["undo_id"].to_string()])?;
+    assert_eq!(books.report()?, credited);
+    assert_eq!(
+        books.unbilled(&project, "2026-01-12")?[0]["amount_minor"],
+        9000
+    );
     Ok(())
 }

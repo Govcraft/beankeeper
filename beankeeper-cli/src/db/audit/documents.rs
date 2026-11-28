@@ -112,6 +112,9 @@ fn mutate(
             if let Some(issued) = &record.issued {
                 return drafts::repeat_issue(&record, issued, date);
             }
+            if let Execution::Propose = execution {
+                super::projects::validate_invoice(&company, &record, date)?;
+            }
             review::ReviewedMutation::Issue(drafts::prepare_issue(&company, &record, date)?)
         }
         DocumentMutation::Allocate(source, on, items) => {

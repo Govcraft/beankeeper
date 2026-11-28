@@ -89,6 +89,10 @@ CREATE TABLE project_invoice_sources (
     FOREIGN KEY(company_slug,time_id) REFERENCES project_time_entries(company_slug,id),
     FOREIGN KEY(company_slug,split_id) REFERENCES project_splits(company_slug,id)
 ) STRICT;
+CREATE INDEX idx_project_time_claim_history ON project_invoice_sources(company_slug,time_id,claimed_on,released_on)
+    WHERE time_id IS NOT NULL AND claimed_on IS NOT NULL;
+CREATE INDEX idx_project_expense_claim_history ON project_invoice_sources(company_slug,split_id,claimed_on,released_on)
+    WHERE split_id IS NOT NULL AND claimed_on IS NOT NULL;
 CREATE UNIQUE INDEX idx_project_claimed_time
     ON project_invoice_sources(company_slug,time_id)
     WHERE time_id IS NOT NULL AND claimed_on IS NOT NULL AND released_on IS NULL;

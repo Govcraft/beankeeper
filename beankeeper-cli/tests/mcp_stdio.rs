@@ -18,6 +18,8 @@ mod counterparties;
 mod documents;
 #[path = "mcp_stdio/forecast_links.rs"]
 mod forecast_links;
+#[path = "mcp_stdio/projects.rs"]
+mod projects;
 
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;

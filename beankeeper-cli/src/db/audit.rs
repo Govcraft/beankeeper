@@ -2121,14 +2121,6 @@ fn reverse_in_scope(
         })
     })?;
     check_subledger_reversal(tx.read(), p.company_slug, p.id)?;
-    let mut original_metadata: serde_json::Value = original
-        .metadata
-        .as_deref()
-        .and_then(metadata::normalize)
-        .map_or_else(
-            || serde_json::json!({}),
-            metadata::NormalizedMetadata::into_value,
-        );
     if let Some(result) = existing_reversal(&company, p)? {
         return Ok(result);
     }
@@ -2182,8 +2174,7 @@ fn reverse_in_scope(
         ));
     };
     projects::mirror_reversal(tx, actor, &company, p.id, reversal_id, date)?;
-    original_metadata["reversed_by"] = serde_json::json!(reversal_id);
-    let updated = original_metadata.to_string();
+    let updated = reversed_metadata(original.metadata.as_deref(), reversal_id);
     conn.execute(
         "UPDATE transactions SET metadata = ?1 WHERE id = ?2 AND company_slug = ?3",
         params![updated, p.id, p.company_slug],
@@ -2235,7 +2226,17 @@ fn check_subledger_reversal(
     Ok(())
 }
 
+fn reversed_metadata(raw: Option<&str>, reversal: TransactionId) -> String {
+    let mut metadata = raw.and_then(metadata::normalize).map_or_else(
+        || serde_json::json!({}),
+        metadata::NormalizedMetadata::into_value,
+    );
+    metadata["reversed_by"] = serde_json::json!(reversal);
+    metadata.to_string()
+}
+
 pub(super) fn is_reversal(
+
     reader: ReadConn<'_>,
     company: &super::companies::CompanySlug,
     id: TransactionId,

@@ -438,7 +438,11 @@ impl FromStr for ProjectMonth {
     type Err = ProjectError;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        if raw.len() != 7 {
+        let valid_shape = raw.as_bytes().split_first_chunk::<4>().is_some_and(|(year, month)| {
+            year.iter().all(u8::is_ascii_digit)
+                && matches!(month, [b'-', tens, ones] if tens.is_ascii_digit() && ones.is_ascii_digit())
+        });
+        if !valid_shape {
             return Err(ProjectError::InvalidWindow);
         }
         format!("{raw}-01")

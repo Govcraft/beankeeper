@@ -55,7 +55,7 @@ pub enum ProjectCommand {
     Show { id: ProjectId },
     /// Record dated work and an optional exact billable rate.
     Record {
-        /// JSON object with project, date, minutes, description and optional rate_minor.
+        /// JSON object with project, date, minutes, description and optional `rate_minor`.
         #[arg(long, value_parser = parse_json::<WorkInput>)]
         work: WorkInput,
     },
@@ -72,13 +72,13 @@ pub enum ProjectCommand {
         entry: EntryId,
         #[arg(long)]
         date: CalendarDateArg,
-        /// JSON list of project, amount_minor and optional billable state.
+        /// JSON list of project, `amount_minor` and optional billable state.
         #[arg(long, value_parser = parse_splits)]
         splits: Splits,
     },
     /// Set the project expense target for a calendar month.
     Budget {
-        /// JSON object with project, month and amount_minor.
+        /// JSON object with project, month and `amount_minor`.
         #[arg(long, value_parser = parse_json::<ProjectBudgetInput>)]
         budget: ProjectBudgetInput,
     },

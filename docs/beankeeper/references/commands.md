@@ -2341,8 +2341,9 @@ bk --company acme project budget --budget '{
 bk --company acme --json project report --month 2026-01 --currency USD --detail
 ```
 
-Enter an hourly rate whose product with work minutes divides by 60 exactly in
-minor units. Omit the rate to record internal work. For billing, pass the source
+Enter the hourly rate in minor units. Each time line multiplies the rate by
+minutes, divides by 60 and rounds half up to one minor unit. Omit the rate to
+record internal work. For billing, pass the source
 objects returned by `project unbilled` in the `sources` array of the
 `project draft-invoice --invoice` JSON object, alongside `project`, `number`,
 `receivable_account`, `revenue_account`, `from` and `through`. Issue the

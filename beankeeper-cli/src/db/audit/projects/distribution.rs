@@ -203,18 +203,16 @@ fn ensure_editable_posting(company: &Company<'_>, posting: TransactionId) -> Res
     Ok(())
 }
 
-pub(in crate::db::audit) fn guard_project_posting(
+pub(in crate::db::audit) fn guard_project_entry(
     company: &Company<'_>,
-    posting: TransactionId,
+    entry: EntryId,
 ) -> Result<(), CliError> {
     if company.read().schema_version()? < crate::db::schema::PROJECT_SCHEMA_VERSION {
         return Ok(());
     }
     let attributed: bool = company.read().query_row(
-        "SELECT EXISTS(SELECT 1 FROM entries e JOIN project_distributions d
-          ON d.company_slug=e.company_slug AND d.entry_id=e.id
-          WHERE e.company_slug=?1 AND e.transaction_id=?2)",
-        params![company.slug(), posting],
+        "SELECT EXISTS(SELECT 1 FROM project_distributions WHERE company_slug=?1 AND entry_id=?2)",
+        params![company.slug(), entry],
         |row| row.get(0),
     )?;
     if attributed {

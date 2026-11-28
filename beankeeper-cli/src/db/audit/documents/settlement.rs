@@ -422,7 +422,7 @@ pub(super) fn credit(
         actor,
         company,
         AllocationPlan {
-            document_id: input.document_id.clone(),
+            document_id: input.document_id,
             source_id: source,
             effective_on: input.date,
             amount: input.amount_minor,
@@ -434,7 +434,7 @@ pub(super) fn credit(
         tx,
         actor,
         company,
-        &input.document_id,
+        &result.allocation.document_id,
         input.line,
         source,
     )?;

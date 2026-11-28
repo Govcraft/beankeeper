@@ -32,7 +32,7 @@ pub(crate) use billing::{BillingChange, ProjectInvoiceInput, cancel_invoice, dra
 pub(super) use billing::{
     apply_invoice_credit, claim_invoice, protect_invoice_terms, validate_invoice,
 };
-pub(super) use distribution::{guard_project_posting, mirror_reversal};
+pub(super) use distribution::{guard_project_entry, mirror_reversal};
 pub(crate) use verification::verify;
 
 pub(crate) enum ProjectMutation {
