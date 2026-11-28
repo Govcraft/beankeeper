@@ -274,7 +274,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
 | `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
-| `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect` | Administer host-authorized bank and card feeds through the audited workflow |
+| `bank_feed_connect`, `bank_feed_disconnect` | Manage an authorized bank or card feed with owner access |
+| `bank_feed_connections`, `bank_feed_sync` | Discover authorized feed mappings and stage new transactions with normal agent access |
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
