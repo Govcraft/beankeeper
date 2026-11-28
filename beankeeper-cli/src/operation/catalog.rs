@@ -38,7 +38,7 @@ macro_rules! ledger_operations {
             InvestmentHoldings => ("investment.holdings", Read, tool(investment_holdings, InvestmentHoldings, "Value holdings at the latest price on or before as_of without posting unrealized gains. Monetary results use minor units.")),
             BankFeedConnect => ("bank-feed.connect", Admin, cli_only(LocalAdministration)),
             BankFeedDisconnect => ("bank-feed.disconnect", Admin, cli_only(LocalAdministration)),
-            BankFeedSync => ("bank-feed.sync", Admin, cli_only(Transport)),
+            BankFeedSync => ("bank-feed.sync", Admin, cli_only(LocalAdministration)),
             BankFeedShow => ("bank-feed.show", Read, tool(bank_feed_show, BankFeedShow, "Read connection status. Provider credentials and cursor are omitted.")),
             BankFeedList => ("bank-feed.list", Read, tool(bank_feed_list, BankFeedList, "Read one page of transactions staged for review.")),
             BankFeedReview => ("bank-feed.review", Read, tool(bank_feed_review, BankFeedReview, "Review one staged transaction and possible existing ledger matches.")),
