@@ -54,7 +54,7 @@ struct GustoExport {
 #[serde(untagged)]
 enum ExportSource {
     Normalized(Export),
-    Gusto(GustoExport),
+    Gusto(Box<GustoExport>),
 }
 
 impl Export {

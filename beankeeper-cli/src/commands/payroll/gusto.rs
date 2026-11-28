@@ -57,19 +57,19 @@ impl TryFrom<FinalizedTotals> for FinalizedRun {
         let totals = source.totals;
         require_simple_payroll(&totals)?;
         let gross = minor(&totals.gross_pay)?;
-        let employer = minor(&totals.employer_taxes)?;
-        let employee = minor(&totals.employee_taxes)?;
+        let company_tax = minor(&totals.employer_taxes)?;
+        let withheld = minor(&totals.employee_taxes)?;
         let net = minor(&totals.net_pay)?;
         let add = |left: i64, right| {
             left.checked_add(right).ok_or_else(|| {
                 CliError::Validation("Gusto payroll totals exceed the ledger range".into())
             })
         };
-        let total_minor = add(gross, employer)?.try_into()?;
-        let tax_liability = add(employee, employer)?;
+        let total_minor = add(gross, company_tax)?.try_into()?;
+        let tax_liability = add(withheld, company_tax)?;
         let components = [
             (Component::GrossWages, gross),
-            (Component::EmployerTaxes, employer),
+            (Component::EmployerTaxes, company_tax),
             (Component::NetPay, net),
             (Component::TaxWithholdings, tax_liability),
         ]
