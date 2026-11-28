@@ -58,6 +58,7 @@ use crate::cli::{
 use crate::error::CliError;
 use crate::operation::Operation;
 use crate::output::json::Meta;
+use crate::request::LedgerRequest;
 
 /// Return the canonical name of a parsed command.
 #[must_use]
@@ -273,8 +274,6 @@ fn dispatch_ledger(
     meta: Option<Meta>,
     chart: report::ChartRequest,
 ) -> Result<bool, CliError> {
-    use crate::request::LedgerRequest;
-
     let request = match &cli.command {
         Command::Setup(command) => return dispatch_setup(cli, meta, command).map(|()| true),
         Command::BankFeed(command) => Some(bank_feed::ledger_request(cli, command)?),
@@ -363,24 +362,29 @@ fn dispatch_ledger(
         Command::Report(args) => Some(LedgerRequest::Report(
             (require_company(cli)?, &args.command, chart).try_into()?,
         )),
-        Command::Audit(args) => match &args.command {
-            AuditCommand::Log(args) => Some(LedgerRequest::AuditLog(args.into())),
-            AuditCommand::Receipts(args) => Some(LedgerRequest::AuditReceipts(
-                audit::ReceiptRequest::List((require_company(cli)?, args).try_into()?),
-            )),
-            AuditCommand::Undo(args) => Some(LedgerRequest::AuditReceipts(
-                audit::ReceiptRequest::Undo(require_company(cli)?.clone(), args.receipt),
-            )),
-        },
+        Command::Audit(args) => Some(audit_request(cli, &args.command)?),
         _ => None,
     };
     render_ledger_request(cli, meta, request)
 }
 
+fn audit_request(cli: &Cli, command: &AuditCommand) -> Result<LedgerRequest, CliError> {
+    let request = match command {
+        AuditCommand::Log(args) => return Ok(LedgerRequest::AuditLog(args.into())),
+        AuditCommand::Receipts(args) => {
+            audit::ReceiptRequest::List((require_company(cli)?, args).try_into()?)
+        }
+        AuditCommand::Undo(args) => {
+            audit::ReceiptRequest::Undo(require_company(cli)?.clone(), args.receipt)
+        }
+    };
+    Ok(LedgerRequest::AuditReceipts(request))
+}
+
 fn render_ledger_request(
     cli: &Cli,
     meta: Option<Meta>,
-    request: Option<crate::request::LedgerRequest>,
+    request: Option<LedgerRequest>,
 ) -> Result<bool, CliError> {
     let Some(request) = request else {
         return Ok(false);
