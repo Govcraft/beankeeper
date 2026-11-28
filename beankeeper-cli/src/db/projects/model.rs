@@ -243,7 +243,7 @@ impl From<bool> for BillableState {
 }
 
 /// Validated company-contained project terms.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectTerms {
     /// Code unique within the company.
@@ -309,7 +309,7 @@ pub struct TimeEntry {
 }
 
 /// Requested portion of an expense or revenue entry.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SplitInput {
     /// Project to attribute.

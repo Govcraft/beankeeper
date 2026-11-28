@@ -670,6 +670,17 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `audit_receipts`, `audit_undo` | Read grouped changes and apply or propose an eligible receipt undo |
 | `restore`, `restore_undo` | Restore a server-side backup or undo a restore on the selected ledger with `ledger/admin` |
 
+For an imported contract, use `counterparty_create` for the customer and
+vendors, then use `counterparty_associate` to link posted transactions.
+Create the customer's project with `project_create`. Use `txn_show` to find the
+posted revenue or expense entry ID, then apply its amount to the project with
+`project_split`. Project profitability reads these dated allocations. Metadata
+tags stay available for searching and suggesting counterparties.
+
+The four tools apply changes with a posting grant in direct mode. In
+proposal-only mode they return a pending proposal ID. An approver can review
+the proposed change with `txn_proposals`, then use `txn_approve` or `txn_reject`.
+
 MCP discovery publishes input schemas and read-only hints from the ledger
 operation catalog. Input schemas describe nested fields inline. Send objects and
 arrays directly. Clients that encode a structured field as JSON text can send

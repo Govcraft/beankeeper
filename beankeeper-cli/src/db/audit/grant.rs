@@ -100,6 +100,16 @@ impl PostingGrant<'_> {
     }
 }
 
+/// Authority to apply routine directory and project attribution changes.
+pub(crate) enum Bookkeeping {}
+
+impl sealed::GrantKind for Bookkeeping {
+    const REQUIRED: Capability = Capability::Post;
+    const SIGNED: bool = true;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
 /// Authority to reverse an existing posting.
 pub enum Reverse {}
 

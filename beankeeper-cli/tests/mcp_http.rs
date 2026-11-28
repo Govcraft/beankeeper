@@ -602,6 +602,222 @@ fn http_resolves_the_posting_mode_of_each_request() -> TestResult {
     server.finish(&[direct, propose_only])
 }
 
+const BOOKKEEPING_TOOLS: [&str; 4] = [
+    "counterparty_create",
+    "counterparty_associate",
+    "project_create",
+    "project_split",
+];
+
+#[test]
+fn http_agent_can_apply_customer_project_income_and_expenses() -> TestResult {
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
+        db::create_account(
+            grant,
+            &CreateAccountParams {
+                company_slug: &"acme".parse()?,
+                code: "5000",
+                name: "Hosting",
+                account_type: beankeeper::types::AccountType::Expense,
+                default_tax_category: None,
+            },
+        )
+    })?;
+    let direct = token(&ledger.writer)?;
+    let read = token(&ledger.reader)?;
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(direct), "Agent")?;
+
+    for enforced in [false, true] {
+        if enforced {
+            ledger.enforce()?;
+        }
+        let direct_tools = server.tools(Some(direct))?;
+        let read_tools = server.tools(Some(read))?;
+        for name in BOOKKEEPING_TOOLS {
+            assert!(direct_tools.iter().any(|tool| tool == name), "{name}");
+            assert!(!read_tools.iter().any(|tool| tool == name), "{name}");
+        }
+        assert!(!direct_tools.iter().any(|tool| tool == "company_delete"));
+        let denied = server.call(
+            "counterparty_create",
+            json!({"company":"acme","name":"Customer","role":"customer"}),
+            Some(read),
+        )?;
+        assert_eq!(payload(&denied)?["code"], "FORBIDDEN");
+    }
+
+    let mut call = |tool: &str, args: Value| -> TestResult<Value> {
+        let result = server.call(tool, args, Some(direct))?;
+        assert_ne!(result["result"]["isError"], true, "{tool}: {result}");
+        payload(&result)
+    };
+    let customer = call(
+        "counterparty_create",
+        json!({"company":"acme","name":"Customer","role":"customer"}),
+    )?;
+    let vendor = call(
+        "counterparty_create",
+        json!({"company":"acme","name":"Hosting vendor","role":"vendor"}),
+    )?;
+    let project = call(
+        "project_create",
+        json!({"company":"acme","terms":{
+            "code":"contract","name":"Contract","customer":customer["party"]["id"],"currency":"USD"
+        }}),
+    )?;
+    let project_id = &project["project"]["id"];
+    assert!(!project_id.is_null(), "{project}");
+    for index in 0..7 {
+        let (expense, expense_minor) = if index == 6 {
+            ("159.41", 15941)
+        } else {
+            ("200.00", 20000)
+        };
+        for (kind, party, journal) in [
+            (
+                "income",
+                &customer["party"]["id"],
+                ("1000", "4000", "1500.00", "4000", 150000),
+            ),
+            (
+                "expense",
+                &vendor["party"]["id"],
+                ("5000", "1000", expense, "5000", expense_minor),
+            ),
+        ] {
+            let (debit, credit, amount, operating_account, amount_minor) = journal;
+            let posted = call(
+                "txn_post",
+                json!({
+                    "company":"acme","date":"2026-11-20","description":kind,"reference":format!("{kind}-{index}"),
+                    "debits":[{"account":debit,"amount":amount}],"credits":[{"account":credit,"amount":amount}],
+                }),
+            )?;
+            call(
+                "counterparty_associate",
+                json!({
+                    "company":"acme","id":party,"transaction_id":posted["id"]
+                }),
+            )?;
+            let transaction = call("txn_show", json!({"company":"acme","id":posted["id"]}))?;
+            let entry = transaction[0]["entries"]
+                .as_array()
+                .ok_or_else(|| format!("missing entries in {transaction}"))?
+                .iter()
+                .find(|entry| entry["account_code"] == operating_account)
+                .ok_or("missing income or expense entry")?;
+            call(
+                "project_split",
+                json!({
+                    "company":"acme","entry":entry["id"],"date":"2026-11-20",
+                    "splits":[{"project":project_id,"amount_minor":amount_minor}],
+                }),
+            )?;
+        }
+    }
+    let report = call(
+        "project_report",
+        json!({"company":"acme","month":"2026-11","currency":"USD"}),
+    )?;
+    assert_eq!(report["projects"][0]["revenue_minor"], 1_050_000);
+    assert_eq!(report["projects"][0]["expense_minor"], 135_941);
+    assert_eq!(report["projects"][0]["profit_minor"], 914_059);
+    server.finish(&[direct, read])
+}
+
+#[test]
+fn http_agent_bookkeeping_proposals_need_approval_before_changes_apply() -> TestResult {
+    use beankeeper_cli::identity::WriteMode;
+    use secrecy::ExposeSecret as _;
+
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    let issue = |name, caps: &[String], mode| {
+        Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
+            identity::issue_credential_with_mode(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities: caps,
+                    ttl: Duration::from_hours(1),
+                    public_key: None,
+                    generate_key: true,
+                },
+                mode,
+            )
+        })
+    };
+    let proposer = issue(
+        "bookkeeping_proposer",
+        &["ledger/read".into(), "ledger/post".into()],
+        WriteMode::ProposeOnly,
+    )?;
+    let approver = issue(
+        "bookkeeping_approver",
+        &["ledger/read".into(), "ledger/approve".into()],
+        WriteMode::Direct,
+    )?;
+    ledger.enforce()?;
+    let propose_token = proposer.token().expose_secret();
+    let approve_token = approver.token().expose_secret();
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(propose_token), "Approval-mode Agent")?;
+    let tools = server.tools(Some(propose_token))?;
+    for name in BOOKKEEPING_TOOLS {
+        assert!(tools.iter().any(|tool| tool == name), "{name}");
+    }
+
+    let mut call = |tool: &str, args: Value, bearer: &str| -> TestResult<Value> {
+        let result = server.call(tool, args, Some(bearer))?;
+        assert_ne!(result["result"]["isError"], true, "{tool}: {result}");
+        payload(&result)
+    };
+    let create = json!({"company":"acme","name":"Prospective customer","role":"customer"});
+    let pending = call("counterparty_create", create.clone(), propose_token)?;
+    assert_eq!(pending["status"], "pending");
+    assert!(pending["proposal_id"].is_string());
+    assert_eq!(call("counterparty_create", create, propose_token)?, pending);
+    let party_count = || -> TestResult<i64> {
+        Ok(db
+            .read()
+            .query_row("SELECT count(*) FROM counterparties", [], |row| row.get(0))?)
+    };
+    assert_eq!(party_count()?, 0);
+    let decision = json!({"company":"acme","id":pending["proposal_id"]});
+    let approved = call("txn_approve", decision.clone(), approve_token)?;
+    assert_eq!(approved["status"], "approved");
+    assert_eq!(approved["effect"], "bookkeeping");
+    assert!(
+        approved["receipt_id"].as_i64().is_some_and(|id| id > 0),
+        "{approved}"
+    );
+    assert_eq!(call("txn_approve", decision, approve_token)?, approved);
+    assert_eq!(party_count()?, 1);
+    let project_request = json!({"company":"acme","terms":{
+        "code":"prospect","name":"Prospect","customer":approved["result"]["party"]["id"],"currency":"USD"
+    }});
+    let project = call("project_create", project_request, propose_token)?;
+    assert_eq!(project["status"], "pending");
+    assert_eq!(
+        call("project_list", json!({"company":"acme"}), propose_token)?,
+        json!([])
+    );
+    let rejected = call(
+        "txn_reject",
+        json!({"company":"acme","id":project["proposal_id"],"reason":"Wait for the contract"}),
+        approve_token,
+    )?;
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(
+        call("project_list", json!({"company":"acme"}), propose_token)?,
+        json!([])
+    );
+    server.finish(&[propose_token, approve_token])
+}
+
 #[test]
 fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult {
     let ledger = Ledger::new()?;

@@ -9,6 +9,7 @@ use crate::error::CliError;
 pub(crate) enum Permission {
     Capability(Capability),
     Posting,
+    Bookkeeping,
     ProposalList,
     ProposalReject,
     SetupStatus,
@@ -26,7 +27,7 @@ impl Permission {
     pub(crate) fn primary(self) -> Result<Capability, CliError> {
         match self {
             Self::Capability(capability) => Ok(capability),
-            Self::Posting => Ok(Capability::Post),
+            Self::Posting | Self::Bookkeeping => Ok(Capability::Post),
             Self::AgentUndo | Self::Reversal => Ok(Capability::Reverse),
             Self::ProposalList | Self::SetupStatus => Ok(Capability::Read),
             Self::SetupOrChart | Self::Chart => Ok(Capability::Chart),
@@ -42,6 +43,9 @@ impl Permission {
 macro_rules! permission {
     (Posting) => {
         Permission::Posting
+    };
+    (Bookkeeping) => {
+        Permission::Bookkeeping
     };
     (ProposalList) => {
         Permission::ProposalList
@@ -229,7 +233,6 @@ impl Operation {
         ) && !matches!(
             self,
             Self::LedgerSetupOpeningPreview
-                | Self::TxnReconcile
                 | Self::Backup
                 | Self::Recover
                 | Self::ContractorTaxExport

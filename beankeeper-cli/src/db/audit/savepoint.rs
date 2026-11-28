@@ -45,6 +45,17 @@ impl<'a> AuditedTx<'a> {
         Ok(value)
     }
 
+    pub(super) fn preview_nested<T>(
+        &self,
+        name: &'static str,
+        run: impl FnOnce(&AuditedTx<'_>) -> Result<T, CliError>,
+    ) -> Result<T, CliError> {
+        let savepoint = Savepoint::begin(self.connection(), name)?;
+        let value = run(self)?;
+        savepoint.rollback()?;
+        Ok(value)
+    }
+
     pub(super) const fn connection(&self) -> &'a Connection {
         self.reader.connection()
     }

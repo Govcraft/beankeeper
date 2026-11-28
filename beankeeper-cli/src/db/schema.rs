@@ -9,7 +9,8 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 51;
+const LATEST_VERSION: i64 = 52;
+const BOOKKEEPING_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(52);
 pub(super) const PROJECT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(48);
 pub(super) const COLLECTION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(51);
 pub(super) const VAT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(45);
@@ -423,6 +424,16 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
     }
     if version < COLLECTION_SCHEMA_VERSION {
         migrate_with_writer(conn, COLLECTION_SCHEMA_VERSION, apply_collection_schema)?;
+    }
+    if version < BOOKKEEPING_PROPOSALS_SCHEMA_VERSION {
+        // Older binaries must refuse books containing the new typed proposals.
+        migrate_with_writer(conn, BOOKKEEPING_PROPOSALS_SCHEMA_VERSION, |conn| {
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [BOOKKEEPING_PROPOSALS_SCHEMA_VERSION],
+            )?;
+            Ok(())
+        })?;
     }
     Ok(())
 }

@@ -1,5 +1,8 @@
 //! Corrections use the same review commands as posting and rename proposals.
 
+pub(crate) mod bookkeeping;
+
+use bookkeeping::Bookkeeping;
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -91,6 +94,7 @@ enum Correction {
     Reverse(Reversal),
     Recategorize(Recategorization),
     Undo { receipt: ReceiptId },
+    Bookkeeping { change: Bookkeeping },
 }
 
 impl Correction {
@@ -117,13 +121,13 @@ impl From<Correction> for Request {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct PendingCorrection {
     proposal_id: ProposalId,
     status: Pending,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Pending {
     Pending,
@@ -285,6 +289,10 @@ pub(crate) fn undo(
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 enum Applied {
+    Bookkeeping {
+        receipt_id: Option<ReceiptId>,
+        result: serde_json::Value,
+    },
     Recategorized(Box<recategorize::Applied>),
     Reversed {
         transaction: TransactionId,
@@ -298,13 +306,14 @@ enum Applied {
 }
 
 impl Applied {
-    fn desktop_path(&self, company: &CompanySlug) -> String {
+    fn desktop_path(&self, company: &CompanySlug) -> Option<String> {
         let receipt = match *self {
-            Self::Recategorized(ref applied) => return applied.desktop_path(company),
+            Self::Recategorized(ref applied) => return Some(applied.desktop_path(company)),
+            Self::Bookkeeping { receipt_id, .. } => receipt_id?,
             Self::Undone { undo_receipt, .. } => undo_receipt,
             Self::Reversed { receipt, .. } => receipt,
         };
-        receipts::desktop_receipt_path(company, receipt)
+        Some(receipts::desktop_receipt_path(company, receipt))
     }
 }
 
@@ -336,8 +345,9 @@ enum ReviewState {
     },
 }
 
+/// An auditable correction or bookkeeping request for human review.
 #[derive(Serialize)]
-pub(crate) struct CorrectionProposal {
+pub struct CorrectionProposal {
     id: ProposalId,
     kind: ProposalKind,
     company_slug: CompanySlug,
@@ -346,6 +356,48 @@ pub(crate) struct CorrectionProposal {
     payload: Request,
     #[serde(flatten)]
     state: ReviewState,
+}
+
+impl CorrectionProposal {
+    /// The company-scoped proposal identifier.
+    pub const fn id(&self) -> &ProposalId {
+        &self.id
+    }
+
+    /// The verified identity that submitted this request.
+    pub fn proposer_uri(&self) -> &str {
+        &self.proposer_uri
+    }
+
+    /// The ledger timestamp when the request was submitted.
+    pub fn created_at(&self) -> &str {
+        &self.created_at
+    }
+
+    /// A short description of the requested change.
+    pub const fn title(&self) -> &'static str {
+        use bookkeeping::{Party, Project};
+        match &self.payload.correction {
+            Correction::Reverse(_) => "Reverse a transaction",
+            Correction::Recategorize(_) => "Recategorize a transaction",
+            Correction::Undo { .. } => "Undo a recorded change",
+            Correction::Bookkeeping { change } => match change {
+                Bookkeeping::Counterparty(Party::Create { .. }) => "Create a customer or vendor",
+                Bookkeeping::Counterparty(Party::Associate { .. }) => {
+                    "Link a customer or vendor to a transaction"
+                }
+                Bookkeeping::Project(Project::Create { .. }) => "Create a project",
+                Bookkeeping::Project(Project::Split { .. }) => {
+                    "Allocate a posted entry to projects"
+                }
+            },
+        }
+    }
+
+    /// Whether the request is awaiting a decision.
+    pub const fn is_pending(&self) -> bool {
+        matches!(&self.state, ReviewState::Pending { .. })
+    }
 }
 
 #[derive(Serialize)]
@@ -399,7 +451,7 @@ impl StoredProposal {
     fn review(self, company: &CompanySlug) -> CorrectionProposal {
         let state = if let Some(resolution) = self.resolution {
             let desktop_path = match &resolution {
-                Resolution::Approved { applied } => Some(applied.desktop_path(company)),
+                Resolution::Approved { applied } => applied.desktop_path(company),
                 _ => None,
             };
             ReviewState::Resolved {
@@ -469,7 +521,11 @@ fn reserve(
     Ok(id.into())
 }
 
-pub(crate) fn list(
+/// List corrections visible to the reviewer in the selected company.
+///
+/// # Errors
+/// Returns credential, policy integrity, or ledger errors.
+pub fn list(
     reader: ReadConn<'_>,
     company: &CompanySlug,
     actor: &Actor,
@@ -490,6 +546,31 @@ pub(crate) fn list(
         .collect()
 }
 
+/// Read an individual correction visible to the reviewer.
+///
+/// # Errors
+/// Returns credential, policy integrity, or ledger errors.
+pub fn get(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    actor: &Actor,
+    id: &ProposalId,
+) -> Result<Option<CorrectionProposal>, CliError> {
+    let all = proposals::can_review_all(reader, actor)?;
+    reader
+        .query_row(
+            &select_proposals(
+                reader,
+                "AND proposed.entity_id = ?2 AND (?3 OR proposed.agent_uri = ?4)",
+            ),
+            params![company, id, all, actor.agent_uri()],
+            read_row,
+        )
+        .optional()?
+        .map(|row| Ok(StoredProposal::try_from(row)?.review(company)))
+        .transpose()
+}
+
 fn find(
     tx: &AuditedTx<'_>,
     company: &CompanySlug,
@@ -507,7 +588,11 @@ fn find(
         .transpose()
 }
 
-pub(crate) fn approve(
+/// Apply a pending correction using a signed approval credential.
+///
+/// # Errors
+/// Returns approval, input validation, integrity, or ledger errors.
+pub fn approve(
     grant: &Granted<'_, Approve>,
     company: &CompanySlug,
     id: &ProposalId,
@@ -542,6 +627,15 @@ pub(crate) fn approve(
                 Correction::Recategorize(request) => {
                     Applied::Recategorized(Box::new(request.apply(tx, actor, &scope)?))
                 }
+                Correction::Bookkeeping { change } => {
+                    if actor.agent_uri() == Some(proposal.proposer_uri.as_str()) {
+                        return Err(CliError::Forbidden(
+                            "a proposer cannot approve their bookkeeping request".into(),
+                        ));
+                    }
+                    let active = Company::bind(tx.read(), company.clone())?;
+                    change.clone().apply(tx, actor, &active)?
+                }
                 Correction::Undo { receipt } => {
                     let outcome = AgentReceiptUndo::load(&scope, *receipt)?.apply(
                         tx,
@@ -567,7 +661,11 @@ pub(crate) fn approve(
     })
 }
 
-pub(crate) fn reject(
+/// Reject a pending correction, or withdraw it as its proposer.
+///
+/// # Errors
+/// Returns approval, resolution, integrity, or ledger errors.
+pub fn reject(
     grant: &Granted<'_, ResolveProposal>,
     company: &CompanySlug,
     id: &ProposalId,

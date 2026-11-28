@@ -52,6 +52,10 @@ pub(super) use posting::persist_posting;
 pub(crate) mod account_rename;
 pub(crate) mod cash_classification;
 pub(crate) mod corrections;
+pub use corrections::{
+    CorrectionProposal, approve as approve_correction, get as get_correction,
+    list as list_corrections, reject as reject_correction,
+};
 pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;

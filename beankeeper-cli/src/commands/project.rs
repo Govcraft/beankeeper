@@ -8,6 +8,7 @@ use crate::{
     cli::{Cli, OutputFormat, resolve_format},
     db::{
         Actor, Db,
+        audit::corrections::bookkeeping::{Project as ProjectWrite, Submission},
         audit::projects::{
             self as writes, BillingChange, ProjectChange, ProjectInvoiceInput, ProjectMutation,
         },
@@ -172,7 +173,12 @@ impl ProjectRequest {
 
         let company = &self.company;
         let result = match self.command {
-            Cmd::Create { terms } => Edit::Create(terms),
+            Cmd::Create { terms } => {
+                return ProjectWrite::Create { terms }
+                    .submit(db, actor, company)
+                    .map(Response::Bookkeeping)
+                    .map(ProjectResponse);
+            }
             Cmd::Archive { id } => Edit::Archive(id),
             Cmd::Record { work } => Edit::Record(work),
             Cmd::Approve { id, date } => Edit::Approve(id, date.into()),
@@ -180,7 +186,16 @@ impl ProjectRequest {
                 entry,
                 date,
                 splits,
-            } => Edit::Split(entry, date.into(), splits.0),
+            } => {
+                return ProjectWrite::Split {
+                    entry,
+                    date: date.into(),
+                    splits: splits.0,
+                }
+                .submit(db, actor, company)
+                .map(Response::Bookkeeping)
+                .map(ProjectResponse);
+            }
             Cmd::Budget { budget } => Edit::Budget(budget),
             Cmd::DraftInvoice { invoice } => {
                 return writes::draft_invoice(db, actor, company, invoice)
@@ -235,6 +250,7 @@ pub struct ProjectResponse(Response);
 #[serde(untagged)]
 enum Response {
     Change(ProjectChange),
+    Bookkeeping(Submission<ProjectChange>),
     Invoice(Box<BillingChange>),
     Receipt { receipt_id: ReceiptId },
     List(Vec<Project>),

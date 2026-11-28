@@ -7,7 +7,13 @@ use crate::{
     cli::{Cli, OutputFormat, resolve_format},
     db::{
         Actor, Db,
-        audit::counterparties::{self, PartyEdit, PartyMutation, PartyMutationResult},
+        audit::{
+            corrections::{
+                PendingCorrection,
+                bookkeeping::{Party, Submission},
+            },
+            counterparties::{self, PartyEdit, PartyMutationResult},
+        },
         companies::{Company, CompanySlug},
         counterparties::{
             ContactDetails, ContactEmail, ContactField, ContactPatch, Counterparty, CounterpartyId,
@@ -243,34 +249,20 @@ impl CounterpartyRequest {
                 let company = Company::bind(db.read(), self.company)?;
                 suggest_counterparties(&company, label, page).map(PartyOutput::Suggestions)
             }
-            CounterpartyAction::Create(details) => counterparties::mutate(
-                db,
-                actor,
-                &self.company,
-                PartyMutation::Edit(PartyEdit::Create(details)),
-            )
-            .map(PartyOutput::Change),
-            CounterpartyAction::Amend(id, patch) => counterparties::mutate(
-                db,
-                actor,
-                &self.company,
-                PartyMutation::Edit(PartyEdit::Amend(id, patch)),
-            )
-            .map(PartyOutput::Change),
-            CounterpartyAction::Archive(id) => counterparties::mutate(
-                db,
-                actor,
-                &self.company,
-                PartyMutation::Edit(PartyEdit::Archive(id)),
-            )
-            .map(PartyOutput::Change),
-            CounterpartyAction::Associate(id, transaction) => counterparties::mutate(
-                db,
-                actor,
-                &self.company,
-                PartyMutation::Associate(id, transaction),
-            )
-            .map(PartyOutput::Change),
+            CounterpartyAction::Create(details) => Party::Create { details }
+                .submit(db, actor, &self.company)
+                .map(PartyOutput::from),
+            CounterpartyAction::Amend(id, patch) => {
+                counterparties::mutate(db, actor, &self.company, PartyEdit::Amend(id, patch))
+                    .map(PartyOutput::Change)
+            }
+            CounterpartyAction::Archive(id) => {
+                counterparties::mutate(db, actor, &self.company, PartyEdit::Archive(id))
+                    .map(PartyOutput::Change)
+            }
+            CounterpartyAction::Associate(id, transaction) => Party::Associate { id, transaction }
+                .submit(db, actor, &self.company)
+                .map(PartyOutput::from),
         }
         .map(CounterpartyResponse)
     }
@@ -288,6 +280,16 @@ enum PartyOutput {
     Show(Counterparty),
     Suggestions(PartyPage<PartySuggestion>),
     Change(PartyMutationResult),
+    Pending(PendingCorrection),
+}
+
+impl From<Submission<PartyMutationResult>> for PartyOutput {
+    fn from(value: Submission<PartyMutationResult>) -> Self {
+        match value {
+            Submission::Applied(change) => Self::Change(change),
+            Submission::Pending(proposal) => Self::Pending(proposal),
+        }
+    }
 }
 
 impl CounterpartyResponse {
@@ -306,6 +308,11 @@ impl CounterpartyResponse {
             return Ok(());
         }
         match &self.0 {
+            PartyOutput::Pending(proposal) => super::rule::render_rows(
+                format,
+                &["proposal_id", "status"],
+                [[proposal.id().to_string(), "pending".into()]],
+            ),
             PartyOutput::List(page) => {
                 show_next(cli, page.next_offset);
                 party_rows(format, page.items.iter().map(|party| (party, None)))
