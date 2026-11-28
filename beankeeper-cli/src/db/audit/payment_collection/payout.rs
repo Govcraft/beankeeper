@@ -156,14 +156,8 @@ pub(in crate::db::audit) fn reconcile_in_scope(
             "payout fees differ from the reported balance transaction fees",
         ));
     }
-    if let Some((transaction, snapshot)) = tx.read().query_row(
-        "SELECT posting,manifest FROM stripe_payout_postings WHERE company_slug=?1 AND payout=?2",
-        params![company, key], |row| Ok((row.get::<_, TransactionId>(0)?, row.get::<_, String>(1)?)),
-    ).optional()? {
-        if snapshot == encoded_terms {
-            return Ok(PayoutPosting { transaction, existing: true });
-        }
-        return Err(validation("payout is already reconciled using different terms"));
+    if let Some(existing) = known_posting(tx.read(), company, &key, &encoded_terms)? {
+        return Ok(existing);
     }
     let (gross, refunded, clearing) =
         validate_selection(tx.read(), company, &evidence, manifest, &selection)?;
@@ -240,6 +234,25 @@ pub(in crate::db::audit) fn reconcile_in_scope(
         transaction,
         existing: false,
     })
+}
+
+fn known_posting(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    payout: &str,
+    terms: &str,
+) -> Result<Option<PayoutPosting>, CliError> {
+    reader.query_row(
+        "SELECT posting,manifest FROM stripe_payout_postings WHERE company_slug=?1 AND payout=?2",
+        params![company, payout],
+        |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
+    ).optional()?.map(|(transaction, stored)| {
+        if stored == terms {
+            Ok(PayoutPosting { transaction, existing: true })
+        } else {
+            Err(validation("payout is already reconciled using different terms"))
+        }
+    }).transpose()
 }
 
 fn validate_selection(
