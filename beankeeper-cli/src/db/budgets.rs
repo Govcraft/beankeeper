@@ -450,7 +450,7 @@ mod tests {
 
     use super::*;
     static TEST_COMPANY: std::sync::LazyLock<crate::db::companies::CompanySlug> =
-        std::sync::LazyLock::new(|| "acme".parse().expect("fixture company"));
+        std::sync::LazyLock::new(crate::db::companies::CompanySlug::fixture);
 
     use crate::db::transactions::{ConflictStrategy, PostEntryParams, PostTransactionParams};
     use crate::db::{Actor, Db, audit, create_account, create_company};
@@ -574,10 +574,8 @@ mod tests {
         db
     }
 
-    fn post_expense(db: &Db, date: &str, expense_code: &str, amount: i64) {
-        let amount = amount
-            .try_into()
-            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}"));
+    fn post_expense(db: &Db, date: &str, expense_code: &str, amount: i64) -> Result<(), CliError> {
+        let amount = amount.try_into()?;
         let entries = vec![
             PostEntryParams {
                 account_code: expense_code.to_string(),
@@ -596,27 +594,25 @@ mod tests {
         ];
         let actor = test_actor();
         let params = PostTransactionParams {
-            company_slug: &"acme".parse().expect("fixture company"),
+            company_slug: &"acme".parse()?,
             description: "Test expense",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
             date: date
                 .parse()
-                .unwrap_or_else(|error| panic!("fixture date: {error}")),
+                .map_err(|error: chrono::ParseError| CliError::Validation(error.to_string()))?,
             entries: &entries,
             correlate: None,
             reference: None,
             on_conflict: ConflictStrategy::Error,
             actor: &actor,
         };
-        crate::db::transactions::post_fixture(db, &params)
-            .unwrap_or_else(|e| panic!("post failed: {e}"));
+        crate::db::transactions::post_fixture(db, &params)?;
+        Ok(())
     }
 
-    fn post_revenue(db: &Db, date: &str, amount: i64) {
-        let amount = amount
-            .try_into()
-            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}"));
+    fn post_revenue(db: &Db, date: &str, amount: i64) -> Result<(), CliError> {
+        let amount = amount.try_into()?;
         let entries = vec![
             PostEntryParams {
                 account_code: "1000".to_string(),
@@ -635,21 +631,21 @@ mod tests {
         ];
         let actor = test_actor();
         let params = PostTransactionParams {
-            company_slug: &"acme".parse().expect("fixture company"),
+            company_slug: &"acme".parse()?,
             description: "Test revenue",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
             date: date
                 .parse()
-                .unwrap_or_else(|error| panic!("fixture date: {error}")),
+                .map_err(|error: chrono::ParseError| CliError::Validation(error.to_string()))?,
             entries: &entries,
             correlate: None,
             reference: None,
             on_conflict: ConflictStrategy::Error,
             actor: &actor,
         };
-        crate::db::transactions::post_fixture(db, &params)
-            .unwrap_or_else(|e| panic!("post failed: {e}"));
+        crate::db::transactions::post_fixture(db, &params)?;
+        Ok(())
     }
 
     fn fixture_month(month: u8) -> Month {
@@ -751,9 +747,11 @@ mod tests {
              BEGIN SELECT RAISE(ABORT, 'budget audit refused'); END;",
         )?;
         Granted::<Budget>::with_db(&db, &test_actor(), |grant| {
-            let error = audit::set_annual_budget(grant, &annual("5000", 2026, 120_000, None))
-                .expect_err("audit failure must reject the annual update");
-            assert!(error.to_string().contains("budget audit refused"));
+            let result = audit::set_annual_budget(grant, &annual("5000", 2026, 120_000, None));
+            assert!(
+                matches!(&result, Err(error) if error.to_string().contains("budget audit refused")),
+                "audit failure must reject the annual update: {result:?}"
+            );
             Ok(())
         })?;
         let (budgets, audit_rows): (i64, i64) = db.read().query_row(
@@ -873,7 +871,7 @@ mod tests {
     fn variance_expense_under_budget() -> Result<(), CliError> {
         let db = setup();
         set_budget(&db, &budget("5000", 2026, 1, 100_000, None))?;
-        post_expense(&db, "2026-01-15", "5000", 80_000);
+        post_expense(&db, "2026-01-15", "5000", 80_000)?;
 
         let report = compute_budget_variance(
             &db,
@@ -894,7 +892,7 @@ mod tests {
     fn variance_retains_exact_ratio_until_rendering() -> Result<(), CliError> {
         let db = setup();
         set_budget(&db, &budget("5000", 2026, 1, 16, None))?;
-        post_expense(&db, "2026-01-15", "5000", 15);
+        post_expense(&db, "2026-01-15", "5000", 15)?;
 
         for include_unbudgeted in [false, true] {
             let report = compute_budget_variance(
@@ -928,7 +926,7 @@ mod tests {
     fn variance_expense_over_budget() -> Result<(), CliError> {
         let db = setup();
         set_budget(&db, &budget("5000", 2026, 1, 50_000, None))?;
-        post_expense(&db, "2026-01-15", "5000", 80_000);
+        post_expense(&db, "2026-01-15", "5000", 80_000)?;
 
         let report = compute_budget_variance(
             &db,
@@ -945,7 +943,7 @@ mod tests {
     fn variance_revenue_exceeds_target() -> Result<(), CliError> {
         let db = setup();
         set_budget(&db, &budget("4000", 2026, 1, 100_000, None))?;
-        post_revenue(&db, "2026-01-15", 150_000);
+        post_revenue(&db, "2026-01-15", 150_000)?;
 
         let report = compute_budget_variance(
             &db,
@@ -967,7 +965,7 @@ mod tests {
     fn variance_revenue_misses_target() -> Result<(), CliError> {
         let db = setup();
         set_budget(&db, &budget("4000", 2026, 1, 200_000, None))?;
-        post_revenue(&db, "2026-01-15", 100_000);
+        post_revenue(&db, "2026-01-15", 100_000)?;
 
         let report = compute_budget_variance(
             &db,
@@ -989,9 +987,9 @@ mod tests {
         for m in 1..=3 {
             set_budget(&db, &budget("5000", 2026, m, 50_000, None))?;
         }
-        post_expense(&db, "2026-01-15", "5000", 40_000);
-        post_expense(&db, "2026-02-15", "5000", 60_000);
-        post_expense(&db, "2026-03-15", "5000", 50_000);
+        post_expense(&db, "2026-01-15", "5000", 40_000)?;
+        post_expense(&db, "2026-02-15", "5000", 60_000)?;
+        post_expense(&db, "2026-03-15", "5000", 50_000)?;
 
         let report = compute_budget_variance(
             &db,
@@ -1013,8 +1011,8 @@ mod tests {
     fn variance_include_unbudgeted() -> Result<(), CliError> {
         let db = setup();
         set_budget(&db, &budget("5000", 2026, 1, 100_000, None))?;
-        post_expense(&db, "2026-01-15", "5000", 80_000);
-        post_expense(&db, "2026-01-20", "5100", 30_000);
+        post_expense(&db, "2026-01-15", "5000", 80_000)?;
+        post_expense(&db, "2026-01-20", "5100", 30_000)?;
 
         let report = compute_budget_variance(
             &db,

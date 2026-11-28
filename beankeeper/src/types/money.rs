@@ -386,11 +386,12 @@ mod tests {
     }
 
     #[test]
-    fn negate_positive_money() {
+    fn negate_positive_money() -> Result<(), MoneyError> {
         let m = Money::usd(100);
-        let neg = m.checked_neg().expect("test amount can be negated");
+        let neg = m.checked_neg()?;
         assert_eq!(neg.amount(), Amount::new(-100));
         assert_eq!(neg.currency(), Currency::USD);
+        Ok(())
     }
 
     #[test]

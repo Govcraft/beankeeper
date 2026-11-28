@@ -237,53 +237,47 @@ mod tests {
         db
     }
 
-    fn post_sample(db: &Db) -> TransactionId {
+    fn post_sample(db: &Db) -> Result<TransactionId, CliError> {
         let entries = vec![
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
             transactions::PostEntryParams {
                 account_code: "4000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
         ];
         let actor = fixture_actor("test");
         let params = transactions::PostTransactionParams {
-            company_slug: &"acme".parse().expect("fixture company"),
+            company_slug: &"acme".parse()?,
             description: "Sale",
             metadata: None,
             currency: beankeeper::types::Currency::USD,
             date: "2024-01-15"
                 .parse()
-                .unwrap_or_else(|error| panic!("fixture date: {error}")),
+                .map_err(|error: chrono::ParseError| CliError::Validation(error.to_string()))?,
             entries: &entries,
             correlate: None,
             reference: None,
             on_conflict: transactions::ConflictStrategy::Error,
             actor: &actor,
         };
-        match crate::db::transactions::post_fixture(db, &params)
-            .unwrap_or_else(|e| panic!("post failed: {e}"))
-        {
-            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => id,
+        match crate::db::transactions::post_fixture(db, &params)? {
+            transactions::PostResult::Created(id) | transactions::PostResult::Skipped(id) => Ok(id),
         }
     }
 
     #[test]
     fn store_and_list_attachments() -> Result<(), CliError> {
         let db = setup();
-        let txn_id = post_sample(&db);
+        let txn_id = post_sample(&db)?;
         let hash = Sha256Hex::from_digest([0xab; 32]);
         let uri = format!("attachments/{hash}");
 
@@ -341,14 +335,14 @@ mod tests {
     }
 
     #[test]
-    fn get_attachment_found() {
+    fn get_attachment_found() -> Result<(), CliError> {
         let db = setup();
-        let txn_id = post_sample(&db);
+        let txn_id = post_sample(&db)?;
 
         let params = StoreAttachmentParams {
             transaction_id: txn_id,
             entry_id: None,
-            company_slug: &"acme".parse().expect("fixture company"),
+            company_slug: &"acme".parse()?,
             uri: "invoice.pdf",
             document_type: DocumentType::Invoice,
             hash: None,
@@ -356,21 +350,16 @@ mod tests {
         };
         let att_id = Granted::<Post>::with_db(&db, &fixture_actor("fixture"), |grant| {
             store_attachment(grant, &params)
-        })
-        .unwrap_or_else(|e| panic!("store failed: {e}"));
+        })?;
 
         let att = get_attachment(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             att_id,
-        )
-        .unwrap_or_else(|e| panic!("get failed: {e}"));
+        )?;
         assert_eq!(att.id, att_id);
         assert_eq!(att.document_type, DocumentType::Invoice);
         assert!(att.hash.is_none());
+        Ok(())
     }
 
     #[test]
@@ -378,7 +367,7 @@ mod tests {
         use crate::identity::Admin;
 
         let db = setup();
-        let transaction_id = post_sample(&db);
+        let transaction_id = post_sample(&db)?;
         let actor = crate::db::Actor::new("fixture".parse()?);
         let params = StoreAttachmentParams {
             transaction_id,
@@ -412,7 +401,7 @@ mod tests {
     #[test]
     fn attachment_rows_validate_existing_hash_text() -> Result<(), CliError> {
         let db = setup();
-        let txn_id = post_sample(&db);
+        let txn_id = post_sample(&db)?;
         let insert =
             "INSERT INTO attachments (transaction_id, company_slug, uri, document_type, hash)
                       VALUES (?1, 'acme', 'receipt.pdf', 'receipt', ?2)";
@@ -495,7 +484,7 @@ mod tests {
     #[test]
     fn store_attachment_with_entry_id() -> Result<(), CliError> {
         let db = setup();
-        let txn_id = post_sample(&db);
+        let txn_id = post_sample(&db)?;
 
         // Get an entry ID from the posted transaction
         let company = super::super::companies::Company::bind(db.read(), "acme".parse()?)?;

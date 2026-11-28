@@ -2520,7 +2520,7 @@ mod tests {
             description: "Review".into(),
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("fixture date"),
+            date: fixture_date(2026, 1, 1)?,
             entries: Vec::new(),
             correlate: None,
             reference: None,
@@ -2716,6 +2716,12 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    fn fixture_date(year: i32, month: u32, day: u32) -> Result<chrono::NaiveDate, CliError> {
+        chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| {
+            CliError::Validation(format!("invalid fixture date {year}-{month}-{day}"))
+        })
     }
 
     fn v17_connection() -> Result<Connection, CliError> {
@@ -2931,9 +2937,11 @@ mod tests {
             "DROP TRIGGER protect_audit_update;
              UPDATE audit_log SET related_posting = 1 WHERE action = 'reverse';",
         )?;
-        let error = crate::db::audit::verify_hash_chain(reader)
-            .expect_err("changing a legacy typed link must invalidate the commitment");
-        assert!(error.to_string().contains("receipt links"));
+        let result = crate::db::audit::verify_hash_chain(reader);
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("receipt links")),
+            "changing a legacy typed link must invalidate the commitment: {result:?}"
+        );
         Ok(())
     }
 
@@ -2996,7 +3004,8 @@ mod tests {
         assert_eq!(tail()?, v26_tail);
         let scope = Company::bind(ReadConn::physical(&conn), company)?;
         let active = rules::list_rules(&scope)?;
-        let rule = rules::matching_rule(&active, "Retail SALE").expect("migrated match");
+        let rule = rules::matching_rule(&active, "Retail SALE")
+            .ok_or_else(|| CliError::NotFound("migrated match".into()))?;
         assert_eq!(rule.id(), &id);
         assert_eq!(rule.supersedes(), None);
         assert_eq!(i32::from(rule.priority()), -7);
@@ -3722,7 +3731,11 @@ mod tests {
                 &"legacy".parse()?,
                 (
                     "sale".parse()?,
-                    "4000".parse().expect("fixture account code"),
+                    "4000"
+                        .parse()
+                        .map_err(|error: beankeeper::types::AccountCodeError| {
+                            CliError::Validation(error.to_string())
+                        })?,
                     None,
                 )
                     .into(),
@@ -3734,7 +3747,7 @@ mod tests {
                 grant,
                 &"legacy".parse()?,
                 rule.id(),
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                crate::confirmation::Confirmed::forced(true)?,
             )
         })?;
         assert_eq!(&hashes(&conn)?[..2], before.as_slice());

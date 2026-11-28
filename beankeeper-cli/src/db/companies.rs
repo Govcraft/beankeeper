@@ -56,6 +56,14 @@ impl CompanySlug {
     }
 }
 
+#[cfg(test)]
+impl CompanySlug {
+    /// The `acme` slug shared by unit-test fixtures, built without fallible parsing.
+    pub(crate) fn fixture() -> Self {
+        Self("acme".into())
+    }
+}
+
 impl fmt::Display for CompanySlug {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
@@ -305,6 +313,12 @@ mod tests {
     }
 
     #[test]
+    fn fixture_slug_is_a_valid_parsed_slug() -> Result<(), CliError> {
+        assert_eq!(CompanySlug::fixture(), "acme".parse()?);
+        Ok(())
+    }
+
+    #[test]
     fn slug_round_trips_as_validated_text() -> Result<(), Box<dyn std::error::Error>> {
         let slug: CompanySlug = "acme-ledger".parse()?;
         let db = setup();
@@ -487,7 +501,7 @@ mod tests {
                     &"acme"
                         .parse()
                         .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                    crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                    crate::confirmation::Confirmed::forced(true)?,
                 )
             })
             .is_ok()
@@ -513,7 +527,7 @@ mod tests {
                 &"nope"
                     .parse()
                     .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                crate::confirmation::Confirmed::forced(true)?,
             )
         });
         assert!(matches!(result, Err(CliError::NotFound(_))));

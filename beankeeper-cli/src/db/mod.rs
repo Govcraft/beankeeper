@@ -485,75 +485,62 @@ mod tests {
 
     use super::*;
 
-    fn setup() -> Db {
-        let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
+    fn setup() -> Result<Db, Box<dyn std::error::Error>> {
+        let db = Db::open_in_memory()?;
+        let company: crate::db::companies::CompanySlug = "acme".parse()?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
-            create_company(
-                grant,
-                &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                &"Acme Corp".parse()?,
-                None,
-            )
-        })
-        .unwrap_or_else(|e| panic!("company setup failed: {e}"));
+            create_company(grant, &company, &"Acme Corp".parse()?, None)
+        })?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &company,
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        })?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &company,
                     code: "4000",
                     name: "Revenue",
                     account_type: beankeeper::types::AccountType::Revenue,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        })?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &company,
                     code: "2000",
                     name: "Payables",
                     account_type: beankeeper::types::AccountType::Liability,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        db
+        })?;
+        Ok(db)
     }
 
-    fn post_sample(db: &Db, date: &str, amount: i64) {
-        post_sample_in(db, date, amount, Currency::USD);
+    fn post_sample(db: &Db, date: &str, amount: i64) -> Result<(), Box<dyn std::error::Error>> {
+        post_sample_in(db, date, amount, Currency::USD)
     }
 
-    fn post_sample_in(db: &Db, date: &str, amount: i64, currency: Currency) {
-        let amount = amount
-            .try_into()
-            .unwrap_or_else(|error| panic!("invalid fixture amount: {error}"));
+    fn post_sample_in(
+        db: &Db,
+        date: &str,
+        amount: i64,
+        currency: Currency,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let amount = amount.try_into()?;
         let entries = vec![
             transactions::PostEntryParams {
                 account_code: "1000".to_string(),
@@ -572,249 +559,190 @@ mod tests {
         ];
         let actor = fixture_actor("test");
         let params = transactions::PostTransactionParams {
-            company_slug: &"acme".parse().expect("fixture company"),
+            company_slug: &"acme".parse()?,
             description: "Sale",
             metadata: None,
             currency,
-            date: date
-                .parse()
-                .unwrap_or_else(|error| panic!("fixture date: {error}")),
+            date: date.parse()?,
             entries: &entries,
             correlate: None,
             reference: None,
             on_conflict: transactions::ConflictStrategy::Error,
             actor: &actor,
         };
-        crate::db::transactions::post_fixture(db, &params)
-            .unwrap_or_else(|e| panic!("post failed: {e}"));
+        crate::db::transactions::post_fixture(db, &params)?;
+        Ok(())
     }
 
     #[test]
-    fn trial_balance_empty() {
-        let db = setup();
+    fn trial_balance_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
             None,
             Currency::USD,
-        )
-        .unwrap_or_default();
+        )?;
         // All 3 accounts with zero balances
         assert_eq!(balances.len(), 3);
         for b in &balances {
             assert_eq!(b.debit_total, 0);
             assert_eq!(b.credit_total, 0);
         }
+        Ok(())
     }
 
     #[test]
-    fn trial_balance_after_posting() {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
+    fn trial_balance_after_posting() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
 
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
             None,
             Currency::USD,
-        )
-        .unwrap_or_default();
+        )?;
         assert_eq!(balances.len(), 3);
 
         let cash = balances.iter().find(|b| b.code == "1000");
         assert!(cash.is_some());
-        let cash = cash.unwrap_or_else(|| panic!("missing cash"));
+        let cash = cash.ok_or("missing cash")?;
         assert_eq!(cash.debit_total, 5000);
         assert_eq!(cash.credit_total, 0);
 
         let revenue = balances.iter().find(|b| b.code == "4000");
         assert!(revenue.is_some());
-        let revenue = revenue.unwrap_or_else(|| panic!("missing revenue"));
+        let revenue = revenue.ok_or("missing revenue")?;
         assert_eq!(revenue.debit_total, 0);
         assert_eq!(revenue.credit_total, 5000);
+        Ok(())
     }
 
     #[test]
-    fn trial_balance_with_type_filter() {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
+    fn trial_balance_with_type_filter() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
 
         let balances = compute_trial_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             Some(beankeeper::types::AccountType::Asset),
             None,
             None,
             Currency::USD,
-        )
-        .unwrap_or_default();
+        )?;
         assert_eq!(balances.len(), 1);
         assert_eq!(balances[0].code, "1000");
+        Ok(())
     }
 
     #[test]
-    fn trial_balance_with_as_of_date() {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
-        post_sample(&db, "2024-02-15", 3000);
-
-        let balances = compute_trial_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
-            None,
-            None,
-            Some(
-                "2024-01-31"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
-            Currency::USD,
-        )
-        .unwrap_or_default();
-
-        let cash = balances.iter().find(|b| b.code == "1000");
-        assert!(cash.is_some());
-        let cash = cash.unwrap_or_else(|| panic!("missing cash"));
-        assert_eq!(cash.debit_total, 5000);
-    }
-
-    #[test]
-    fn account_balance_empty() {
-        let db = setup();
-        let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
-            "1000",
-            None,
-            None,
-            Currency::USD,
-        )
-        .unwrap_or((0, 0));
-        assert_eq!(dr, 0);
-        assert_eq!(cr, 0);
-    }
-
-    #[test]
-    fn account_balance_after_posting() {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
-        post_sample(&db, "2024-02-15", 3000);
-
-        let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
-            "1000",
-            None,
-            None,
-            Currency::USD,
-        )
-        .unwrap_or((0, 0));
-        assert_eq!(dr, 8000);
-        assert_eq!(cr, 0);
-    }
-
-    #[test]
-    fn account_balance_with_as_of() {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
-        post_sample(&db, "2024-02-15", 3000);
-
-        let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
-            "1000",
-            None,
-            Some(
-                "2024-01-31"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
-            Currency::USD,
-        )
-        .unwrap_or((0, 0));
-        assert_eq!(dr, 5000);
-        assert_eq!(cr, 0);
-    }
-
-    #[test]
-    fn account_balance_with_date_range() {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
-        post_sample(&db, "2024-02-15", 3000);
-        post_sample(&db, "2024-03-15", 2000);
-
-        let (dr, cr) = compute_account_balance(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("resolve fixture company"),
-            "1000",
-            Some(
-                "2024-02-01"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
-            Some(
-                "2024-02-29"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
-            Currency::USD,
-        )
-        .unwrap_or((0, 0));
-        assert_eq!(dr, 3000);
-        assert_eq!(cr, 0);
-    }
-
-    #[test]
-    fn trial_balance_with_date_range() -> Result<(), Box<dyn std::error::Error>> {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
-        post_sample(&db, "2024-02-15", 3000);
-        post_sample(&db, "2024-03-15", 2000);
+    fn trial_balance_with_as_of_date() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
+        post_sample(&db, "2024-02-15", 3000)?;
 
         let balances = compute_trial_balance(
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
-            Some(
-                "2024-02-01"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
-            Some(
-                "2024-02-29"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
+            None,
+            Some("2024-01-31".parse()?),
             Currency::USD,
-        )
-        .unwrap_or_default();
+        )?;
+
+        let cash = balances.iter().find(|b| b.code == "1000");
+        assert!(cash.is_some());
+        let cash = cash.ok_or("missing cash")?;
+        assert_eq!(cash.debit_total, 5000);
+        Ok(())
+    }
+
+    #[test]
+    fn account_balance_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            "1000",
+            None,
+            None,
+            Currency::USD,
+        )?;
+        assert_eq!(dr, 0);
+        assert_eq!(cr, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn account_balance_after_posting() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
+        post_sample(&db, "2024-02-15", 3000)?;
+
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            "1000",
+            None,
+            None,
+            Currency::USD,
+        )?;
+        assert_eq!(dr, 8000);
+        assert_eq!(cr, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn account_balance_with_as_of() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
+        post_sample(&db, "2024-02-15", 3000)?;
+
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            "1000",
+            None,
+            Some("2024-01-31".parse()?),
+            Currency::USD,
+        )?;
+        assert_eq!(dr, 5000);
+        assert_eq!(cr, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn account_balance_with_date_range() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
+        post_sample(&db, "2024-02-15", 3000)?;
+        post_sample(&db, "2024-03-15", 2000)?;
+
+        let (dr, cr) = compute_account_balance(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            "1000",
+            Some("2024-02-01".parse()?),
+            Some("2024-02-29".parse()?),
+            Currency::USD,
+        )?;
+        assert_eq!(dr, 3000);
+        assert_eq!(cr, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn trial_balance_with_date_range() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
+        post_sample(&db, "2024-02-15", 3000)?;
+        post_sample(&db, "2024-03-15", 2000)?;
+
+        let balances = compute_trial_balance(
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            None,
+            Some("2024-02-01".parse()?),
+            Some("2024-02-29".parse()?),
+            Currency::USD,
+        )?;
         let cash = balances
             .iter()
             .find(|b| b.code == "1000")
@@ -825,9 +753,9 @@ mod tests {
 
     #[test]
     fn balances_filter_by_currency() -> Result<(), Box<dyn std::error::Error>> {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
-        post_sample_in(&db, "2024-02-15", 700, Currency::MXN);
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
+        post_sample_in(&db, "2024-02-15", 700, Currency::MXN)?;
 
         let usd = compute_trial_balance(
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
@@ -848,11 +776,7 @@ mod tests {
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
-            Some(
-                "2024-12-31"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
+            Some("2024-12-31".parse()?),
             Currency::MXN,
         )?;
         assert_eq!(mxn.len(), 3);
@@ -889,23 +813,15 @@ mod tests {
     #[test]
     fn date_window_keeps_accounts_with_only_out_of_range_activity()
     -> Result<(), Box<dyn std::error::Error>> {
-        let db = setup();
-        post_sample(&db, "2024-01-15", 5000);
+        let db = setup()?;
+        post_sample(&db, "2024-01-15", 5000)?;
 
         // Every entry predates the window: all accounts are still listed, at zero.
         let rows = compute_trial_balance(
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
-            Some(
-                "2024-06-01"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
-            Some(
-                "2024-06-30"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
+            Some("2024-06-01".parse()?),
+            Some("2024-06-30".parse()?),
             Currency::USD,
         )?;
         assert_eq!(rows.len(), 3);
@@ -919,11 +835,7 @@ mod tests {
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             None,
             None,
-            Some(
-                "2023-12-31"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("fixture date: {error}")),
-            ),
+            Some("2023-12-31".parse()?),
             Currency::USD,
         )?;
         assert_eq!(rows.len(), 3);

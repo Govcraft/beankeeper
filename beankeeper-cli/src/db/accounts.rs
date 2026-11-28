@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn list_accounts_returns_all() {
+    fn list_accounts_returns_all() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup();
         assert!(
             Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
@@ -481,17 +481,14 @@ mod tests {
             type_filter: None,
             name_filter: None,
         };
-        let list = list_accounts(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind test company"),
-            &params,
-        )
-        .unwrap_or_default();
+        let list =
+            list_accounts(&Company::bind(db.read(), "acme".parse()?)?, &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn list_accounts_with_type_filter() {
+    fn list_accounts_with_type_filter() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup();
         assert!(
             Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
@@ -531,14 +528,11 @@ mod tests {
             type_filter: Some(AccountType::Asset),
             name_filter: None,
         };
-        let list = list_accounts(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind test company"),
-            &params,
-        )
-        .unwrap_or_default();
+        let list =
+            list_accounts(&Company::bind(db.read(), "acme".parse()?)?, &params).unwrap_or_default();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].code, "1000");
+        Ok(())
     }
 
     #[test]
@@ -584,7 +578,7 @@ mod tests {
                     grant,
                     &"acme".parse()?,
                     "1000",
-                    crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                    crate::confirmation::Confirmed::forced(true)?,
                 )
             })
             .is_ok()
@@ -613,7 +607,7 @@ mod tests {
                 grant,
                 &"acme".parse()?,
                 "9999",
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                crate::confirmation::Confirmed::forced(true)?,
             )
         });
         assert!(matches!(result, Err(CliError::NotFound(_))));
@@ -670,9 +664,9 @@ mod tests {
     }
 
     #[test]
-    fn row_to_account_converts_correctly() {
+    fn row_to_account_converts_correctly() -> Result<(), Box<dyn std::error::Error>> {
         let row = AccountRow {
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             code: "1000".to_string(),
             name: "Cash".to_string(),
             cash_class: CashClass::NonCash,
@@ -689,10 +683,11 @@ mod tests {
             account.account_type(),
             beankeeper::types::AccountType::Asset
         );
+        Ok(())
     }
 
     #[test]
-    fn list_accounts_with_name_filter() {
+    fn list_accounts_with_name_filter() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup();
         assert!(
             Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
@@ -750,25 +745,18 @@ mod tests {
             type_filter: None,
             name_filter: Some("Cash"),
         };
-        let list = list_accounts(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind test company"),
-            &params,
-        )
-        .unwrap_or_default();
+        let list =
+            list_accounts(&Company::bind(db.read(), "acme".parse()?)?, &params).unwrap_or_default();
         assert_eq!(list.len(), 2);
 
         let params2 = ListAccountParams {
             type_filter: Some(AccountType::Asset),
             name_filter: Some("Petty"),
         };
-        let list2 = list_accounts(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind test company"),
-            &params2,
-        )
-        .unwrap_or_default();
+        let list2 = list_accounts(&Company::bind(db.read(), "acme".parse()?)?, &params2)
+            .unwrap_or_default();
         assert_eq!(list2.len(), 1);
         assert_eq!(list2[0].code, "1100");
+        Ok(())
     }
 }
