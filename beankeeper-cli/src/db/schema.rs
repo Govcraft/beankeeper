@@ -402,7 +402,11 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
     }
 
     if version < CONTRACTOR_TAX_SCHEMA_VERSION {
-        migrate_with_writer(conn, CONTRACTOR_TAX_SCHEMA_VERSION, apply_contractor_tax_schema)?;
+        migrate_with_writer(
+            conn,
+            CONTRACTOR_TAX_SCHEMA_VERSION,
+            apply_contractor_tax_schema,
+        )?;
     }
     Ok(())
 }

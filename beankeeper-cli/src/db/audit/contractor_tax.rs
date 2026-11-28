@@ -155,7 +155,7 @@ pub(crate) fn record_w9(
     company: &CompanySlug,
     party: CounterpartyId,
     classification: TaxClassification,
-    details: W9Details,
+    details: &W9Details,
 ) -> Result<TaxProfile, CliError> {
     db.with_audited_tx_for(Operation::ContractorTaxW9.into(), "contractor_w9", |tx| {
         super::reserve_ledger_writer(tx)?;
@@ -235,6 +235,12 @@ impl Serialize for ProtectedIdentity {
     }
 }
 
+#[derive(Serialize)]
+struct ProtectedExport<'a> {
+    worksheet: &'a crate::db::contractor_tax::ContractorWorksheet,
+    verified_identities: &'a [ProtectedIdentity],
+}
+
 pub(crate) fn write_export(
     db: &Db,
     actor: &Actor,
@@ -265,12 +271,7 @@ pub(crate) fn write_export(
                 identities.push(row?);
             }
         }
-        #[derive(Serialize)]
-        struct Export<'a> {
-            worksheet: &'a crate::db::contractor_tax::ContractorWorksheet,
-            verified_identities: &'a [ProtectedIdentity],
-        }
-        let export = Export {
+        let export = ProtectedExport {
             worksheet: &worksheet,
             verified_identities: &identities,
         };

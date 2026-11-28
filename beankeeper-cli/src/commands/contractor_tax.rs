@@ -162,7 +162,7 @@ impl ArtifactName {
 #[cfg(unix)]
 fn host_private(metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o077 == 0
+    metadata.permissions().mode().trailing_zeros() >= 6
 }
 
 #[cfg(not(unix))]
@@ -239,7 +239,7 @@ impl ContractorTaxRequest {
                     &self.company,
                     party,
                     classification,
-                    details,
+                    &details,
                 )?))
             }
             ContractorTaxAction::ExportArtifact { year, output } => {
@@ -342,7 +342,7 @@ pub(crate) fn run_local(cli: &Cli, command: &ContractorTaxCommand) -> Result<(),
                 company,
                 party.clone(),
                 *classification,
-                details,
+                &details,
             )?;
             render(cli, command.operation(), company, &profile)
         }

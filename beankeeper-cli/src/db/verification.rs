@@ -197,9 +197,11 @@ fn verify_commercial_subledgers(
     Check::Vat.when(version >= schema::VAT_SCHEMA_VERSION, checks, || {
         audit::tax_codes::verify(reader)
     })?;
-    Check::ContractorTax.when(version >= schema::CONTRACTOR_TAX_SCHEMA_VERSION, checks, || {
-        audit::contractor_tax::verify(reader)
-    })?;
+    Check::ContractorTax.when(
+        version >= schema::CONTRACTOR_TAX_SCHEMA_VERSION,
+        checks,
+        || audit::contractor_tax::verify(reader),
+    )?;
     Ok(())
 }
 
