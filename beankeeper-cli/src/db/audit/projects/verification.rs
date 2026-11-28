@@ -144,7 +144,10 @@ const POSTING_SQL: &str = "
           AND (work.approved_on IS NULL OR work.approved_on>s.claimed_on))
       OR (s.split_id IS NOT NULL AND (expense.billable!=1 OR expense.amount_minor IS NOT s.expected_minor))
       OR s.released_on IS NOT (
-        SELECT CASE WHEN SUM(credit.amount_minor)=s.expected_minor THEN MAX(credit.effective_on) END
+        SELECT CASE WHEN SUM(credit.amount_minor)=COALESCE((
+            SELECT json_extract(line.value,'$.gross_minor') FROM json_each(doc.issued,'$.vat') line
+            WHERE json_extract(line.value,'$.number')=s.line_number
+        ),s.expected_minor) THEN MAX(credit.effective_on) END
         FROM document_allocations credit WHERE credit.company_slug=s.company_slug
            AND credit.document_id=s.document_id AND credit.credit_line=s.line_number
       )

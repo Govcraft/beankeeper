@@ -11,16 +11,22 @@ struct Books {
     directory: tempfile::TempDir,
     path: PathBuf,
     party: String,
+    currency: &'static str,
 }
 
 impl Books {
     fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_currency("USD")
+    }
+
+    fn with_currency(currency: &'static str) -> Result<Self, Box<dyn Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("books.db");
         let mut books = Self {
             directory,
             path,
             party: String::new(),
+            currency,
         };
         books.data(&["init"])?;
         books.data(&["company", "create", "acme", "Acme"])?;
@@ -58,13 +64,13 @@ impl Books {
         for name in [
             "BEANKEEPER_DB",
             "BEANKEEPER_COMPANY",
-            "BEANKEEPER_CURRENCY",
             "BEANKEEPER_PASSPHRASE_CMD",
             "BK_AGENT_TOKEN",
             "BK_ACTOR",
         ] {
             command.env_remove(name);
         }
+        command.env("BEANKEEPER_CURRENCY", self.currency);
         Ok(command)
     }
 
@@ -80,7 +86,7 @@ impl Books {
     }
 
     fn project(&self, code: &str) -> Result<String, Box<dyn Error>> {
-        let terms = json!({"code":code,"name":code,"customer":self.party,"currency":"USD"});
+        let terms = json!({"code":code,"name":code,"customer":self.party,"currency":self.currency});
         id(&self.data(&["project", "create", "--terms", &terms.to_string()])?["project"])
     }
 
@@ -91,7 +97,7 @@ impl Books {
             "--month",
             "2026-01",
             "--currency",
-            "USD",
+            self.currency,
             "--detail",
         ])
     }
@@ -354,5 +360,55 @@ fn restore_reinstates_project_report_and_claim_state() -> TestResult {
         books.unbilled(&project, "2026-01-12")?[0]["amount_minor"],
         9000
     );
+    Ok(())
+}
+
+#[test]
+fn project_vat_credit_releases_only_after_the_full_gross_amount() -> TestResult {
+    let books = Books::with_currency("GBP")?;
+    expense(&books)?;
+    books.data(&[
+        "account",
+        "create",
+        "2200",
+        "Output VAT",
+        "--type",
+        "liability",
+    ])?;
+    books.data(&["account", "create", "1300", "Input VAT", "--type", "asset"])?;
+    let rate = books.data(&[
+        "tax",
+        "configure",
+        "MAIN",
+        "--effective-from",
+        "2026-01-01",
+        "--treatment",
+        "taxable",
+        "--rate",
+        "20",
+        "--output-account",
+        "2200",
+        "--input-account",
+        "1300",
+    ])?;
+    let project = books.project("oak")?;
+    let source = approved_work(&books, &project)?;
+    let terms = json!({"project":project,"number":"VAT-JOB","receivable_account":"1100",
+        "revenue_account":"4000","from":"2026-01-01","through":"2026-01-10","sources":[source],
+        "tax":{"code":rate["code"],"price_mode":"exclusive"}});
+    let draft = books.data(&["project", "draft-invoice", "--invoice", &terms.to_string()])?;
+    let id = id(&draft["result"]["record"])?;
+    let issued = books.data(&["document", "issue", &id, "--date", "2026-01-11"])?;
+    assert_eq!(issued["record"]["issued"]["total_minor"], 10_800);
+    assert_eq!(row(&books.report()?, &project)?["revenue_minor"], 9000);
+    books.credit(&id, "VAT-PART", 9000, "2026-01-12")?;
+    assert_eq!(books.unbilled(&project, "2026-01-12")?, json!([]));
+    books.credit(&id, "VAT-END", 1800, "2026-01-13")?;
+    assert_eq!(
+        books.unbilled(&project, "2026-01-13")?[0]["amount_minor"],
+        9000
+    );
+    assert_eq!(row(&books.report()?, &project)?["revenue_minor"], 0);
+    books.data(&["verify"])?;
     Ok(())
 }

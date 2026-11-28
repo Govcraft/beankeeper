@@ -344,10 +344,9 @@ fn dispatch_ledger(
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
-        Command::Project(args) => Some(LedgerRequest::Project(project::ProjectRequest::new(
-            require_company(cli)?.clone(),
-            args.command.clone(),
-        ))),
+        Command::Project(args) => {
+            Some(LedgerRequest::Project((require_company(cli)?, args).into()))
+        }
         Command::BookkeepingPolicy(command) => Some(LedgerRequest::Standing(
             (require_company(cli)?, command).into(),
         )),

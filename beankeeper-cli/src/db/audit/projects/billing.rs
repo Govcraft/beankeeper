@@ -28,6 +28,7 @@ use crate::{
             AvailableSource, BillingSource, ProjectError, ProjectId, decode, find_project, unbilled,
         },
         schema::PROJECT_SCHEMA_VERSION,
+        tax_codes::LineTax,
     },
     error::CliError,
 };
@@ -56,6 +57,8 @@ pub struct ProjectInvoiceInput {
     pub through: NaiveDate,
     /// Explicit due date when overriding the customer's default terms.
     pub due_date: Option<DueDate>,
+    /// Optional VAT code and price treatment shared by the invoice lines.
+    pub tax: Option<LineTax>,
     /// Unique exact source IDs selected by the caller.
     pub sources: Vec<BillingSource>,
 }
@@ -127,6 +130,7 @@ fn draft_in_scope(
                     quantity: "1".parse::<crate::db::documents::LineQuantity>()?,
                     unit_price_minor: source.amount_minor.into(),
                     account: input.revenue_account.clone(),
+                    tax: input.tax.clone(),
                 })
             })
             .collect::<Result<_, crate::db::documents::DocumentError>>()?,
@@ -379,7 +383,7 @@ pub(in crate::db::audit) fn apply_invoice_credit(
     actor: &Actor,
     company: &Company<'_>,
     document: &DocumentId,
-    line_number: u32,
+    (line_number, full_line_minor): (u32, i64),
     credit_posting: TransactionId,
 ) -> Result<(), CliError> {
     let Some(before) = load_manifest(company, document)? else {
@@ -400,7 +404,7 @@ pub(in crate::db::audit) fn apply_invoice_credit(
         .lines
         .get_mut(position)
         .ok_or(ProjectError::SourceUnavailable)?;
-    if line.released_on.is_none() && credited == line.amount_minor.minor_units() {
+    if line.released_on.is_none() && credited == full_line_minor {
         line.released_on = Some(latest);
         store_manifest(
             tx,

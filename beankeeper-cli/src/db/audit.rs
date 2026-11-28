@@ -2236,7 +2236,6 @@ fn reversed_metadata(raw: Option<&str>, reversal: TransactionId) -> String {
 }
 
 pub(super) fn is_reversal(
-
     reader: ReadConn<'_>,
     company: &super::companies::CompanySlug,
     id: TransactionId,

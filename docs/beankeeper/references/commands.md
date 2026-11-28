@@ -2346,13 +2346,14 @@ minutes, divides by 60 and rounds half up to one minor unit. Omit the rate to
 record internal work. For billing, pass the source
 objects returned by `project unbilled` in the `sources` array of the
 `project draft-invoice --invoice` JSON object, alongside `project`, `number`,
-`receivable_account`, `revenue_account`, `from` and `through`. Issue the
+`receivable_account`, `revenue_account`, `from` and `through`. Add an optional
+`tax` object with a VAT code and price mode for all draft lines. Issue the
 returned document ID with `bk document issue` on or after the end of that
 window. Issue claims the selected sources in the same database transaction as
 its journal. Before issue, `project cancel-invoice` leaves those sources
 available to other drafts. After issue, a full `document credit` of a line
-releases its source on the date of the final credit. A partial credit leaves
-that source claimed.
+releases its source on the date of the final credit, including VAT when
+applicable. A partial credit leaves that source claimed.
 
 The report recognizes revenue and expenses from posted journal entries, applies
 the last distribution effective at month end, and shows approved unbilled

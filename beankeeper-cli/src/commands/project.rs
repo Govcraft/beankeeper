@@ -147,6 +147,12 @@ pub struct ProjectRequest {
     command: ProjectCommand,
 }
 
+impl From<(&CompanySlug, &ProjectArgs)> for ProjectRequest {
+    fn from((company, args): (&CompanySlug, &ProjectArgs)) -> Self {
+        Self::new(company.clone(), args.command.clone())
+    }
+}
+
 impl ProjectRequest {
     pub(crate) const fn new(company: CompanySlug, command: ProjectCommand) -> Self {
         Self { company, command }

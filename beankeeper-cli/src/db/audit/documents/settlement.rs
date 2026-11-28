@@ -435,7 +435,7 @@ pub(super) fn credit(
         actor,
         company,
         &result.allocation.document_id,
-        input.line,
+        (input.line, gross),
         source,
     )?;
     Ok(DocumentOutcome::Allocations {
