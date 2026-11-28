@@ -730,6 +730,64 @@ mod capability_witness_tests {
     use crate::db::Db;
 
     #[test]
+    fn static_catalog_uses_effective_bookkeeper_grants() -> Result<(), CliError> {
+        use crate::mcp::LedgerAccess;
+        let directory = tempfile::tempdir()?;
+        let passphrase: SecretString = "catalog test ledger".into();
+        let ledger = Db::open(&directory.path().join("books.db"), Some(&passphrase))?;
+        let owner = Actor::new("owner".parse()?);
+        Granted::<Admin>::with_db(&ledger, &owner, init_root)?;
+        for (mode, capabilities) in [
+            (
+                WriteMode::Direct,
+                vec!["ledger/read".into(), "ledger/post".into()],
+            ),
+            (
+                WriteMode::ProposeOnly,
+                vec!["ledger/read".into(), "ledger/propose".into()],
+            ),
+        ] {
+            let issued = Granted::<Admin>::with_db(&ledger, &owner, |grant| {
+                issue_credential_with_mode(
+                    grant,
+                    &IssueRequest {
+                        name: "catalog_bookkeeper",
+                        capabilities: &capabilities,
+                        ttl: Duration::from_mins(15),
+                        public_key: None,
+                        generate_key: true,
+                    },
+                    mode,
+                )
+            })?;
+            let identity = verify(ledger.read(), issued.token().expose_secret())?;
+            for enforced in [false, true] {
+                let entries = LedgerAccess::ReadWrite.catalog_for(&identity, enforced)?;
+                let includes =
+                    |operation| entries.iter().any(|entry| entry.operation() == operation);
+                assert!(includes(Operation::LedgerSetupBookCreate));
+                assert!(includes(Operation::TxnReverse));
+                assert!(includes(Operation::AuditUndo));
+                assert!(includes(Operation::TxnPost));
+                assert!(!includes(Operation::CompanyCreate));
+                for entry in LedgerAccess::ReadWrite.catalog() {
+                    assert_eq!(
+                        includes(entry.operation()),
+                        identity.can_discover(entry.operation(), enforced)?
+                    );
+                }
+                let read_only = LedgerAccess::ReadOnly.catalog_for(&identity, enforced)?;
+                assert!(
+                    read_only
+                        .iter()
+                        .all(|entry| entry.operation().is_read_only())
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn verification_preserves_multiple_explicit_leaf_grants() -> Result<(), CliError> {
         let directory = tempfile::tempdir()?;
         let passphrase: SecretString = "ephemeral test ledger".into();
@@ -759,6 +817,17 @@ mod capability_witness_tests {
         assert!(identity.allows(Capability::Approve)?);
         assert!(!identity.allows(Capability::Post)?);
         assert!(!identity.allows(Capability::Navigate)?);
+        for enforced in [false, true] {
+            let catalog = crate::mcp::LedgerAccess::ReadWrite.catalog_for(&identity, enforced)?;
+            let includes = |operation| catalog.iter().any(|entry| entry.operation() == operation);
+            assert!(includes(Operation::AccountList));
+            assert!(includes(Operation::TxnApprove));
+            assert_eq!(includes(Operation::TxnPost), !enforced);
+            assert!(!includes(Operation::LedgerSetupBookCreate));
+            assert!(!includes(Operation::TxnReverse));
+            assert!(!includes(Operation::AuditUndo));
+            assert!(!includes(Operation::Restore));
+        }
         Ok(())
     }
 

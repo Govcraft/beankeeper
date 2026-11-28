@@ -14,6 +14,7 @@ mod report_input;
 mod setup_investment_input;
 mod targets;
 
+pub use catalog::LedgerTool;
 pub use demo::DemoLedgerTool;
 pub use host::{HostTool, HostToolEffect, HostToolHandler};
 pub use http::{
@@ -79,6 +80,37 @@ impl From<bool> for LedgerAccess {
 }
 
 impl LedgerAccess {
+    /// Typed MCP definitions at this access ceiling, without opening a ledger.
+    #[must_use]
+    pub fn catalog(self) -> Vec<LedgerTool> {
+        catalog::entries(self)
+    }
+
+    /// Discovery catalog using the same effective grants as live HTTP discovery.
+    ///
+    /// `ledger_enforced` is the selected ledger's policy; use `true` before setup
+    /// to restrict discovery to the verified identity's effective grants.
+    /// This is discovery only, not a live credential or execution authorization check.
+    ///
+    /// # Errors
+    /// Returns an error if an operation's permission cannot be resolved.
+    pub fn catalog_for(
+        self,
+        identity: &crate::identity::VerifiedAgent,
+        ledger_enforced: bool,
+    ) -> Result<Vec<LedgerTool>, CliError> {
+        self.catalog()
+            .into_iter()
+            .filter_map(
+                |entry| match identity.can_discover(entry.operation(), ledger_enforced) {
+                    Ok(true) => Some(Ok(entry)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                },
+            )
+            .collect()
+    }
+
     /// Tool definitions registered at this access ceiling, without opening a ledger.
     ///
     /// Hosts that answer `tools/list` before any ledger exists use this catalog,
