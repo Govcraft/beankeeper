@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Fixed
+
+- Encrypted ledgers opened concurrently right after process start no longer fail intermittently with "An error occurred with PRAGMA key or rekey"; the first SQLite use now completes SQLCipher setup before other threads open ledgers. ([#330](https://github.com/Govcraft/beankeeper/issues/330))
+
 ## [0.40.0] - 2026-11-27
 
 Released as [beankeeper-cli-v0.40.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.40.0).
