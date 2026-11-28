@@ -541,6 +541,7 @@ never tool arguments. Append `"--read-only"` to `args` to register only read too
 mutation tools are absent and cannot be called.
 
 For VAT on GBP invoices and bills, see [configured UK invoice VAT](docs/document-vat.md).
+Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments and prepare a restricted 2025 1099-NEC export.
 
 ### Available tools
 
@@ -568,6 +569,9 @@ For VAT on GBP invoices and bills, see [configured UK invoice VAT](docs/document
 | `tax_configure` | Configure a company VAT code and effective-dated revision |
 | `tax_list`, `tax_report` | Inspect historical VAT rates and reconcile a GBP VAT register against control accounts |
 | `document_show`, `document_print`, `document_list`, `document_allocations`, `document_aging`, `document_proposals` | Inspect issued terms, allocations, due-date aging and document proposals |
+| `contractor_tax_review` | Record or revise a reviewed contractor payment against posted evidence |
+| `contractor_tax_worksheet`, `contractor_tax_preview` | Run the redacted 2025 worksheet or preview legacy candidates |
+| `contractor_tax_w9`, `contractor_tax_export` | Import checked identity details and export a protected local artifact using a signed tax-details grant |
 | `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
 | `account_list`, `account_show`, `account_create`, `account_rename`, `account_classify` | Inspect, create, rename, and classify accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |

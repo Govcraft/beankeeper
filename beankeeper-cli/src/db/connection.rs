@@ -75,6 +75,10 @@ impl Db {
         self
     }
 
+    pub(crate) const fn ledger_target(&self) -> &LedgerTarget {
+        self.writes.target()
+    }
+
     pub(crate) const fn schema_version(&self) -> SchemaVersion {
         self.schema_version
     }

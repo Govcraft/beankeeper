@@ -77,6 +77,7 @@ enum Check {
     PayrollRuns,
     OpenItems,
     Vat,
+    ContractorTax,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -106,6 +107,7 @@ impl Check {
             Self::BankFeed => "bank_feed",
             Self::OpenItems => "open_items",
             Self::Vat => "vat",
+            Self::ContractorTax => "contractor_tax",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
@@ -194,6 +196,9 @@ fn verify_commercial_subledgers(
     })?;
     Check::Vat.when(version >= schema::VAT_SCHEMA_VERSION, checks, || {
         audit::tax_codes::verify(reader)
+    })?;
+    Check::ContractorTax.when(version >= schema::CONTRACTOR_TAX_SCHEMA_VERSION, checks, || {
+        audit::contractor_tax::verify(reader)
     })?;
     Ok(())
 }

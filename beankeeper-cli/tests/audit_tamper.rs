@@ -610,6 +610,7 @@ const VERIFICATION_CHECKS: &[&str] = &[
     "bank_feed",
     "open_items",
     "vat",
+    "contractor_tax",
     "transaction_links",
     "statement_batches",
     "statement_reconciliations",

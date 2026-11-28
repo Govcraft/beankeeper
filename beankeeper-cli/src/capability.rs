@@ -11,6 +11,8 @@ pub enum Capability {
     Reconcile,
     Budget,
     Admin,
+    /// Signed access to restricted 1099 identity details.
+    TaxDetails,
     /// Scoped authority for an active ledger setup session.
     Setup,
     /// Configure books and accounts and submit onboarding postings in the signed write mode.
@@ -30,6 +32,7 @@ impl Capability {
             Self::Reconcile,
             Self::Budget,
             Self::Admin,
+            Self::TaxDetails,
             Self::Setup,
             Self::Chart,
             Self::Navigate,
@@ -49,6 +52,7 @@ impl Capability {
             Self::Reconcile => "ledger/reconcile",
             Self::Budget => "ledger/budget",
             Self::Admin => "ledger/admin",
+            Self::TaxDetails => "ledger/tax-details",
             Self::Setup => "ledger/setup",
             Self::Chart => "ledger/chart",
             Self::Navigate => "ui/navigate",

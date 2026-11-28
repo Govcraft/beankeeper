@@ -22,6 +22,7 @@ use crate::{
         bank_feed::{BankFeedRequest, BankFeedResponse},
         budget::{BudgetRequest, BudgetResponse},
         company::{CompanyRequest, CompanyResponse},
+        contractor_tax::{ContractorTaxRequest, ContractorTaxResponse},
         counterparty::{CounterpartyRequest, CounterpartyResponse},
         document::{DocumentRequest, DocumentResponse},
         fixed_asset::{FixedAssetRequest, FixedAssetResponse},
@@ -61,6 +62,7 @@ pub enum LedgerRequest {
     Budget(BudgetRequest),
     Company(CompanyRequest),
     Counterparty(CounterpartyRequest),
+    ContractorTax(ContractorTaxRequest),
     Document(DocumentRequest),
     Tax(TaxRequest),
     Expense(ExpenseRequest),
@@ -89,6 +91,7 @@ pub enum LedgerResponse {
     Budget(BudgetResponse),
     Company(CompanyResponse),
     Counterparty(Operation, CompanySlug, CounterpartyResponse),
+    ContractorTax(Operation, CompanySlug, ContractorTaxResponse),
     Document(Operation, CompanySlug, DocumentResponse),
     Tax(Operation, CompanySlug, TaxResponse),
     Expense(ExpenseResponse),
@@ -119,6 +122,7 @@ impl LedgerRequest {
             Self::Budget(request) => request.operation(),
             Self::Company(request) => request.operation(),
             Self::Counterparty(request) => request.operation(),
+            Self::ContractorTax(request) => request.operation(),
             Self::Document(request) => request.operation(),
             Self::Tax(request) => request.operation(),
             Self::Expense(request) => request.operation(),
@@ -204,6 +208,11 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Tax(operation, company, response))
             }
+            Self::ContractorTax(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::ContractorTax(operation, company, response))
+            }
             Self::Document(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -267,6 +276,9 @@ impl LedgerResponse {
             Self::Budget(response) => response.render(cli),
             Self::Company(response) => response.render(cli),
             Self::Tax(operation, company, response) => response.render(cli, *operation, company),
+            Self::ContractorTax(operation, company, response) => {
+                response.render(cli, *operation, company)
+            }
             Self::Document(operation, company, response) => {
                 response.render(cli, *operation, company)
             }
