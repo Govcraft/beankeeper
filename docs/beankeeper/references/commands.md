@@ -2134,3 +2134,22 @@ installments. Funding allocation links existing entries and leaves their
 statement reconciliation state intact. The show command lists allocations
 and outstanding balances per liability entry. Payroll calculation, payment
 execution and payroll forms remain with the provider.
+
+### Gusto aggregate totals
+
+For simple US wage runs, the same commands accept a local Gusto totals export.
+Replace the top-level `run` object with `gusto`, and keep `accounts` alongside
+it. The Gusto object takes `processed: true`, `organization`, `run_id`,
+`revision`, `period`, `check_date`, `kind` (`regular` or `off_cycle`), and
+a `totals` object with these decimal-string fields from the
+[Gusto payroll totals](https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls-payroll_id):
+
+- `gross_pay`, `net_pay`, `employee_taxes`, and `employer_taxes`.
+- `reimbursements`, `benefits`, `employee_benefits_deductions`,
+  `other_deductions`, `employee_cash_tips`, `employee_paycheck_tips`,
+  `imputed_pay`, `owners_draw`, and `deferred_payroll_taxes`. Each must be zero
+  for this adapter. Use the reviewed aggregate format for more complex runs.
+
+Supply aggregate totals only. The adapter does not need employee records or
+provider credentials. It recognizes gross wages and employer tax expense
+against net pay and combined employee and employer taxes payable.

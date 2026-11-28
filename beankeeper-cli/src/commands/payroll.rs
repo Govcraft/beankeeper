@@ -1,5 +1,7 @@
 //! CLI boundary for aggregate payroll exports.
 
+mod gusto;
+
 use std::{fs::File, io::Read, path::Path};
 
 use beankeeper::types::{Currency, Money, Sha256Hex};
@@ -41,6 +43,20 @@ struct AccountMapping {
     code: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GustoExport {
+    gusto: gusto::FinalizedTotals,
+    accounts: Vec<AccountMapping>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ExportSource {
+    Normalized(Export),
+    Gusto(GustoExport),
+}
+
 impl Export {
     fn load(path: &Path) -> Result<Self, CliError> {
         let mut contents = Vec::new();
@@ -52,14 +68,21 @@ impl Export {
                 "aggregate payroll export exceeds 64 KiB".into(),
             ));
         }
-        serde_json::from_slice(&contents).map_err(|error| {
+        let source: ExportSource = serde_json::from_slice(&contents).map_err(|error| {
             // Error locations help repair the export without exposing a malformed field.
             CliError::Validation(format!(
                 "invalid aggregate payroll export at line {}, column {}",
                 error.line(),
                 error.column()
             ))
-        })
+        })?;
+        match source {
+            ExportSource::Normalized(export) => Ok(export),
+            ExportSource::Gusto(export) => Ok(Self {
+                run: export.gusto.try_into()?,
+                accounts: export.accounts,
+            }),
+        }
     }
 
     fn account_map(&self) -> Result<AccountMap, CliError> {
