@@ -185,9 +185,15 @@ impl LedgerRequest {
         resolve_actor: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
         let operation = self.operation();
-        if operation == Operation::BankFeedSync {
-            // Release the authorization snapshot before the provider call.
-            // The audited commit checks the actor and the feed revision again.
+        if matches!(
+            operation,
+            Operation::BankFeedSync
+                | Operation::DisbursementPreview
+                | Operation::DisbursementApprove
+                | Operation::DisbursementDispatch
+        ) {
+            // Release the authorization snapshot before provider I/O. Each
+            // workflow rechecks the actor in its own audited write stages.
             let actor =
                 db.read_snapshot(|reader| authorize_actor(reader, operation, resolve_actor))?;
             return self
@@ -309,6 +315,20 @@ impl LedgerRequest {
             Self::Verify => VerifiedLedger::read(db).map(LedgerResponse::Verify),
         }
     }
+}
+
+fn authorize_actor<'snapshot>(
+    reader: ReadConn<'snapshot>,
+    operation: Operation,
+    resolve: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
+) -> Result<Actor, CliError> {
+    let actor = resolve(reader)?;
+    if let Some(identity) = actor.identity() {
+        crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
+    } else {
+        crate::identity::authorize_known_operation(reader, None, operation)?;
+    }
+    Ok(actor)
 }
 
 impl LedgerResponse {

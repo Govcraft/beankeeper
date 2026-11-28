@@ -301,18 +301,7 @@ fn payments_are_reviewed_and_a_lost_response_is_reconciled_once_after_restart() 
         .assert()
         .success();
 
-    books.provider.state.changed.store(true, Ordering::Relaxed);
-    assert_eq!(
-        failure(&mut dispatcher, "disbursement_dispatch", &choice)?["code"],
-        "VALIDATION"
-    );
-    assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 0);
-    books.provider.state.changed.store(false, Ordering::Relaxed);
-    failure(&mut dispatcher, "disbursement_dispatch", &choice)?;
-    assert_eq!(
-        dispatcher.success("disbursement_show", &choice)?["state"]["status"],
-        "submission_uncertain"
-    );
+    assert_uncertain_attempt(&books, &dispatch_token, &mut dispatcher, id)?;
     drop(dispatcher);
     let mut dispatcher = books.client(&dispatch_token)?;
     let settled = dispatcher.success("disbursement_dispatch", &choice)?;
@@ -330,6 +319,39 @@ fn payments_are_reviewed_and_a_lost_response_is_reconciled_once_after_restart() 
     assert_eq!(observed["state"]["status"], "returned");
     assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 1);
     assert_no_recovery_dispatch(&books, &dispatch_token, id, backup)
+}
+
+fn assert_uncertain_attempt(
+    books: &Books,
+    dispatch_token: &str,
+    dispatcher: &mut Client,
+    id: &str,
+) -> TestResult {
+    let choice = json!({"company":"acme","id":id});
+    books.provider.state.changed.store(true, Ordering::Relaxed);
+    assert_eq!(
+        failure(dispatcher, "disbursement_dispatch", &choice)?["code"],
+        "VALIDATION"
+    );
+    assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 0);
+    books.provider.state.changed.store(false, Ordering::Relaxed);
+    failure(dispatcher, "disbursement_dispatch", &choice)?;
+    assert_eq!(
+        dispatcher.success("disbursement_show", &choice)?["state"]["status"],
+        "submission_uncertain"
+    );
+    let output = books
+        .cli(Some(dispatch_token))?
+        .args(["disbursement", "show", id])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(observed["data"]["state"]["status"], "submission_uncertain");
+    Ok(())
 }
 
 fn assert_no_recovery_dispatch(
