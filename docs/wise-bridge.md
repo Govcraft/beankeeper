@@ -59,7 +59,10 @@ a separate ledger, Wise credential, host token and state path for production.
 The bridge rejects state files belonging to the other environment and includes
 the selected environment in each approval fingerprint. Wise may charge a fee
 for an external recipient. The bridge refuses those quotes before creating
-a transfer because the approved journal covers the principal exactly.
+a transfer because the approved journal covers the principal exactly. The
+bridge records a failed instruction if it cannot verify payment terms before
+creating a transfer. It preserves that outcome for lookup and releases the
+bill reservation. After resolving the cause, draft a new instruction.
 
 [Wise API environments](https://docs.wise.com/guides/developer/environments)
 

@@ -129,10 +129,6 @@ fn durable_lookup_ignores_duplicate_submit_and_retains_return_history()
     let path = temp.path().join("bridge.db");
     let fake = Fake::new(false, false);
     let (bridge, payment) = fixture(&path, fake.clone())?;
-    let mut changed = payment.clone();
-    changed.destination = DestinationFingerprint(Sha256Hex::from_digest([7; 32]));
-    assert!(matches!(bridge.submit(changed), Err(Error::Mismatch)));
-    assert_eq!(fake.0.creates.load(Ordering::SeqCst), 0);
     let settled = bridge.submit(payment.clone())?;
     assert_eq!(settled.status, Status::Settled);
     drop(bridge);
@@ -144,6 +140,29 @@ fn durable_lookup_ignores_duplicate_submit_and_retains_return_history()
     assert_eq!(returned.settled_on, Some(settled.on));
     assert_eq!(fake.0.creates.load(Ordering::SeqCst), 1);
     assert_eq!(fake.0.funds.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
+fn preflight_rejection_is_durable_and_cannot_be_resent()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let temp = private_tempdir()?;
+    let path = temp.path().join("bridge.db");
+    let fake = Fake::new(false, false);
+    let (bridge, payment) = fixture(&path, fake.clone())?;
+    let mut changed = payment.clone();
+    changed.destination = DestinationFingerprint(Sha256Hex::from_digest([7; 32]));
+    let rejected = bridge.submit(changed.clone())?;
+    assert_eq!(rejected.status, Status::Failed);
+    drop(bridge);
+    let (bridge, _) = fixture(&path, fake.clone())?;
+    let found = bridge.lookup(&payment.key)?;
+    assert_eq!(found.order_id, rejected.order_id);
+    assert_eq!(found.status, Status::Failed);
+    assert_eq!(bridge.submit(changed)?.order_id, rejected.order_id);
+    assert!(matches!(bridge.submit(payment), Err(Error::Mismatch)));
+    assert_eq!(fake.0.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.0.funds.load(Ordering::SeqCst), 0);
     Ok(())
 }
 

@@ -249,6 +249,66 @@ struct Order {
     mark: Option<Mark>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Reservation {
+    Rejected(Rejection),
+    Order(Box<Order>),
+}
+
+impl Reservation {
+    fn payment(&self) -> &Payment {
+        match self {
+            Self::Rejected(rejection) => &rejection.payment,
+            Self::Order(order) => &order.payment,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Rejection {
+    environment: Environment,
+    payment: Payment,
+    rejected_on: NaiveDate,
+}
+
+impl Rejection {
+    fn evidence(self) -> Result<Evidence> {
+        let order_id = format!(
+            "wise-{}-rejected-{}",
+            self.environment.name(),
+            self.payment.key,
+        )
+        .parse()
+        .map_err(|_| Error::Storage)?;
+        Ok(self.payment.evidence(
+            order_id,
+            Mark {
+                status: Status::Failed,
+                on: self.rejected_on,
+                settled_on: None,
+            },
+        ))
+    }
+}
+
+impl Payment {
+    fn evidence(self, order_id: ProviderTransferId, mark: Mark) -> Evidence {
+        Evidence {
+            key: self.key,
+            company: self.company,
+            cash_account: self.cash_account,
+            destination: self.destination,
+            currency: self.currency,
+            amount_minor: self.amount_minor,
+            order_id,
+            status: mark.status,
+            on: mark.on,
+            settled_on: mark.settled_on,
+        }
+    }
+}
+
 trait Provider: Send + Sync + 'static {
     fn check_recipient(&self, profile: WiseId, recipient: WiseId) -> Result<()>;
     fn quote(
@@ -284,15 +344,45 @@ impl<P: Provider> Bridge<P> {
 
     fn submit(&self, payment: Payment) -> Result<Evidence> {
         let stored = self.store.lock().map_err(|_| Error::Storage)?;
-        if let Some(order) = stored.read(&payment.key)? {
-            if payment != order.payment {
+        if let Some(reservation) = stored.read(&payment.key)? {
+            if &payment != reservation.payment() {
                 return Err(Error::Mismatch);
             }
-            return self.lookup_order(&stored, order);
+            return self.evidence(&stored, reservation);
         }
-        let order = self.prepare_order(payment)?;
+        let recipient_and_quote = self.prepare_order(&payment);
+        let (recipient, quote) = match recipient_and_quote {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                // No transfer create or funding request happened during preflight.
+                let rejection = Rejection {
+                    environment: self.environment,
+                    payment,
+                    rejected_on: Utc::now().date_naive(),
+                };
+                stored.insert(&rejection.payment.key, &rejection)?;
+                eprintln!(
+                    "Wise payment {} declined before creation: {error}",
+                    rejection.payment.key
+                );
+                return rejection.evidence();
+            }
+        };
+        let order = Order {
+            environment: self.environment,
+            payment,
+            recipient,
+            profile: self.config.profile_id,
+            balance: self.config.balance_id,
+            quote,
+            created: Utc::now(),
+            transfer: None,
+            funding_attempted: false,
+            funding_receipt: None,
+            mark: None,
+        };
         // INSERT is durable before create. A competing process cannot claim the key.
-        stored.insert(&order)?;
+        stored.insert(&order.payment.key, &order)?;
         let transfer = self.provider.create(&order)?;
         transfer.verify(&order)?;
         let mut order = order;
@@ -308,7 +398,7 @@ impl<P: Provider> Bridge<P> {
         Self::record(&stored, order, &transfer)
     }
 
-    fn prepare_order(&self, payment: Payment) -> Result<Order> {
+    fn prepare_order(&self, payment: &Payment) -> Result<(WiseId, String)> {
         if payment.currency != Currency::USD
             || payment.company != self.config.company
             || payment.cash_account != self.config.cash_account
@@ -328,25 +418,20 @@ impl<P: Provider> Bridge<P> {
         let quote = self
             .provider
             .quote(&self.config, recipient, payment.amount_minor)?;
-        Ok(Order {
-            environment: self.environment,
-            payment,
-            recipient,
-            profile: self.config.profile_id,
-            balance: self.config.balance_id,
-            quote,
-            created: Utc::now(),
-            transfer: None,
-            funding_attempted: false,
-            funding_receipt: None,
-            mark: None,
-        })
+        Ok((recipient, quote))
     }
 
     fn lookup(&self, key: &DisbursementId) -> Result<Evidence> {
         let store = self.store.lock().map_err(|_| Error::Storage)?;
-        let order = store.read(key)?.ok_or(Error::Missing)?;
-        self.lookup_order(&store, order)
+        let reservation = store.read(key)?.ok_or(Error::Missing)?;
+        self.evidence(&store, reservation)
+    }
+
+    fn evidence(&self, store: &Store, reservation: Reservation) -> Result<Evidence> {
+        match reservation {
+            Reservation::Rejected(rejection) => rejection.evidence(),
+            Reservation::Order(order) => self.lookup_order(store, *order),
+        }
     }
 
     fn lookup_order(&self, store: &Store, order: Order) -> Result<Evidence> {
@@ -369,22 +454,10 @@ impl<P: Provider> Bridge<P> {
         }
         store.save(&order)?;
         let mark = observed?;
-        let payment = order.payment;
         let order_id = format!("wise-{}-{}", order.environment.name(), transfer.id)
             .parse()
             .map_err(|_| Error::Provider)?;
-        Ok(Evidence {
-            key: payment.key,
-            company: payment.company,
-            cash_account: payment.cash_account,
-            destination: payment.destination,
-            currency: payment.currency,
-            amount_minor: payment.amount_minor,
-            order_id,
-            status: mark.status,
-            on: mark.on,
-            settled_on: mark.settled_on,
-        })
+        Ok(order.payment.evidence(order_id, mark))
     }
 
     fn require_token(&self, headers: &HeaderMap) -> Result<()> {

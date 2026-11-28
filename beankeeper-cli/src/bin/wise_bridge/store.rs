@@ -2,8 +2,9 @@ use std::{fs::OpenOptions, path::Path};
 
 use beankeeper_cli::disbursement::DisbursementId;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use serde::Serialize;
 
-use super::{Environment, Error, Order, Result};
+use super::{Environment, Error, Order, Reservation, Result};
 
 pub(super) struct Store(Connection);
 
@@ -36,6 +37,7 @@ impl Store {
                OR json_extract(OLD.payload,'$.profile') IS NOT json_extract(NEW.payload,'$.profile')
                OR json_extract(OLD.payload,'$.recipient') IS NOT json_extract(NEW.payload,'$.recipient')
                OR json_extract(OLD.payload,'$.balance') IS NOT json_extract(NEW.payload,'$.balance')
+               OR json_extract(OLD.payload,'$.rejected_on') IS NOT json_extract(NEW.payload,'$.rejected_on')
                OR json_extract(OLD.payload,'$.quote') IS NOT json_extract(NEW.payload,'$.quote')
                OR json_extract(OLD.payload,'$.created') IS NOT json_extract(NEW.payload,'$.created')
                OR (json_extract(OLD.payload,'$.funding_attempted')=1 AND json_extract(NEW.payload,'$.funding_attempted') IS NOT 1)
@@ -63,7 +65,7 @@ impl Store {
         Ok(Self(conn))
     }
 
-    pub(super) fn read(&self, id: &DisbursementId) -> Result<Option<Order>> {
+    pub(super) fn read(&self, id: &DisbursementId) -> Result<Option<Reservation>> {
         let row = self
             .0
             .query_row(
@@ -78,12 +80,12 @@ impl Store {
             .transpose()
     }
 
-    pub(super) fn insert(&self, order: &Order) -> Result<()> {
-        let payload = serde_json::to_string(order).map_err(|_| Error::Storage)?;
+    pub(super) fn insert(&self, key: &DisbursementId, row: &impl Serialize) -> Result<()> {
+        let payload = serde_json::to_string(row).map_err(|_| Error::Storage)?;
         self.0
             .execute(
                 "INSERT INTO wise_orders VALUES(?1,?2)",
-                params![order.payment.key, payload],
+                params![key, payload],
             )
             .map_err(|_| Error::Storage)?;
         Ok(())
