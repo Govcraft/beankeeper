@@ -78,6 +78,7 @@ impl WriteMode {
                     | Capability::Approve
                     | Capability::Reverse
                     | Capability::Admin
+                    | Capability::TaxDetails
                     | Capability::Setup
             )
     }

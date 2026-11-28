@@ -358,6 +358,9 @@ fn revert_to_v8_fixture(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
          DROP TRIGGER bank_feed_proposal_requires_current_revision;
          DROP TABLE bank_feed_items;
          DROP TABLE bank_feed_connections;
+         DROP TABLE contractor_w9_details;
+         DROP TABLE contractor_tax_profiles;
+         DROP TABLE contractor_reviews;
          DROP TABLE document_review_requests;
          DROP TABLE document_allocations;
          DROP TABLE book_documents;

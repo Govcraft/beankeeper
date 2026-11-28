@@ -9,10 +9,11 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 46;
+const LATEST_VERSION: i64 = 47;
 pub(super) const VAT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(45);
 pub(super) const FIXED_ASSETS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(44);
 pub(super) const EXPENSE_CLAIMS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(46);
+pub(super) const CONTRACTOR_TAX_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(47);
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -341,13 +342,6 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
 
     apply_subledger_migrations(conn, version)?;
 
-    if version < EXPENSE_CLAIMS_SCHEMA_VERSION {
-        migrate_with_writer(
-            conn,
-            EXPENSE_CLAIMS_SCHEMA_VERSION,
-            apply_expense_claim_schema,
-        )?;
-    }
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -399,6 +393,21 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
         migrate_with_writer(conn, VAT_SCHEMA_VERSION, apply_vat_schema)?;
     }
 
+    if version < EXPENSE_CLAIMS_SCHEMA_VERSION {
+        migrate_with_writer(
+            conn,
+            EXPENSE_CLAIMS_SCHEMA_VERSION,
+            apply_expense_claim_schema,
+        )?;
+    }
+
+    if version < CONTRACTOR_TAX_SCHEMA_VERSION {
+        migrate_with_writer(
+            conn,
+            CONTRACTOR_TAX_SCHEMA_VERSION,
+            apply_contractor_tax_schema,
+        )?;
+    }
     Ok(())
 }
 
@@ -422,6 +431,23 @@ fn apply_fixed_assets_schema(conn: &Connection) -> Result<(), CliError> {
         migrate_hold_audit(conn, AuditTable::FixedAssets, FIXED_ASSETS_SCHEMA_VERSION)?;
         install_cash_class_guard(conn)?;
         conn.execute_batch(include_str!("schema/fixed_assets.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
+}
+
+fn apply_contractor_tax_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(
+            conn,
+            AuditTable::ContractorTax,
+            CONTRACTOR_TAX_SCHEMA_VERSION,
+        )?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/contractor_tax.sql"))?;
         super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
         conn.pragma_update(None, "defer_foreign_keys", false)?;
         Ok(())
@@ -2264,6 +2290,7 @@ enum AuditTable {
     FixedAssets,
     Vat,
     ExpenseClaims,
+    ContractorTax,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2277,7 +2304,8 @@ impl From<AuditTable> for AuditHistory {
             | AuditTable::Documents
             | AuditTable::FixedAssets
             | AuditTable::Vat
-            | AuditTable::ExpenseClaims => Self::Bookkeeping,
+            | AuditTable::ExpenseClaims
+            | AuditTable::ContractorTax => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2459,6 +2487,20 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
             AuditEntity::ExpenseClaimRevision
         );
     }
+    if table >= AuditTable::ContractorTax {
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::ContractorTaxProfile,
+            AuditEntity::ContractorReview
+        );
+        let _ = write!(
+            action,
+            ",'{}','{}'",
+            AuditAction::ContractorReviewed,
+            AuditAction::ContractorW9Recorded
+        );
+    }
 }
 
 fn append_document_audit_extensions(entity: &mut String, action: &mut String) {
@@ -2625,7 +2667,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets | AuditTable::Vat | AuditTable::ExpenseClaims => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets | AuditTable::Vat | AuditTable::ExpenseClaims | AuditTable::ContractorTax => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -3411,6 +3453,7 @@ mod tests {
                 FIXED_ASSETS_SCHEMA_VERSION,
                 VAT_SCHEMA_VERSION,
                 EXPENSE_CLAIMS_SCHEMA_VERSION,
+                CONTRACTOR_TAX_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );

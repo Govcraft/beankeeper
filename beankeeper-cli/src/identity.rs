@@ -156,7 +156,8 @@ impl VerifiedAgent {
     }
 
     pub(crate) fn requires_explicit_capability(&self, capability: Capability) -> bool {
-        capability == Capability::Admin && self.grants.is_bookkeeper()
+        capability == Capability::TaxDetails
+            || (capability == Capability::Admin && self.grants.is_bookkeeper())
     }
 
     /// Whether the verified identity holds the requested ledger or UI grant.
@@ -248,7 +249,10 @@ pub fn authorize(
     required: Capability,
 ) -> Result<Option<VerifiedAgent>, CliError> {
     let enforce = crate::db::policy::get(conn)?.enforce
-        || matches!(required, Capability::Navigate | Capability::Setup);
+        || matches!(
+            required,
+            Capability::Navigate | Capability::Setup | Capability::TaxDetails
+        );
     authorize_with_policy(conn, token, required, enforce, |_| {})
 }
 
@@ -387,7 +391,9 @@ fn require_operation_grant(
         || operation.requires_onboarding_grant()
         || matches!(
             permission,
-            Permission::Capability(Capability::Navigate | Capability::Setup)
+            Permission::Capability(
+                Capability::Navigate | Capability::Setup | Capability::TaxDetails
+            )
         );
     if !identity.enforces_permissions(enforce) || identity.allows_known_operation(operation)? {
         return Ok(());

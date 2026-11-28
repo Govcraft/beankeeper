@@ -55,6 +55,7 @@ pub(crate) mod corrections;
 pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
+pub(crate) mod contractor_tax;
 pub(crate) mod counterparties;
 pub(crate) mod documents;
 mod standing;
@@ -186,6 +187,8 @@ audit_labels! {
         Counterparty => "counterparty",
         TransactionCounterparty => "transaction_counterparty",
         BankFeed => "bank_feed",
+        ContractorTaxProfile => "contractor_tax_profile",
+        ContractorReview => "contractor_review",
         Document => "document",
         DocumentAllocation => "document_allocation",
         DocumentReview => "document_review",
@@ -231,6 +234,8 @@ impl AuditEntity {
             | Self::Counterparty
             | Self::TransactionCounterparty
             | Self::BankFeed
+            | Self::ContractorTaxProfile
+            | Self::ContractorReview
             | Self::Document
             | Self::DocumentAllocation
             | Self::DocumentReview
@@ -276,6 +281,8 @@ audit_labels! {
         LinkCreate => "link_create",
         LinkUndo => "link_undo",
         BankFeedChange => "bank_feed_change",
+        ContractorReviewed => "contractor_reviewed",
+        ContractorW9Recorded => "contractor_w9_recorded",
         Reverse => "reverse",
         BudgetSet => "budget_set" | "budget-set",
         BudgetDelete => "budget_delete" | "budget-delete",

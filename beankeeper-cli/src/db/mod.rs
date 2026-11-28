@@ -10,6 +10,7 @@ pub(crate) mod calendar_date;
 pub mod clearings;
 pub mod companies;
 pub mod connection;
+pub mod contractor_tax;
 pub mod counterparties;
 pub mod documents;
 pub(crate) mod expense_claims;

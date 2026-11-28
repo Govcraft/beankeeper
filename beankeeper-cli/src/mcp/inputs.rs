@@ -1692,6 +1692,39 @@ pub(crate) struct BankFeedLink {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct ContractorTaxW9Input {
+    pub company: Company,
+    pub party: crate::db::counterparties::CounterpartyId,
+    pub classification: crate::db::contractor_tax::TaxClassification,
+    pub input: crate::commands::contractor_tax::ArtifactName,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContractorTaxExportInput {
+    pub company: Company,
+    pub year: crate::db::contractor_tax::TaxYear,
+    pub output: crate::commands::contractor_tax::ArtifactName,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContractorTaxYearInput {
+    pub company: Company,
+    pub year: crate::db::contractor_tax::TaxYear,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContractorTaxReviewInput {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub payment: Box<crate::db::contractor_tax::PaymentReview>,
+    pub expected_receipt: Option<crate::db::ids::ReceiptId>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DocumentDraftInput {
     pub company: Company,
     #[serde(deserialize_with = "deserialize_structured")]

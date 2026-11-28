@@ -228,7 +228,11 @@ impl Operation {
                 | Permission::Transport
         ) && !matches!(
             self,
-            Self::LedgerSetupOpeningPreview | Self::TxnReconcile | Self::Backup | Self::Recover
+            Self::LedgerSetupOpeningPreview
+                | Self::TxnReconcile
+                | Self::Backup
+                | Self::Recover
+                | Self::ContractorTaxExport
         )
     }
 }

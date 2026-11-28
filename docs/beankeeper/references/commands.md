@@ -278,6 +278,9 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `tax_configure` | Configure a company VAT code and effective-dated revision |
 | `tax_list`, `tax_report` | Inspect historical VAT rates and reconcile a GBP VAT register against control accounts |
 | `document_show`, `document_print`, `document_list`, `document_allocations`, `document_aging`, `document_proposals` | Inspect issued terms, allocations, due-date aging and document proposals |
+| `contractor_tax_review` | Record or revise a reviewed contractor payment against posted evidence |
+| `contractor_tax_worksheet`, `contractor_tax_preview` | Run the redacted 2025 worksheet or preview legacy candidates |
+| `contractor_tax_w9`, `contractor_tax_export` | Import checked identity details and export a protected local artifact using a signed tax-details grant |
 | `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
@@ -556,7 +559,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `company_create`, `company_delete`, `tax_configure`, `bank_feed_post`, `bank_feed_link`,
+Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor_tax_export`, `company_create`, `company_delete`, `tax_configure`, `bank_feed_post`, `bank_feed_link`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,

@@ -6,6 +6,7 @@ pub mod backup;
 pub mod bank_feed;
 pub mod budget;
 pub mod company;
+pub mod contractor_tax;
 pub mod counterparty;
 pub mod document;
 pub mod expense_claim;
@@ -81,6 +82,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Payroll(crate::cli::PayrollCommand::Show { .. }) => Operation::PayrollShow,
         Command::Rule(args) => args.command.operation(),
         Command::Counterparty(args) => args.command.operation(),
+        Command::ContractorTax(command) => command.operation(),
         Command::Document(args) => args.command.operation(),
         Command::Tax(command) => command.operation(),
         Command::ExpenseClaim(args) => args.command.operation(),
@@ -333,6 +335,7 @@ fn dispatch_ledger(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
         Command::Tax(command) => Some(tax::ledger_request(cli, command)?),
+        Command::ContractorTax(command) => contractor_tax::ledger_request(cli, command)?,
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
@@ -450,6 +453,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
         Command::BankFeed(command) => bank_feed::run(cli, command),
+        Command::ContractorTax(command) => contractor_tax::run_local(cli, command),
         Command::Backup { output, overwrite } => backup::backup(cli, output, *overwrite),
         Command::Restore { input } => backup::restore(
             cli,

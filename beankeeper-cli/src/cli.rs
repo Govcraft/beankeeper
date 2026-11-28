@@ -732,6 +732,10 @@ EXAMPLES:\n  \
     /// Manage customer and vendor records.
     Counterparty(crate::commands::counterparty::CounterpartyArgs),
 
+    /// Prepare a reviewed US contractor payment worksheet.
+    #[command(subcommand)]
+    ContractorTax(crate::commands::contractor_tax::ContractorTaxCommand),
+
     /// Manage invoices, bills and allocations.
     Document(crate::commands::document::DocumentArgs),
 

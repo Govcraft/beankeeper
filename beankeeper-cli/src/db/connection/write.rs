@@ -105,6 +105,10 @@ impl WriteAuthorization {
         }
     }
 
+    pub(super) const fn target(&self) -> &LedgerTarget {
+        &self.target
+    }
+
     pub(super) fn set_target(&mut self, target: LedgerTarget) {
         self.target = target;
     }

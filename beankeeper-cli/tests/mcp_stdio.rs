@@ -6,6 +6,8 @@ mod account_rename;
 mod audit_receipts;
 #[path = "mcp_stdio/cash_classification.rs"]
 mod cash_classification;
+#[path = "mcp_stdio/contractor_tax.rs"]
+mod contractor_tax;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
 #[path = "mcp_stdio/counterparties.rs"]
@@ -801,6 +803,11 @@ const LEDGER_TOOLS: &[&str] = &[
     "tax_configure",
     "tax_list",
     "tax_report",
+    "contractor_tax_review",
+    "contractor_tax_worksheet",
+    "contractor_tax_preview",
+    "contractor_tax_w9",
+    "contractor_tax_export",
     "document_show",
     "document_print",
     "document_list",
@@ -1614,7 +1621,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 45);
+    assert_eq!(names.len(), 47);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
@@ -3314,7 +3321,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 45);
+    assert_eq!(names.len(), 47);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3480,7 +3487,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 45);
+    assert_eq!(names.len(), 47);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
