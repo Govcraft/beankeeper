@@ -252,7 +252,7 @@ struct Order {
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum Reservation {
-    Rejected(Rejection),
+    Rejected(Box<Rejection>),
     Order(Box<Order>),
 }
 
