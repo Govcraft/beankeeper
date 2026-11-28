@@ -131,6 +131,8 @@ fn fixed_asset_lifecycle_reconciles_and_restores() -> Result<(), TestError> {
     let past = ledger.data(&["fixed-asset", "show", id, "--as-of", "2026-02-28"])?;
     assert_eq!(past["book_value"], 72);
     let register = ledger.data(&["fixed-asset", "list", "--as-of", "2026-04-01"])?;
+    assert_eq!(register["rollforward"]["disposed_book_value_minor"], 72);
+    assert_eq!(register["rollforward"]["ending_book_value_minor"], 0);
     for control in register["control_accounts"]
         .as_array()
         .ok_or("control accounts")?
@@ -140,6 +142,15 @@ fn fixed_asset_lifecycle_reconciles_and_restores() -> Result<(), TestError> {
     assert_eq!(ledger.data(&["verify"])?["status"], "healthy");
     let reversed = ledger.run(&["txn", "reverse", &posted[0]["transaction_id"].to_string()])?;
     assert!(!reversed.status.success());
+    let failure = format!(
+        "{}{}",
+        String::from_utf8_lossy(&reversed.stdout),
+        String::from_utf8_lossy(&reversed.stderr)
+    );
+    assert!(
+        failure.contains("fixed asset movements cannot be reversed"),
+        "{failure}"
+    );
     ledger.data(&["restore", "--input", archive])?;
     let restored = ledger.data(&["fixed-asset", "show", id, "--as-of", "2026-04-01"])?;
     assert_eq!(restored["book_value"], 72);
@@ -205,6 +216,8 @@ fn existing_opening_acquisition_and_locked_charge_are_atomic() -> Result<(), Tes
         "2026-03-31",
     ])?;
     assert!(!denied.status.success());
+    let error: Value = serde_json::from_slice(&denied.stdout)?;
+    assert_eq!(error["error"]["code"], "VALIDATION");
     let view = ledger.data(&["fixed-asset", "show", asset, "--as-of", "2026-03-31"])?;
     assert_eq!(view["book_value"], 10000);
     assert_eq!(view["movements"], serde_json::json!([]));
