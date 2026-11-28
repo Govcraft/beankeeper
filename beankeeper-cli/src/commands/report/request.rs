@@ -422,21 +422,7 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 metric: args.metric,
                 window: (args.compare, account(&args.explain_change)).try_into()?,
             },
-            ReportCommand::CashForecast(args) => {
-                Self::CashForecast(crate::commands::report_forecast::ForecastRequest {
-                    as_of: args.as_of.into(),
-                    through: args.through.into(),
-                    cadence: args.cadence.into(),
-                    currency: args.currency,
-                    adjustments: args.adjust.clone(),
-                    accounts: args
-                        .cash_account
-                        .iter()
-                        .cloned()
-                        .map(AccountSelector::from)
-                        .collect(),
-                })
-            }
+            ReportCommand::CashForecast(args) => Self::CashForecast(args.into()),
             ReportCommand::CashFlow(args) => Self::CashFlow {
                 scope: scope(&args.from, &args.to, &args.currency)?,
                 accounts: accounts(&args.cash_account),

@@ -54,6 +54,41 @@ pub(crate) struct ForecastRequest {
     pub(crate) adjustments: Vec<String>,
 }
 
+impl From<&crate::cli::CashForecastArgs> for ForecastRequest {
+    fn from(args: &crate::cli::CashForecastArgs) -> Self {
+        Self {
+            as_of: args.as_of.into(),
+            through: args.through.into(),
+            cadence: args.cadence.into(),
+            currency: args.currency,
+            adjustments: args.adjust.clone(),
+            accounts: args
+                .cash_account
+                .iter()
+                .cloned()
+                .map(AccountSelector::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<crate::mcp::inputs::CashForecastInput> for ForecastRequest {
+    fn from(input: crate::mcp::inputs::CashForecastInput) -> Self {
+        Self {
+            as_of: input.as_of.into_inner().date(),
+            through: input.through.into_inner().date(),
+            cadence: input.cadence.unwrap_or(ForecastCadenceArg::Weekly).into(),
+            currency: input.currency,
+            adjustments: input.adjust,
+            accounts: input
+                .cash_account
+                .into_iter()
+                .map(|account| AccountSelector::from(account.into_inner()))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ForecastSource {

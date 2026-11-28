@@ -179,19 +179,7 @@ impl TryFrom<ReportOptions> for ReportQuery {
                 )
                     .try_into()?,
             },
-            ReportOptions::CashForecast(input) => {
-                Self::CashForecast(crate::commands::report_forecast::ForecastRequest {
-                    as_of: input.as_of.into_inner().date(),
-                    through: input.through.into_inner().date(),
-                    cadence: input
-                        .cadence
-                        .unwrap_or(crate::commands::report_forecast::ForecastCadenceArg::Weekly)
-                        .into(),
-                    currency: input.currency,
-                    adjustments: input.adjust,
-                    accounts: accounts(input.cash_account),
-                })
-            }
+            ReportOptions::CashForecast(input) => Self::CashForecast(input.into()),
             ReportOptions::CashFlow(input) => Self::CashFlow {
                 scope: scope(input.from, input.to, input.currency)?,
                 accounts: accounts(input.cash_account),
