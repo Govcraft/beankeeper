@@ -3,21 +3,25 @@ use std::{fs::OpenOptions, path::Path};
 use beankeeper_cli::disbursement::DisbursementId;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
-use super::{Error, Order, Result};
+use super::{Environment, Error, Order, Result};
 
 pub(super) struct Store(Connection);
 
 impl Store {
-    pub(super) fn open(path: &Path) -> Result<Self> {
+    pub(super) fn open(path: &Path, environment: Environment) -> Result<Self> {
         create_private_file(path)?;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
             .map_err(|_| Error::Storage)?;
-        Self::initialize(conn)
+        Self::initialize(conn, environment)
     }
 
-    fn initialize(conn: Connection) -> Result<Self> {
+    fn initialize(conn: Connection, environment: Environment) -> Result<Self> {
         conn.execute_batch(
             "PRAGMA synchronous=FULL;
+             CREATE TABLE IF NOT EXISTS wise_bridge_environment (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                environment TEXT NOT NULL CHECK(environment IN ('sandbox','live'))
+             ) STRICT;
              CREATE TABLE IF NOT EXISTS wise_orders (
                 key TEXT PRIMARY KEY,
                 payload TEXT NOT NULL CHECK(json_valid(payload)),
@@ -27,6 +31,7 @@ impl Store {
              BEGIN SELECT RAISE(ABORT,'cannot delete a payment key'); END;
              CREATE TRIGGER IF NOT EXISTS wise_orders_protect BEFORE UPDATE ON wise_orders
              WHEN OLD.key IS NOT NEW.key
+               OR json_extract(OLD.payload,'$.environment') IS NOT json_extract(NEW.payload,'$.environment')
                OR json_extract(OLD.payload,'$.payment') IS NOT json_extract(NEW.payload,'$.payment')
                OR json_extract(OLD.payload,'$.profile') IS NOT json_extract(NEW.payload,'$.profile')
                OR json_extract(OLD.payload,'$.recipient') IS NOT json_extract(NEW.payload,'$.recipient')
@@ -40,6 +45,21 @@ impl Store {
                   AND json_extract(OLD.payload,'$.transfer') IS NOT json_extract(NEW.payload,'$.transfer'))
              BEGIN SELECT RAISE(ABORT,'cannot change a payment identity or repeat funding'); END;"
         ).map_err(|_| Error::Storage)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO wise_bridge_environment(singleton,environment) VALUES(1,?1)",
+            [environment.name()],
+        )
+        .map_err(|_| Error::Storage)?;
+        let correct_environment: bool = conn
+            .query_row(
+                "SELECT environment IS ?1 FROM wise_bridge_environment WHERE singleton=1",
+                [environment.name()],
+                |row| row.get(0),
+            )
+            .map_err(|_| Error::Storage)?;
+        if !correct_environment {
+            return Err(Error::Configuration);
+        }
         Ok(Self(conn))
     }
 

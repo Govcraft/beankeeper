@@ -1,9 +1,9 @@
-//! Host-only Wise sandbox payment bridge for Beankeeper.
+//! Host-only Wise payment bridge for Beankeeper.
 
-mod wise_sandbox;
+mod wise_bridge;
 
 fn main() -> std::process::ExitCode {
-    match wise_sandbox::run() {
+    match wise_bridge::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

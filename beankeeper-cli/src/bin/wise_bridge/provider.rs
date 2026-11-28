@@ -14,9 +14,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{json, value::RawValue};
 
-use super::{Config, Error, Order, Provider, Result, WiseId};
+use super::{Config, Environment, Error, Order, Provider, Result, WiseId};
 
-const ORIGIN: &str = "https://api.wise-sandbox.com/2026Q4/";
 const MAX_PAYLOAD: u64 = 256 * 1024;
 const PAGE_SIZE: u8 = 25;
 const MAX_PAGES: u8 = 4;
@@ -148,6 +147,7 @@ pub(super) struct Transfer {
     pub(super) id: WiseId,
     pub(super) status: String,
     business: WiseId,
+    source_account: Option<WiseId>,
     target_account: WiseId,
     customer_transaction_id: String,
     quote_uuid: String,
@@ -164,6 +164,7 @@ impl Transfer {
         let paid = order.payment.amount_minor.minor_units();
         let source = cents(&self.source_value)?;
         if self.business != order.profile
+            || self.source_account.is_some()
             || self.target_account != order.recipient
             || self.customer_transaction_id != key(&order.payment.key)?
             || self.quote_uuid != order.quote
@@ -212,7 +213,7 @@ struct Funding {
 }
 
 impl Wise {
-    pub(super) fn new(token: SecretString) -> Result<Self> {
+    pub(super) fn new(environment: Environment, token: SecretString) -> Result<Self> {
         let client = Client::builder()
             .https_only(true)
             .no_proxy()
@@ -224,7 +225,7 @@ impl Wise {
         Ok(Self {
             client,
             token,
-            origin: Url::parse(ORIGIN).map_err(|_| Error::Configuration)?,
+            origin: Url::parse(environment.origin()).map_err(|_| Error::Configuration)?,
         })
     }
 
@@ -331,7 +332,7 @@ impl Provider for Wise {
         let requirements: Vec<Requirement> = self.read(
             self.client
                 .post(self.endpoint(&["transfer-requirements"])?)
-                .json(&json!({"targetAccount":recipient,"quoteUuid":quote,"details":{}})),
+                .json(&json!({"targetAccount":recipient,"quoteUuid":quote,"originatorLegalEntityType":"BUSINESS","details":{}})),
         )?;
         if requirements
             .iter()

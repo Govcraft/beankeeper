@@ -50,16 +50,14 @@ pub(crate) enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Configuration => "invalid Wise sandbox bridge configuration",
+            Self::Configuration => "invalid Wise bridge configuration",
             Self::Authorization => "invalid host authorization",
             Self::Input => "invalid domestic USD payment request",
-            Self::Missing => "payment or recipient is not known to the Wise sandbox bridge",
-            Self::Mismatch => "Wise sandbox details differ from the reviewed payment",
-            Self::Pending => {
-                "Wise sandbox payment remains uncertain; inspect the existing transfer"
-            }
-            Self::Provider => "Wise sandbox response unavailable or unsupported",
-            Self::Storage => "Wise sandbox bridge state is unavailable",
+            Self::Missing => "payment or recipient is not known to the Wise bridge",
+            Self::Mismatch => "Wise details differ from the reviewed payment",
+            Self::Pending => "Wise payment remains uncertain; inspect the existing transfer",
+            Self::Provider => "Wise response unavailable or unsupported",
+            Self::Storage => "Wise bridge state is unavailable",
         })
     }
 }
@@ -77,6 +75,37 @@ impl IntoResponse for Error {
             Self::Configuration | Self::Storage => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Environment {
+    Sandbox,
+    Live,
+}
+
+impl Environment {
+    fn configured(mode: Option<&str>, live_acknowledgement: Option<&str>) -> Result<Self> {
+        match mode {
+            None | Some("sandbox") => Ok(Self::Sandbox),
+            Some("live") if live_acknowledgement == Some("yes") => Ok(Self::Live),
+            _ => Err(Error::Configuration),
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Sandbox => "sandbox",
+            Self::Live => "live",
+        }
+    }
+
+    const fn origin(self) -> &'static str {
+        match self {
+            Self::Sandbox => "https://api.wise-sandbox.com/2026Q4/",
+            Self::Live => "https://api.wise.com/2026Q4/",
+        }
     }
 }
 
@@ -136,12 +165,14 @@ impl Config {
 
     fn fingerprint(
         &self,
+        environment: Environment,
         vendor: &CounterpartyId,
         recipient: WiseId,
     ) -> Result<DestinationFingerprint> {
         // Wise recipient details are immutable. A replacement recipient gets a new ID.
         let scope = serde_json::to_vec(&(
-            "wise-sandbox-usd-aba-v1",
+            "wise-usd-aba-v1",
+            environment,
             &self.company,
             &self.cash_account,
             self.profile_id,
@@ -205,6 +236,7 @@ struct Destination {
 
 #[derive(Serialize, Deserialize)]
 struct Order {
+    environment: Environment,
     payment: Payment,
     recipient: WiseId,
     profile: WiseId,
@@ -231,6 +263,7 @@ trait Provider: Send + Sync + 'static {
 }
 
 struct Bridge<P> {
+    environment: Environment,
     config: Config,
     token: SecretString,
     provider: P,
@@ -243,7 +276,9 @@ impl<P: Provider> Bridge<P> {
         self.provider
             .check_recipient(self.config.profile_id, recipient)?;
         Ok(Destination {
-            fingerprint: self.config.fingerprint(vendor, recipient)?,
+            fingerprint: self
+                .config
+                .fingerprint(self.environment, vendor, recipient)?,
         })
     }
 
@@ -274,15 +309,18 @@ impl<P: Provider> Bridge<P> {
     }
 
     fn prepare_order(&self, payment: Payment) -> Result<Order> {
-        if payment.amount_minor.minor_units() > 1_000_000
-            || payment.currency != Currency::USD
+        if payment.currency != Currency::USD
             || payment.company != self.config.company
             || payment.cash_account != self.config.cash_account
         {
             return Err(Error::Input);
         }
         let recipient = self.config.recipient(&payment.vendor)?;
-        if payment.destination != self.config.fingerprint(&payment.vendor, recipient)? {
+        if payment.destination
+            != self
+                .config
+                .fingerprint(self.environment, &payment.vendor, recipient)?
+        {
             return Err(Error::Mismatch);
         }
         self.provider
@@ -291,6 +329,7 @@ impl<P: Provider> Bridge<P> {
             .provider
             .quote(&self.config, recipient, payment.amount_minor)?;
         Ok(Order {
+            environment: self.environment,
             payment,
             recipient,
             profile: self.config.profile_id,
@@ -331,7 +370,7 @@ impl<P: Provider> Bridge<P> {
         store.save(&order)?;
         let mark = observed?;
         let payment = order.payment;
-        let order_id = format!("wise-sandbox-{}", transfer.id)
+        let order_id = format!("wise-{}-{}", order.environment.name(), transfer.id)
             .parse()
             .map_err(|_| Error::Provider)?;
         Ok(Evidence {
@@ -497,9 +536,17 @@ fn secret(name: &str) -> Result<SecretString> {
 }
 
 pub(crate) fn run() -> Result<()> {
-    let config_path = env::var_os("BK_WISE_SANDBOX_CONFIG").ok_or(Error::Configuration)?;
-    let store_path = env::var_os("BK_WISE_SANDBOX_STATE").ok_or(Error::Configuration)?;
-    let listen: SocketAddr = env::var("BK_WISE_SANDBOX_LISTEN")
+    let mode = env::var("BK_WISE_BRIDGE_ENVIRONMENT");
+    let live_acknowledgement = env::var("BK_WISE_BRIDGE_ENABLE_LIVE");
+    let mode = match mode {
+        Ok(ref value) => Some(value.as_str()),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => return Err(Error::Configuration),
+    };
+    let environment = Environment::configured(mode, live_acknowledgement.as_deref().ok())?;
+    let config_path = env::var_os("BK_WISE_BRIDGE_CONFIG").ok_or(Error::Configuration)?;
+    let store_path = env::var_os("BK_WISE_BRIDGE_STATE").ok_or(Error::Configuration)?;
+    let listen: SocketAddr = env::var("BK_WISE_BRIDGE_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:8791".into())
         .parse()
         .map_err(|_| Error::Configuration)?;
@@ -507,13 +554,15 @@ pub(crate) fn run() -> Result<()> {
         return Err(Error::Configuration);
     }
     let config = Config::read(Path::new(&config_path))?;
-    let provider = Wise::new(secret("BK_WISE_SANDBOX_TOKEN")?)?;
+    let store = Store::open(Path::new(&store_path), environment)?;
+    let provider = Wise::new(environment, secret("BK_WISE_BRIDGE_TOKEN")?)?;
     provider.check_source(&config)?;
     let bridge = Arc::new(Bridge {
+        environment,
         config,
         token: secret("BK_DISBURSEMENT_HOST_TOKEN")?,
         provider,
-        store: Mutex::new(Store::open(Path::new(&store_path))?),
+        store: Mutex::new(store),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

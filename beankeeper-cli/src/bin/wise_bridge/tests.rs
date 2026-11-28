@@ -92,7 +92,7 @@ fn fixture(p: &Path, fake: Fake) -> Result<(Bridge<Fake>, Payment)> {
         key: "disburse_01j00000000000000000000001"
             .parse()
             .map_err(|_| Error::Input)?,
-        destination: config.fingerprint(&vendor, recipient)?,
+        destination: config.fingerprint(Environment::Sandbox, &vendor, recipient)?,
         company: config.company.clone(),
         cash_account: config.cash_account.clone(),
         vendor,
@@ -100,10 +100,11 @@ fn fixture(p: &Path, fake: Fake) -> Result<(Bridge<Fake>, Payment)> {
         amount_minor: 4200.try_into().map_err(|_| Error::Input)?,
     };
     let bridge = Bridge {
+        environment: Environment::Sandbox,
         config,
         token: "synthetic-fixture-token".into(),
         provider: fake,
-        store: Mutex::new(Store::open(p)?),
+        store: Mutex::new(Store::open(p, Environment::Sandbox)?),
     };
     Ok((bridge, payment))
 }
@@ -177,5 +178,37 @@ fn host_authentication_rejects_incorrect_token()
         "Bearer synthetic-fixture-token".parse()?,
     );
     bridge.require_token(&headers)?;
+    Ok(())
+}
+
+#[test]
+fn live_requires_explicit_acknowledgement_and_separate_state()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        Environment::configured(None, Some("yes"))?,
+        Environment::Sandbox
+    );
+    assert!(matches!(
+        Environment::configured(Some("live"), None),
+        Err(Error::Configuration)
+    ));
+    assert_eq!(
+        Environment::configured(Some("live"), Some("yes"))?,
+        Environment::Live
+    );
+    assert_eq!(Environment::Live.origin(), "https://api.wise.com/2026Q4/");
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("state.db");
+    let (bridge, payment) = fixture(&path, Fake::new(false, false))?;
+    let recipient = bridge.config.recipient(&payment.vendor)?;
+    let live = bridge
+        .config
+        .fingerprint(Environment::Live, &payment.vendor, recipient)?;
+    assert_ne!(live, payment.destination);
+    drop(bridge);
+    assert!(matches!(
+        Store::open(&path, Environment::Live),
+        Err(Error::Configuration)
+    ));
     Ok(())
 }
