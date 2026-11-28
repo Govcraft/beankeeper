@@ -109,7 +109,7 @@ impl Books {
     fn bill(&self, party: &str) -> TestResult<Value> {
         let terms = json!({
             "kind":"bill","number":"B-01","control_account":"2100","counterparty_id":party,
-            "lines":[{"description":"Work","quantity":"1","unit_price_minor":100000,"account":"5000"}]
+            "lines":[{"description":"Work","quantity":"1","unit_price_minor":100_000,"account":"5000"}]
         }).to_string();
         let result = self.data(&["document", "draft", "--terms", &terms])?;
         let id = key(&result["record"], "id")?;
@@ -159,7 +159,7 @@ impl Books {
             party,
             cents,
             "direct",
-            json!({"kind":"bill_settlement"}),
+            &json!({"kind":"bill_settlement"}),
         );
         let written = self.review(&review)?;
         assert_eq!(written, self.review(&review)?);
@@ -203,7 +203,7 @@ fn path_str(path: &Path) -> TestResult<&str> {
         .ok_or_else(|| "non-Unicode fixture path".into())
 }
 
-fn payment(posting: &Value, party: &str, cents: u32, method: &str, source: Value) -> Value {
+fn payment(posting: &Value, party: &str, cents: u32, method: &str, source: &Value) -> Value {
     json!({"posting_id":posting,"party":party,"amount_minor":cents,"method":method,
            "source":source,"service_use":"contractor_services","backup_withholding":false,"reason":"source_reviewed"})
 }
@@ -224,7 +224,7 @@ fn record_source_evidence(books: &Books, parties: (&str, &str), owner: &str) -> 
         first,
         20_000,
         "payment_card",
-        direct("2200"),
+        &direct("2200"),
     ))?;
 
     let refund = books.post("2025-10-10", "1000:50", "5000:50")?;
@@ -233,11 +233,11 @@ fn record_source_evidence(books: &Books, parties: (&str, &str), owner: &str) -> 
         first,
         5_000,
         "direct",
-        json!({"kind":"refund","account":"1000","original":initial}),
+        &json!({"kind":"refund","account":"1000","original":initial}),
     ))?;
 
     let reversed = books.post("2025-11-01", "5000:10", "1000:10")?;
-    books.review(&payment(&reversed, first, 1_000, "direct", direct("1000")))?;
+    books.review(&payment(&reversed, first, 1_000, "direct", &direct("1000")))?;
     books.signed(
         &[
             "txn",
@@ -255,7 +255,7 @@ fn record_source_evidence(books: &Books, parties: (&str, &str), owner: &str) -> 
         second,
         60_000,
         "direct",
-        direct("1000"),
+        &direct("1000"),
     ))?;
     let next_year = books.post("2026-01-01", "5000:100", "1000:100")?;
     books.review(&payment(
@@ -263,7 +263,7 @@ fn record_source_evidence(books: &Books, parties: (&str, &str), owner: &str) -> 
         first,
         10_000,
         "direct",
-        direct("1000"),
+        &direct("1000"),
     ))?;
     Ok(next_year)
 }
