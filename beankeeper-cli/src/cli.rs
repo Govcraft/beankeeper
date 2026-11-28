@@ -2637,6 +2637,9 @@ EXAMPLES:\n  \
         /// Show cash-basis coverage gaps instead of failing.
         #[arg(long)]
         allow_incomplete: bool,
+        /// Credit-card liability account to recognize when charged. Repeat for multiple cards.
+        #[arg(long = "card-account")]
+        card_accounts: Vec<beankeeper::types::AccountCode>,
     },
 
     /// Generate a balance sheet.

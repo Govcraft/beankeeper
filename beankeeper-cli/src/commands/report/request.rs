@@ -388,11 +388,13 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 explain_change,
                 basis,
                 allow_incomplete,
+                card_accounts,
             } => Self::IncomeStatement {
                 scope: scope(from, to, currency)?,
                 basis: super::super::report_cash_basis::BasisMode::resolve(
                     *basis,
                     *allow_incomplete,
+                    card_accounts.clone(),
                 )?,
                 window: (*period, *compare, account(explain_change)).try_into()?,
             },

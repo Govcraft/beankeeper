@@ -5919,7 +5919,7 @@ fn proposal_commands_and_tools_return_the_same_data() -> TestResult {
     Ok(())
 }
 
-fn report_parity_cases() -> [(&'static str, &'static [&'static str], Value); 17] {
+fn report_parity_cases() -> [(&'static str, &'static [&'static str], Value); 19] {
     [
         ("trial-balance", &[], json!({})),
         (
@@ -5939,6 +5939,23 @@ fn report_parity_cases() -> [(&'static str, &'static [&'static str], Value); 17]
         ),
         ("balance-sheet", &[], json!({})),
         ("income-statement", &[], json!({})),
+        (
+            "income-statement",
+            &[
+                "--basis",
+                "cash",
+                "--from",
+                "2026-03-01",
+                "--compare",
+                "previous",
+            ],
+            json!({"basis":"cash", "from":"2026-03-01", "compare":"previous"}),
+        ),
+        (
+            "cash-forecast",
+            &["--as-of", "2026-02-28", "--through", "2026-03-31"],
+            json!({"as_of":"2026-02-28", "through":"2026-03-31"}),
+        ),
         (
             "income-statement",
             &["--period", "quarter"],
@@ -6000,7 +6017,7 @@ fn report_queries_produce_the_same_data_over_cli_and_stdio() -> TestResult {
         parameters["company"] = json!("acme");
         parameters["kind"] = json!(kind);
         match kind {
-            "budget-variance" => {}
+            "budget-variance" | "cash-forecast" => {}
             "aging" => {
                 expected.args(["--as-of", "2026-03-31"]);
                 parameters["as_of"] = json!("2026-03-31");

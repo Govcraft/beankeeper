@@ -1032,6 +1032,8 @@ pub(crate) struct IncomeStatementInput {
     pub basis: Option<crate::commands::report_cash_basis::AccountingBasis>,
     #[serde(default)]
     pub allow_incomplete: bool,
+    #[serde(default)]
+    pub card_accounts: Vec<Account>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

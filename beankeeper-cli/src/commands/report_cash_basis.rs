@@ -52,23 +52,35 @@ pub enum AccountingBasis {
     Cash,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum BasisMode {
     Accrual,
-    Cash { allow_incomplete: bool },
+    Cash(RecognitionPolicy),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RecognitionPolicy {
+    allow_incomplete: bool,
+    cards: Vec<AccountCode>,
 }
 
 impl BasisMode {
     pub(crate) fn resolve(
         basis: AccountingBasis,
         allow_incomplete: bool,
+        cards: Vec<AccountCode>,
     ) -> Result<Self, CliError> {
-        match (basis, allow_incomplete) {
-            (AccountingBasis::Accrual, true) => Err(CliError::Usage(
-                "--allow-incomplete requires --basis cash".into(),
-            )),
-            (AccountingBasis::Accrual, false) => Ok(Self::Accrual),
-            (AccountingBasis::Cash, allow_incomplete) => Ok(Self::Cash { allow_incomplete }),
+        match basis {
+            AccountingBasis::Accrual if allow_incomplete || !cards.is_empty() => {
+                Err(CliError::Usage(
+                    "--allow-incomplete and --card-account require --basis cash".into(),
+                ))
+            }
+            AccountingBasis::Accrual => Ok(Self::Accrual),
+            AccountingBasis::Cash => Ok(Self::Cash(RecognitionPolicy {
+                allow_incomplete,
+                cards,
+            })),
         }
     }
 }
@@ -92,11 +104,11 @@ pub(super) fn read_windows(
     dates: DateRange,
     currency: Currency,
     window: super::report::ReportWindow,
-    allow_incomplete: bool,
+    policy: &RecognitionPolicy,
 ) -> Result<CashBasisReport, CliError> {
     match window {
         super::report::ReportWindow::Single => {
-            read(reader, company, dates, currency, allow_incomplete).map(CashBasisReport::Single)
+            read(reader, company, dates, currency, policy).map(CashBasisReport::Single)
         }
         super::report::ReportWindow::Compare(compare) => {
             if compare.explain.is_some() {
@@ -105,8 +117,8 @@ pub(super) fn read_windows(
             let prior =
                 super::report_periods::prior_range(dates.from(), dates.to(), compare.compare)?;
             let prior_dates = DateRange::new(prior.0, prior.1)?;
-            let current = read(reader, company, dates, currency, allow_incomplete)?;
-            let prior = read(reader, company, prior_dates, currency, allow_incomplete)?;
+            let current = read(reader, company, dates, currency, policy)?;
+            let prior = read(reader, company, prior_dates, currency, policy)?;
             let change = current
                 .statement
                 .net_income()
@@ -157,22 +169,74 @@ struct LinePlan {
     events: Vec<Recognized>,
 }
 
+struct TenderAccounts {
+    cash: BTreeSet<String>,
+    cards: BTreeSet<String>,
+}
+
+impl TenderAccounts {
+    fn read(
+        reader: ReadConn<'_>,
+        company: &Company<'_>,
+        cards: &[AccountCode],
+    ) -> Result<Self, CliError> {
+        let cash: BTreeSet<_> = db::accounts::cash_accounts(reader, company.slug().as_str())?
+            .into_iter()
+            .map(|(code, _)| code)
+            .collect();
+        let mut selected_cards = BTreeSet::new();
+        for code in cards {
+            let account = db::accounts::get_account(company, code.as_str())?;
+            if account.account_type != AccountType::Liability {
+                return Err(CliError::Validation(format!(
+                    "card account {code} must be a liability"
+                )));
+            }
+            selected_cards.insert(code.to_string());
+        }
+        if cash.is_empty() && selected_cards.is_empty() {
+            return Err(CliError::Validation(
+                "cash basis requires a classified cash account or a designated card liability"
+                    .into(),
+            ));
+        }
+        Ok(Self {
+            cash,
+            cards: selected_cards,
+        })
+    }
+
+    fn contains(&self, account: &str) -> bool {
+        self.cash.contains(account) || self.cards.contains(account)
+    }
+
+    fn supports_document(&self, kind: DocumentKind, account: &str) -> bool {
+        self.cash.contains(account) || (kind == DocumentKind::Bill && self.cards.contains(account))
+    }
+
+    fn supports_direct(&self, legs: &[JournalLeg]) -> bool {
+        let income =
+            |leg: &JournalLeg| matches!(leg.kind, AccountType::Revenue | AccountType::Expense);
+        let pure_cash = legs.iter().any(|leg| self.cash.contains(&leg.account))
+            && legs
+                .iter()
+                .all(|leg| income(leg) || self.cash.contains(&leg.account));
+        let card_expense = legs.iter().any(|leg| self.cards.contains(&leg.account))
+            && legs
+                .iter()
+                .all(|leg| leg.kind == AccountType::Expense || self.cards.contains(&leg.account));
+        pure_cash || card_expense
+    }
+}
+
 fn read(
     reader: ReadConn<'_>,
     company: &Company<'_>,
     dates: DateRange,
     currency: Currency,
-    allow_incomplete: bool,
+    policy: &RecognitionPolicy,
 ) -> Result<BasisStatement, CliError> {
-    let cash: BTreeSet<_> = db::accounts::cash_accounts(reader, company.slug().as_str())?
-        .into_iter()
-        .map(|(code, _)| code)
-        .collect();
-    if cash.is_empty() {
-        return Err(CliError::Validation(
-            "cash-basis reports require a classified cash account".into(),
-        ));
-    }
+    let tenders = TenderAccounts::read(reader, company, &policy.cards)?;
     let history = allocation_history(company, dates.to())?;
     let issued = list_issued_as_of(company, dates.to())?;
     let selected: BTreeMap<_, _> = issued
@@ -210,7 +274,7 @@ fn read(
             .push(row);
     }
     let sources = SourceRules {
-        cash: &cash,
+        tenders: &tenders,
         excluded: &excluded,
         control_accounts: &control_accounts,
         applied: &applied,
@@ -220,9 +284,9 @@ fn read(
         let item = selected
             .get(&document)
             .ok_or_else(|| CliError::Database("missing issued document".into()))?;
-        replay(item, &history, company, &cash, dates, &mut plan)?;
+        replay(item, &history, company, &tenders, dates, &mut plan)?;
     }
-    if !allow_incomplete && !plan.issues.is_empty() {
+    if !policy.allow_incomplete && !plan.issues.is_empty() {
         return Err(CliError::Validation(format!(
             "cash basis could not classify {} movement(s), beginning with transaction {}; pass --allow-incomplete to inspect them",
             plan.issues.len(),
@@ -251,7 +315,7 @@ fn replay(
     item: &IssuedDocument,
     history: &[AllocationHistory],
     company: &Company<'_>,
-    cash: &BTreeSet<String>,
+    tenders: &TenderAccounts,
     dates: DateRange,
     plan: &mut LinePlan,
 ) -> Result<(), CliError> {
@@ -280,7 +344,7 @@ fn replay(
     for (date, action, row) in timeline {
         let effect = match action {
             ReplayAction::Apply => {
-                let effect = apply_row(item, row, company, cash, &components, &mut open)?;
+                let effect = apply_row(item, row, company, tenders, &components, &mut open)?;
                 applied.insert(row.allocation.id.clone(), effect.clone());
                 effect
             }
@@ -357,7 +421,7 @@ fn apply_row(
     item: &IssuedDocument,
     row: &AllocationHistory,
     company: &Company<'_>,
-    cash: &BTreeSet<String>,
+    tenders: &TenderAccounts,
     components: &[CashComponent<'_>],
     open: &mut [NonNegativeMoney],
 ) -> Result<Applied, CliError> {
@@ -379,7 +443,7 @@ fn apply_row(
             *amount = result.recognized;
         }
     }
-    let cash_supported = !credit && has_cash_payment(item, row, company, cash)?;
+    let cash_supported = !credit && supports_payment(item, row, company, tenders)?;
     Ok(Applied::Journal {
         amounts,
         cash_supported,
@@ -449,11 +513,11 @@ fn apply_credit(
     Ok(true)
 }
 
-fn has_cash_payment(
+fn supports_payment(
     item: &IssuedDocument,
     row: &AllocationHistory,
     company: &Company<'_>,
-    cash: &BTreeSet<String>,
+    tenders: &TenderAccounts,
 ) -> Result<bool, CliError> {
     let (source, entries) = db::transactions::get_transaction(company, row.allocation.source_id)?;
     let direction = match item.kind {
@@ -462,7 +526,8 @@ fn has_cash_payment(
     };
     let supported = source.currency == item.currency
         && entries.iter().all(|entry| {
-            (entry.direction == direction && cash.contains(&entry.account_code))
+            (entry.direction == direction
+                && tenders.supports_document(item.kind, &entry.account_code))
                 || (entry.direction != direction
                     && entry.account_code == item.control_account.as_str())
         });
@@ -528,7 +593,7 @@ struct JournalLeg {
 }
 
 struct SourceRules<'a> {
-    cash: &'a BTreeSet<String>,
+    tenders: &'a TenderAccounts,
     excluded: &'a BTreeSet<TransactionId>,
     control_accounts: &'a BTreeSet<&'a str>,
     applied: &'a BTreeMap<TransactionId, i128>,
@@ -540,9 +605,9 @@ impl SourceRules<'_> {
         transaction: TransactionId,
         legs: &[JournalLeg],
     ) -> Result<bool, CliError> {
-        if !legs.iter().any(|leg| self.cash.contains(&leg.account))
+        if !legs.iter().any(|leg| self.tenders.contains(&leg.account))
             || !legs.iter().all(|leg| {
-                self.cash.contains(&leg.account)
+                self.tenders.contains(&leg.account)
                     || self.control_accounts.contains(leg.account.as_str())
             })
         {
@@ -550,7 +615,7 @@ impl SourceRules<'_> {
         }
         let cash_net = legs
             .iter()
-            .filter(|leg| self.cash.contains(&leg.account))
+            .filter(|leg| self.tenders.contains(&leg.account))
             .try_fold(0_i128, |net, leg| {
                 let amount = i128::from(leg.amount.minor_units());
                 let signed = if leg.direction == DebitOrCredit::Debit {
@@ -622,11 +687,7 @@ fn direct_activity(
             }
             continue;
         }
-        let direct = legs.iter().any(|leg| rules.cash.contains(&leg.account))
-            && legs
-                .iter()
-                .all(|leg| income(leg) || rules.cash.contains(&leg.account));
-        if direct {
+        if rules.tenders.supports_direct(&legs) {
             plan.events
                 .extend(legs.into_iter().filter(income).map(|leg| Recognized {
                     transaction,

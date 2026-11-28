@@ -2247,7 +2247,10 @@ bk --company acme --json report income-statement --basis cash \
 ```
 
 Cash basis recognizes simple classified-cash journals through their original
-revenue and expense lines. Invoice and bill payments are recognized on
+revenue and expense lines. Repeat `--card-account ACCOUNT` to designate card
+liabilities. Direct expenses and allocated bill payments on these accounts
+are recognized on the charge date. Paying the card balance is a transfer.
+Invoice and bill payments are otherwise recognized on
 the effective dates of their explicit allocations. A partial payment is
 split over remaining lines in exact minor units. Credits reduce the open
 amount eligible for recognition. Reversing an allocation removes the
@@ -2257,7 +2260,7 @@ statement and cash-flow statement keep their behavior.
 Unsupported mixed journals or settlements fail the cash-basis report by
 default. Use `--allow-incomplete` to inspect a partial result and see
 which transaction IDs need review. The initial cash-basis report covers
-classified cash and typed document settlements. Use the accrual report
+classified cash, designated card liabilities, and typed document settlements. Use the accrual report
 and source schedules for accounting policies outside those inputs.
 
 A forecast projects movement after a selected cash balance date:
@@ -2282,5 +2285,6 @@ or change documents. The report shows the lowest daily closing balance
 and the first date cash is projected to fall below zero.
 
 MCP uses the same report request. Set `basis: "cash"` for
-`kind: "income-statement"`, or use `kind: "cash-forecast"` with
+`kind: "income-statement"` and pass `card_accounts` as an array when used.
+For forecasts, use `kind: "cash-forecast"` with
 `as_of`, `through`, and optional `cadence` and `adjust`.

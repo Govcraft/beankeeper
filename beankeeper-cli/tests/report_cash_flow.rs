@@ -675,3 +675,47 @@ fn assert_invoice_forecast(forecast: &Value) -> Result<(), Box<dyn std::error::E
     );
     Ok(())
 }
+
+#[test]
+fn a_designated_card_uses_the_charge_date_and_omits_its_cash_settlement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, path) = empty_ledger();
+    ok(
+        &path,
+        &[
+            "account",
+            "create",
+            "2100",
+            "Business Card",
+            "--type",
+            "liability",
+        ],
+    );
+    post(&path, "2026-03-01", &["5000:40"], &["2100:40"]);
+    post(&path, "2026-04-01", &["2100:40"], &["1000:40"]);
+    let result: Value = serde_json::from_str(&ok(
+        &path,
+        &[
+            "--json",
+            "report",
+            "income-statement",
+            "--basis",
+            "cash",
+            "--card-account",
+            "2100",
+            "--from",
+            "2026-04-01",
+            "--to",
+            "2026-04-30",
+            "--compare",
+            "previous",
+        ],
+    ))?;
+    assert_eq!(result["data"]["current"]["net_income"], 0);
+    assert_eq!(result["data"]["prior"]["net_income"], -4000);
+    assert_eq!(
+        result["data"]["prior"]["recognition"][0]["date"],
+        "2026-03-01"
+    );
+    Ok(())
+}

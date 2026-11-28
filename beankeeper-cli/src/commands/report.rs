@@ -504,17 +504,15 @@ impl ReportReader<'_> {
             report_cash_basis::BasisMode::Accrual => {
                 self.financial_statement(MultiReportKind::IncomeStatement, scope, window, None)
             }
-            report_cash_basis::BasisMode::Cash { allow_incomplete } => {
-                report_cash_basis::read_windows(
-                    self.reader,
-                    self.company,
-                    scope.dates.try_into()?,
-                    self.currency(scope.currency)?,
-                    window,
-                    allow_incomplete,
-                )
-                .map(|r| ReportData::CashBasis(Box::new(r)))
-            }
+            report_cash_basis::BasisMode::Cash(policy) => report_cash_basis::read_windows(
+                self.reader,
+                self.company,
+                scope.dates.try_into()?,
+                self.currency(scope.currency)?,
+                window,
+                &policy,
+            )
+            .map(|r| ReportData::CashBasis(Box::new(r))),
         }
     }
 
