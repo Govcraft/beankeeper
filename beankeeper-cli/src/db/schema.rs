@@ -3255,6 +3255,7 @@ mod tests {
                 CASH_CLASS_SCHEMA_VERSION,
                 COUNTERPARTY_SCHEMA_VERSION,
                 BANK_FEED_SCHEMA_VERSION,
+                PAYROLL_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
