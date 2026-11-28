@@ -1,7 +1,7 @@
 use std::{fmt, iter};
 
 /// A collection that always has a first element.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NonEmpty<T> {
     first: T,
     rest: Vec<T>,

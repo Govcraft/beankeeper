@@ -22,6 +22,9 @@ mod legacy_schema;
 #[path = "support/mcp_host_owned.rs"]
 mod host_owned;
 
+#[path = "mcp_http/statement_reconciliation.rs"]
+mod statement_reconciliation;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const PASSPHRASE: &str = "http-test-passphrase";
 

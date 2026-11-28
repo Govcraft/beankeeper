@@ -403,6 +403,14 @@ MCP monetary results include the same `_display` companions as CLI JSON.
 `txn_list` and `audit_log` expose pagination in the tool result’s `_meta.pagination`
 while retaining their data arrays.
 
+The `txn_clear` and `reconcile_statement` tools accept direct
+`ledger/post` or `ledger/reconcile` access. Proposal-only access creates a
+pending request containing the exact clearing changes or matched statement
+evidence. Use `txn_proposals` to review it and an independent
+`ledger/approve` credential to decide it. A stale proposal must be submitted
+again with current entries and balances. Combined period close requires
+direct `ledger/reconcile` and `ledger/admin`.
+
 `txn_clear.batch` contains `{reference, amount?}` rows, where `amount` is an optional decimal
 string in major units (omit it to clear the remaining amount); the batch commits atomically. File and stdin inputs are
 not exposed to tools.
@@ -2110,7 +2118,7 @@ off; afterward all ledger commands require tokens and policy changes require
 | `ledger/propose` | txn propose, list/withdraw owned proposals |
 | `ledger/approve` | List all proposals, txn approve/reject |
 | `ledger/reverse` | Reverse postings and undo eligible audit receipts |
-| `ledger/reconcile` | txn clear/reconcile |
+| `ledger/reconcile` | statement clearing and reconciliation in direct mode |
 | `ledger/budget` | budget set/delete |
 | `ledger/admin` | company/account create/delete, key init, agent issue/revoke, agent limit set/clear, policy set, backup/restore |
 

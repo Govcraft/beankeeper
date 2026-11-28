@@ -5,11 +5,14 @@ use std::{borrow::Borrow, collections::BTreeMap};
 use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, Row, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
-    Actor, AuditAction, AuditChange, AuditEntity, AuditLinks, grant::Granted, record_with_links,
-    resolve_period_change, savepoint::AuditedTx, snapshot, store_period_state, sync_entry_status,
+    Actor, AuditAction, AuditChange, AuditEntity, AuditLinks,
+    grant::{self, Granted},
+    record_with_links, resolve_period_change,
+    savepoint::AuditedTx,
+    snapshot, store_period_state, sync_entry_status,
 };
 use crate::commands::{report_currency::resolve_report_currency, txn::MajorAmount};
 use crate::db::{
@@ -25,13 +28,15 @@ use crate::db::{
     },
 };
 use crate::error::CliError;
-use crate::identity::{Admin, Reconcile};
+use crate::identity::Admin;
 
 /// Inputs already parsed by the CLI, MCP or an embedding host.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatementInput {
     pub account: AccountCode,
+    #[serde(with = "crate::request::text")]
     pub month: StatementMonth,
+    #[serde(with = "crate::request::text")]
     pub ending: MajorAmount,
     pub currency: Option<Currency>,
     pub statement_ref: Option<StatementRef>,
@@ -299,16 +304,92 @@ impl<'a> StatementBalanceProof<'a> {
     }
 }
 
-pub(crate) fn reconcile(
-    grant: Granted<'_, Reconcile>,
+pub(super) fn close(
+    grant: Granted<'_, grant::StatementClose>,
     company: &CompanySlug,
     input: StatementInput,
 ) -> Result<StatementReceipt, CliError> {
-    let close = input.close;
-    grant.mutate("sp_statement_reconcile", |tx, actor| {
+    grant.mutate("sp_statement_close", |tx, actor| {
         let scope = Company::bind(tx.read(), company.clone())?;
-        StatementBalanceProof::prove(tx, scope, input)?.complete(actor, close)
+        StatementBalanceProof::prove(tx, scope, input)?.complete(actor, StatementClose::ClosePeriod)
     })
+}
+
+pub(super) fn reconcile(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    input: StatementInput,
+    expected: Option<&StatementReview>,
+) -> Result<StatementReceipt, CliError> {
+    let scope = Company::bind(tx.read(), company.clone())?;
+    let proof = StatementBalanceProof::prove(tx, scope, input)?;
+    if expected.is_some_and(|review| *review != StatementReview::from(&proof.evidence)) {
+        return Err(super::corrections::reconciliation::stale());
+    }
+    proof.complete(actor, StatementClose::LeaveOpen)
+}
+
+pub(super) fn preview(
+    tx: &AuditedTx<'_>,
+    company: &CompanySlug,
+    input: StatementInput,
+) -> Result<StatementReview, CliError> {
+    let scope = Company::bind(tx.read(), company.clone())?;
+    let proof = StatementBalanceProof::prove(tx, scope, input)?;
+    Ok(StatementReview::from(&proof.evidence))
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(in crate::db::audit) struct StatementReview {
+    account: AccountCode,
+    currency: Currency,
+    period_start: NaiveDate,
+    period_end: NaiveDate,
+    statement_ref: Option<StatementRef>,
+    opening_balance_minor: i64,
+    statement_ending_balance_minor: i64,
+    cleared_net_minor: i64,
+    prior_statement: Option<ReceiptId>,
+    matched: Vec<StatementReviewClearing>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct StatementReviewClearing {
+    clearing_id: ClearingId,
+    entry_id: EntryId,
+    signed_amount_minor: i64,
+    cleared_on: NaiveDate,
+    posted_on: NaiveDate,
+    previously_reconciled_on: Option<NaiveDate>,
+}
+
+impl From<&StatementEvidence> for StatementReview {
+    fn from(evidence: &StatementEvidence) -> Self {
+        Self {
+            account: evidence.account.clone(),
+            currency: evidence.currency,
+            period_start: evidence.period_start,
+            period_end: evidence.period_end,
+            statement_ref: evidence.statement_ref.clone(),
+            opening_balance_minor: evidence.opening_balance.minor_units(),
+            statement_ending_balance_minor: evidence.statement_ending_balance.minor_units(),
+            cleared_net_minor: evidence.cleared_net.minor_units(),
+            prior_statement: evidence.prior_statement,
+            matched: evidence
+                .matched
+                .iter()
+                .map(|member| StatementReviewClearing {
+                    clearing_id: member.id,
+                    entry_id: member.entry_id,
+                    signed_amount_minor: member.signed_amount.minor_units(),
+                    cleared_on: member.cleared_on,
+                    posted_on: member.posted_on,
+                    previously_reconciled_on: member.previously_reconciled_on,
+                })
+                .collect(),
+        }
+    }
 }
 
 fn timeline(

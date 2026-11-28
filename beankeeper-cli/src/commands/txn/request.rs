@@ -13,7 +13,10 @@ use crate::cli::{
     TxnSettleHoldArgs,
 };
 use crate::db::audit::{
-    corrections::{self, RecategorizeSubmission, Reversal, ReverseSubmission},
+    corrections::{
+        self, RecategorizeSubmission, Reversal, ReverseSubmission, bookkeeping::Submission,
+        reconciliation,
+    },
     recategorize::{self, Recategorization},
     txn_links::{self, LinkSpec},
 };
@@ -187,7 +190,12 @@ impl TxnRequest {
             Self::Meta(company, request) => {
                 TxnData::Metadata(request.execute(db, &company, actor)?)
             }
-            Self::Clear(company, request) => TxnData::Clear(request.execute(db, &company, actor)?),
+            Self::Clear(company, request) => {
+                match reconciliation::clear(db, actor, &company, request)? {
+                    Submission::Applied(result) => TxnData::Clear(result),
+                    Submission::Pending(proposal) => TxnData::CorrectionProposed(proposal),
+                }
+            }
             Self::Reconcile => TxnData::Reconciled(transactions::find_orphaned_correlations(
                 db.read(),
                 AllCompanies,

@@ -9,7 +9,8 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 52;
+const LATEST_VERSION: i64 = 53;
+const STATEMENT_CORRECTIONS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(53);
 const BOOKKEEPING_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(52);
 pub(super) const PROJECT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(48);
 pub(super) const COLLECTION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(51);
@@ -431,6 +432,15 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
                 [BOOKKEEPING_PROPOSALS_SCHEMA_VERSION],
+            )?;
+            Ok(())
+        })?;
+    }
+    if version < STATEMENT_CORRECTIONS_SCHEMA_VERSION {
+        migrate_with_writer(conn, STATEMENT_CORRECTIONS_SCHEMA_VERSION, |conn| {
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [STATEMENT_CORRECTIONS_SCHEMA_VERSION],
             )?;
             Ok(())
         })?;
@@ -3611,6 +3621,7 @@ mod tests {
                 DISBURSEMENT_SCHEMA_VERSION,
                 COLLECTION_SCHEMA_VERSION,
                 BOOKKEEPING_PROPOSALS_SCHEMA_VERSION,
+                STATEMENT_CORRECTIONS_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
@@ -4265,11 +4276,11 @@ mod tests {
         use crate::db::{
             Actor, Db, SnapshotOverwrite, VerifiedSnapshot,
             audit::restore::RestoreRequest,
-            audit::statement::{StatementInput, reconcile},
+            audit::{corrections::reconciliation, statement::StatementInput},
             statement::{StatementClose, StatementSelection},
             verification::VerifiedLedger,
         };
-        use crate::identity::{self, Reconcile};
+        use crate::identity;
         use std::time::Duration;
 
         let directory = tempfile::tempdir()?;
@@ -4288,21 +4299,20 @@ mod tests {
         let old = Db::from_keyed_connection(conn, None, FX_SCHEMA_VERSION);
         let owner = Actor::new("owner".parse()?);
         let company = "legacy".parse()?;
-        Granted::<Reconcile>::with_db(&old, &owner, |grant| {
-            reconcile(
-                grant,
-                &company,
-                StatementInput {
-                    account: "1000".parse().map_err(beankeeper::error::BeanError::from)?,
-                    month: "2026-01-31".parse()?,
-                    ending: 0_u32.into(),
-                    currency: Some(beankeeper::types::Currency::USD),
-                    statement_ref: None,
-                    selection: StatementSelection::default(),
-                    close: StatementClose::default(),
-                },
-            )
-        })?;
+        reconciliation::complete(
+            &old,
+            &owner,
+            &company,
+            StatementInput {
+                account: "1000".parse().map_err(beankeeper::error::BeanError::from)?,
+                month: "2026-01-31".parse()?,
+                ending: 0_u32.into(),
+                currency: Some(beankeeper::types::Currency::USD),
+                statement_ref: None,
+                selection: StatementSelection::default(),
+                close: StatementClose::default(),
+            },
+        )?;
         Granted::<Admin>::with_db(&old, &owner, identity::init_root)?;
         let credential = Granted::<Admin>::with_db(&old, &owner, |grant| {
             identity::issue(

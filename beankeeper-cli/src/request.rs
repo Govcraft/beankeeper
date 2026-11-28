@@ -7,6 +7,7 @@ mod calendar_date;
 mod collection;
 mod currency;
 mod local_date;
+pub(crate) mod text;
 
 pub use calendar_date::{CalendarDateArg, CalendarDateError};
 pub use collection::{EmptyCollection, NonEmpty};

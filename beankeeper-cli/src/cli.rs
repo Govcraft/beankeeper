@@ -3064,7 +3064,10 @@ fn direction_parser() -> impl clap::builder::TypedValueParser<Value = DebitOrCre
 }
 
 /// Clearance status argument for CLI.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ClearanceArg {
     Uncleared,
     #[default]

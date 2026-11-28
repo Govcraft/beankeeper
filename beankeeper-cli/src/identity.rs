@@ -18,6 +18,7 @@ use crate::capability::Capability;
 use crate::db::Actor;
 use crate::db::audit::grant::{
     self, AgentUndo, Bookkeeping, Chart, CorrectionPropose, OnboardingPost, OnboardingPropose,
+    StatementReconcile,
 };
 pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
@@ -97,6 +98,10 @@ impl VerifiedAgent {
                 WriteMode::Direct => grant::permits::<Bookkeeping>(self),
                 WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
             },
+            Permission::StatementReconciliation => match self.write_mode() {
+                WriteMode::Direct => grant::permits::<StatementReconcile>(self),
+                WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
+            },
             Permission::ReadOrReconcile => {
                 Ok(self.allows(Capability::Read)? || self.allows(Capability::Reconcile)?)
             }
@@ -142,6 +147,7 @@ impl VerifiedAgent {
                     | Permission::OwnerUndo
                     | Permission::ExplicitAdmin
                     | Permission::Bookkeeping
+                    | Permission::StatementReconciliation
                     | Permission::AgentUndo
                     | Permission::Reversal
             )
@@ -379,7 +385,9 @@ fn require_operation_grant(
 ) -> Result<(), CliError> {
     let permission = operation.permission();
     let required = match permission {
-        Permission::Posting | Permission::Bookkeeping => identity.write_mode().posting_capability(),
+        Permission::Posting | Permission::Bookkeeping | Permission::StatementReconciliation => {
+            identity.write_mode().posting_capability()
+        }
         Permission::AgentUndo | Permission::Reversal
             if identity.write_mode() == WriteMode::ProposeOnly =>
         {
@@ -395,6 +403,7 @@ fn require_operation_grant(
                 | Permission::OwnerUndo
                 | Permission::ExplicitAdmin
                 | Permission::Bookkeeping
+                | Permission::StatementReconciliation
                 | Permission::AgentUndo
                 | Permission::Reversal
         )
@@ -411,6 +420,9 @@ fn require_operation_grant(
     let alternative = match permission {
         Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
         Permission::ReadOrReconcile => Some(Capability::Reconcile),
+        Permission::StatementReconciliation if identity.write_mode() == WriteMode::Direct => {
+            Some(Capability::Reconcile)
+        }
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
         Permission::Chart | Permission::AgentUndo | Permission::Bookkeeping
             if identity.write_mode() == WriteMode::Direct =>
