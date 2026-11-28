@@ -3453,6 +3453,7 @@ mod tests {
                 FIXED_ASSETS_SCHEMA_VERSION,
                 VAT_SCHEMA_VERSION,
                 EXPENSE_CLAIMS_SCHEMA_VERSION,
+                CONTRACTOR_TAX_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
