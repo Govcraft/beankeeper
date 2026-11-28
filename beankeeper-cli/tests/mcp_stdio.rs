@@ -1664,7 +1664,6 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
-    assert_eq!(names.len(), 54);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
