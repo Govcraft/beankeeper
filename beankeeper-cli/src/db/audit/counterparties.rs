@@ -21,13 +21,7 @@ use crate::{
     identity::{Admin, Granted},
 };
 
-pub(crate) enum PartyMutation {
-    Edit(PartyEdit),
-    Associate(CounterpartyId, TransactionId),
-}
-
 pub(crate) enum PartyEdit {
-    Create(ContactDetails),
     Amend(CounterpartyId, ContactPatch),
     Archive(CounterpartyId),
 }
@@ -50,26 +44,20 @@ pub(crate) fn mutate(
     db: &Db,
     actor: &Actor,
     slug: &CompanySlug,
-    mutation: PartyMutation,
+    edit: PartyEdit,
 ) -> Result<PartyMutationResult, CliError> {
     Granted::<Admin>::with_db(db, actor, |grant| {
         grant.mutate("sp_counterparty", |tx, actor| {
             let company = Company::bind(tx.read(), slug.clone())?;
-            let edit = match mutation {
-                PartyMutation::Edit(edit) => edit,
-                PartyMutation::Associate(id, transaction) => {
-                    return associate(tx.connection(), actor, &company, id, transaction);
-                }
-            };
             let (before, party, action) = prepare(&company, edit)?;
-            let receipt_id = if before.as_ref() == Some(&party) {
+            let receipt_id = if before == party {
                 None
             } else {
                 Some(save(
                     tx.connection(),
                     actor,
                     slug,
-                    before.as_ref(),
+                    Some(&before),
                     &party,
                     action,
                 )?)
@@ -79,30 +67,46 @@ pub(crate) fn mutate(
     })
 }
 
+pub(super) fn create(
+    tx: &super::savepoint::AuditedTx<'_>,
+    actor: &Actor,
+    company: &Company<'_>,
+    details: ContactDetails,
+) -> Result<PartyMutationResult, CliError> {
+    let party = Counterparty {
+        id: CounterpartyId::generate(),
+        details,
+        archived: false,
+    };
+    let receipt = save(
+        tx.connection(),
+        actor,
+        company.slug(),
+        None,
+        &party,
+        AuditAction::CounterpartyCreate,
+    )?;
+    Ok(PartyMutationResult::Record {
+        party,
+        receipt_id: Some(receipt),
+    })
+}
+
 fn prepare(
     company: &Company<'_>,
     edit: PartyEdit,
-) -> Result<(Option<Counterparty>, Counterparty, AuditAction), CliError> {
+) -> Result<(Counterparty, Counterparty, AuditAction), CliError> {
     match edit {
-        PartyEdit::Create(details) => Ok((
-            None,
-            Counterparty {
-                id: CounterpartyId::generate(),
-                details,
-                archived: false,
-            },
-            AuditAction::CounterpartyCreate,
-        )),
         PartyEdit::Amend(id, patch) => {
             let before = find_counterparty(company, &id)?;
             let after = apply_contact_change(before.clone(), patch)?;
-            Ok((Some(before), after, AuditAction::CounterpartyAmend))
+            Ok((before, after, AuditAction::CounterpartyAmend))
         }
         PartyEdit::Archive(id) => {
             let before = find_counterparty(company, &id)?;
             let mut after = before.clone();
             after.archived = true;
-            Ok((Some(before), after, AuditAction::CounterpartyArchive))
+            Ok((before, after, AuditAction::CounterpartyArchive))
         }
     }
 }

@@ -1711,7 +1711,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 68);
+    assert_eq!(names.len(), 69);
     assert_collection_read_only_tools(&names);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
@@ -1760,7 +1760,6 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         "txn_meta_set",
         "txn_meta_unset",
         "txn_clear",
-        "txn_reconcile",
         "budget_set",
         "budget_delete",
         "ledger_setup_begin",
@@ -1784,7 +1783,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     ] {
         assert!(!names.contains(name));
     }
-    assert!(!names.contains("txn_reconcile"));
+    assert!(names.contains("txn_reconcile"));
+    client.success("txn_reconcile", &json!({}))?;
     let response = client.call("txn_post", &posting("read-only"))?;
     assert!(response.get("error").is_some() || response["result"]["isError"] == true);
     for (name, input) in [
@@ -3420,7 +3420,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 68);
+    assert_eq!(names.len(), 69);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3532,7 +3532,6 @@ fn live_policy_change_rechecks_capabilities_and_missing_session_tokens() -> Test
             json!({"company":"acme", "id":"proposal_00000000000000000000000000"}),
             "ledger/propose",
         ),
-        ("txn_reconcile", json!({}), "ledger/reconcile"),
         (
             "company_create",
             json!({"slug":"empty", "name":"Empty"}),
@@ -3609,7 +3608,8 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     assert!(names.contains("txn_post"));
     assert!(names.contains("txn_reverse"));
     assert!(names.contains("audit_undo"));
-    for forbidden in ["txn_reconcile", "txn_clear", "budget_set", "account_create"] {
+    assert!(names.contains("txn_reconcile"));
+    for forbidden in ["txn_clear", "budget_set", "account_create"] {
         assert!(!names.contains(forbidden));
     }
     let posted = writer.success("txn_post", &posting("enforced"))?;
@@ -3618,7 +3618,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 68);
+    assert_eq!(names.len(), 69);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

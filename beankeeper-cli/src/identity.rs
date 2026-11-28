@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use crate::capability::Capability;
 use crate::db::Actor;
 use crate::db::audit::grant::{
-    self, AgentUndo, Chart, CorrectionPropose, OnboardingPost, OnboardingPropose,
+    self, AgentUndo, Bookkeeping, Chart, CorrectionPropose, OnboardingPost, OnboardingPropose,
 };
 pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
@@ -93,6 +93,10 @@ impl VerifiedAgent {
     pub(crate) fn allows_known_operation(&self, operation: Operation) -> Result<bool, CliError> {
         match operation.permission() {
             Permission::Posting => self.allows(self.write_mode().posting_capability()),
+            Permission::Bookkeeping => match self.write_mode() {
+                WriteMode::Direct => grant::permits::<Bookkeeping>(self),
+                WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
+            },
             Permission::ProposalList => Ok(self.allows(Capability::Read)?
                 || self.allows(Capability::Propose)?
                 || self.allows(Capability::Approve)?
@@ -134,6 +138,7 @@ impl VerifiedAgent {
                 Permission::SetupOwner
                     | Permission::OwnerUndo
                     | Permission::ExplicitAdmin
+                    | Permission::Bookkeeping
                     | Permission::AgentUndo
                     | Permission::Reversal
             )
@@ -371,7 +376,7 @@ fn require_operation_grant(
 ) -> Result<(), CliError> {
     let permission = operation.permission();
     let required = match permission {
-        Permission::Posting => identity.write_mode().posting_capability(),
+        Permission::Posting | Permission::Bookkeeping => identity.write_mode().posting_capability(),
         Permission::AgentUndo | Permission::Reversal
             if identity.write_mode() == WriteMode::ProposeOnly =>
         {
@@ -386,6 +391,7 @@ fn require_operation_grant(
             Permission::SetupOwner
                 | Permission::OwnerUndo
                 | Permission::ExplicitAdmin
+                | Permission::Bookkeeping
                 | Permission::AgentUndo
                 | Permission::Reversal
         )
@@ -402,7 +408,9 @@ fn require_operation_grant(
     let alternative = match permission {
         Permission::ProposalList | Permission::ProposalReject => Some(Capability::Approve),
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
-        Permission::Chart | Permission::AgentUndo if identity.write_mode() == WriteMode::Direct => {
+        Permission::Chart | Permission::AgentUndo | Permission::Bookkeeping
+            if identity.write_mode() == WriteMode::Direct =>
+        {
             Some(Capability::Admin)
         }
         _ => None,

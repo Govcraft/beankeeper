@@ -20,7 +20,7 @@ use crate::{
 
 use super::{ProjectChange, encode, record};
 
-pub(super) fn set_splits(
+pub(in crate::db::audit) fn set_splits(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,

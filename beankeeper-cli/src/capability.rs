@@ -108,7 +108,7 @@ mod tests {
             ("txn_post", Capability::Post),
             ("txn_meta_set", Capability::Post),
             ("txn.reverse", Capability::Reverse),
-            ("txn_reconcile", Capability::Reconcile),
+            ("txn_reconcile", Capability::Read),
             ("account_create", Capability::Admin),
             ("backup", Capability::Admin),
             ("restore", Capability::Admin),

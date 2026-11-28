@@ -362,7 +362,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `inform_preference_show`, `inform_preference_set` | `company`. Set also takes a `preference` |
 | `budget_list`, `budget_set`, `budget_delete` | `company` and CLI budget options; deletion is confirmed by the call |
 | `txn_clear` | `company`, `transaction_id` + `entry`, or `reference` + `account`, or `batch` + `account`; optional `amount`, `date`, `statement`, `status` |
-| `txn_reconcile` | No arguments; checks orphaned intercompany links without changing data; requires `ledger/reconcile` under enforcement and is omitted by `--read-only` |
+| `txn_reconcile` | Check for orphaned intercompany links with `ledger/read`. Takes no arguments. |
 | `verify` | No arguments; verifies ledger integrity |
 | `security_create` | `company`, `symbol`, `name`, optional `currency` (default USD) |
 | `security_list` | `company`; list registered securities |
@@ -603,7 +603,7 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_import`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
 `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
-`txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
+`security_create`, `security_price`, `investment_buy`,
 `investment_sell`, `budget_set`, `budget_delete`, `period_close`, `period_reopen`,
 `ledger_setup_begin`, `ledger_setup_finish`, `ledger_setup_revoke`,
 `ledger_setup_book_create`, `ledger_setup_book_initialize`, `ledger_setup_book_update`, `ledger_setup_chart_apply`,
@@ -618,9 +618,8 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `disbursement_reject`, `disbursement_dispatch`, and `disbursement_reconcile` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
-Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
-excludes it from read-only discovery and calls. Capability enforcement may
-further restrict discovery: stdio filters at startup and HTTP per request.
+`txn_reconcile` also remains available in read-only mode. Stdio filters
+discovery at startup, and HTTP filters per request.
 `audit_log` accepts `actor` for the exact recorded label and `agent` for the
 verified agent URI. Supply both to match both fields.
 
@@ -2128,8 +2127,7 @@ not overwritten. `loan schedule` without an existing database remains a
 standalone calculation; otherwise it follows the read policy.
 
 Stdio MCP filters tools by token grants at startup; HTTP filters discovery by
-the current request's token and policy. Both recheck policy and grants on every call. `--read-only` removes all writes, including `txn_reconcile`, even
-with broader grants. Restart stdio MCP to refresh discovery after a policy change.
+the current request's token and policy. Both recheck policy and grants on every call. `--read-only` removes all writes even with broader grants. Restart stdio MCP to refresh discovery after a policy change.
 Back up before the schema v18 migration: v1/v2 audit hashes are preserved, but
 new v3 audit rows block older binaries from appending, even with enforcement off.
 See [identity setup and limits](../../agent-identity.md).

@@ -6,6 +6,11 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Fixed
+
+- Let agents create and link customers, vendors, and projects using their usual posting access. In proposal-only mode, route those changes for approval before applying them.
+- Include the intercompany link check in read-only MCP connections.
+
 ## [0.41.0] - 2026-11-27
 
 This release advances the ledger schema from v39 to v51. Make and verify a

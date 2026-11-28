@@ -216,6 +216,7 @@ fn read_grant_allows_reads_and_denies_all_mutations_without_side_effects() -> Te
         vec!["report", "1099"],
         vec!["report", "1099-nec"],
         vec!["verify"],
+        vec!["txn", "reconcile"],
         vec!["audit", "log"],
         vec!["agent", "list"],
         vec!["policy", "show"],
@@ -240,7 +241,6 @@ fn read_grant_allows_reads_and_denies_all_mutations_without_side_effects() -> Te
             vec!["txn", "clear", "1", "--entry", "1"],
             "ledger/reconcile",
         ),
-        (vec!["txn", "reconcile"], "ledger/reconcile"),
         (
             vec!["budget", "set", "5000", "--year", "2026", "--annual", "100"],
             "ledger/budget",
@@ -275,7 +275,7 @@ fn sibling_grants_allow_only_their_own_operations_and_admin_can_disable_policy()
     let post = ledger.issue(&["ledger/post"])?;
     let reverse = ledger.issue(&["ledger/reverse"])?;
     let budget = ledger.issue(&["ledger/budget"])?;
-    let reconcile = ledger.issue(&["ledger/reconcile"])?;
+    let reconcile = ledger.issue(&["ledger/read", "ledger/reconcile"])?;
     let admin = ledger.issue(&["ledger/admin"])?;
     ledger.enable()?;
     ledger.run(&posting(), Some(&post))?;
@@ -294,7 +294,10 @@ fn sibling_grants_allow_only_their_own_operations_and_admin_can_disable_policy()
     for (args, capability) in [
         (posting().to_vec(), "ledger/post"),
         (vec!["txn", "reverse", "1"], "ledger/reverse"),
-        (vec!["txn", "reconcile"], "ledger/reconcile"),
+        (
+            vec!["txn", "clear", "1", "--entry", "1"],
+            "ledger/reconcile",
+        ),
         (
             vec!["budget", "set", "5000", "--year", "2026", "--annual", "100"],
             "ledger/budget",

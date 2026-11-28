@@ -13,10 +13,10 @@ use crate::{
         Db,
         companies::{Company, CompanySlug},
         counterparties::{CounterpartyRole, find_counterparty},
-        ids::{EntryId, ReceiptId},
+        ids::ReceiptId,
         projects::{
             EntryDistribution, Project, ProjectBudgetInput, ProjectError, ProjectId, ProjectTerms,
-            SplitInput, TimeEntry, TimeEntryId, WorkInput, find_project, find_time,
+            TimeEntry, TimeEntryId, WorkInput, find_project, find_time,
         },
     },
     error::CliError,
@@ -36,11 +36,9 @@ pub(super) use distribution::{guard_project_entry, mirror_reversal};
 pub(crate) use verification::verify;
 
 pub(crate) enum ProjectMutation {
-    Create(ProjectTerms),
     Archive(ProjectId),
     Record(WorkInput),
     Approve(TimeEntryId, NaiveDate),
-    Split(EntryId, NaiveDate, Vec<SplitInput>),
     Budget(ProjectBudgetInput),
 }
 
@@ -72,11 +70,6 @@ pub(crate) fn mutate(
     mutation: ProjectMutation,
 ) -> Result<ProjectChange, CliError> {
     match mutation {
-        ProjectMutation::Create(terms) => {
-            with_scope::<Admin>(db, actor, slug, |tx, actor, company| {
-                save_project(tx, actor, company, ProjectEdit::New(terms))
-            })
-        }
         ProjectMutation::Archive(id) => {
             with_scope::<Admin>(db, actor, slug, |tx, actor, company| {
                 save_project(tx, actor, company, ProjectEdit::Archive(&id))
@@ -92,11 +85,6 @@ pub(crate) fn mutate(
                 save_work(tx, actor, company, WorkEdit::Approve(&id, date))
             })
         }
-        ProjectMutation::Split(id, date, splits) => {
-            with_scope::<Admin>(db, actor, slug, |tx, actor, company| {
-                distribution::set_splits(tx, actor, company, id, date, splits)
-            })
-        }
         ProjectMutation::Budget(input) => {
             with_scope::<Budget>(db, actor, slug, |tx, actor, company| {
                 set_budget(tx, actor, company, input)
@@ -104,6 +92,17 @@ pub(crate) fn mutate(
         }
     }
 }
+
+pub(super) fn create(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &Company<'_>,
+    terms: ProjectTerms,
+) -> Result<ProjectChange, CliError> {
+    save_project(tx, actor, company, ProjectEdit::New(terms))
+}
+
+pub(super) use distribution::set_splits;
 
 fn with_scope<C: GrantKind>(
     db: &Db,

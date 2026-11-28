@@ -360,7 +360,7 @@ as `policy_change`; repeated state is a no-op. Missing tokens are `UNAUTHORIZED`
 | Grant | Operations |
 | --- | --- |
 | `ledger/read` | List/show/report/export/verify/audit, agent list, policy show, loan schedule |
-| `ledger/post` | txn post/import/attach/meta set/unset, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule mutations |
+| `ledger/post` | txn post/import/attach/meta set/unset, counterparty create/associate, project create/split, investment buy/sell, security create/price, loan pay, schedule create/run/cancel, rule mutations |
 | `ledger/propose` | Propose, list/withdraw owned pending requests |
 | `ledger/approve` | List all requests, approve, reject |
 | `ledger/reverse` | Reverse postings and undo eligible audit receipts |
@@ -386,7 +386,7 @@ arguments. It is reverified on every tool call, so expiry/revocation takes effec
 without a restart. Enforcement filters discovery by startup grants; restart stdio
 after policy changes to refresh the tool list. HTTP accepts per-request bearer
 headers and filters discovery by current credentials and policy. Both transports
-check grants/policy on every call. `--read-only` hides all writes including `txn_reconcile` regardless of
+check grants/policy on every call. `--read-only` hides all writes regardless of
 grants. Keep token values out of tool arguments. See the
 [key and agent command reference](references/commands.md#agent-identity).
 
@@ -958,6 +958,7 @@ when translating the owner's answer to a setting.
 
 | For this task | Start here |
 | --- | --- |
+| Assign imported income and expenses to a project | Find or create the customer and vendors using `counterparty_list` and `counterparty_create`. Use `counterparty_associate` to link their journals. Create the project and use `txn_show` to find the posted income and expense entry IDs. Apply exact amounts in minor units with `project_split`, then check `project_report`. In proposal-only mode, wait for approval before using the new record or allocation. |
 | Invoice a customer or record a vendor bill | Identify the counterparty using `counterparty_list`. Draft and issue with `document_draft` and `document_issue`, then use `document_allocate` for a posted payment and `document_aging` for due-date balances. [Invoices and bills](references/commands.md#invoices-and-bills) |
 | Reconcile new bank activity | Use `bank_feed_list` and `bank_feed_review` to inspect staged revisions. Link an existing journal with `bank_feed_link`, or post or propose the reviewed entry with `bank_feed_post`. Connection administration uses the host's Plaid credentials and signed admin authority. [Bank feeds](https://github.com/Govcraft/beankeeper/blob/main/docs/bank-feeds.md) |
 | Collect payment or pay a vendor | Use `collection_create_link` for an issued invoice and verified Stripe evidence to reconcile receipts, payouts and refunds. For vendor payments, preview and draft the instruction, obtain signed approval, then use a separate dispatch grant. Inspect uncertain provider results by lookup using the original instruction. [Stripe collection](https://github.com/Govcraft/beankeeper/blob/main/docs/payment-collection.md) · [Vendor payments](https://github.com/Govcraft/beankeeper/blob/main/docs/disbursements.md) · [Wise bridge](https://github.com/Govcraft/beankeeper/blob/main/docs/wise-bridge.md) |
