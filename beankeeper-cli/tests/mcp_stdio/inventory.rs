@@ -90,6 +90,10 @@ fn inventory_tools_share_cli_storage_and_apply_the_read_only_ceiling() -> TestRe
         cli["data"]
     );
     assert_eq!(cli["data"]["positions"][0]["value_minor"], 67);
+    assert_read_only_inventory_catalog(&mut reader)
+}
+
+fn assert_read_only_inventory_catalog(reader: &mut Client) -> TestResult {
     let response = reader.request("tools/list", &json!({}))?;
     let advertised: BTreeSet<_> = response["result"]["tools"]
         .as_array()
