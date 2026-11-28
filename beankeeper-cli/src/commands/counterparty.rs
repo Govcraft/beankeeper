@@ -7,7 +7,7 @@ use crate::{
     cli::{Cli, OutputFormat, resolve_format},
     db::{
         Actor, Db,
-        audit::counterparties::{self, PartyMutation, PartyMutationResult},
+        audit::counterparties::{self, PartyEdit, PartyMutation, PartyMutationResult},
         companies::{Company, CompanySlug},
         counterparties::{
             ContactDetails, ContactEmail, ContactField, ContactPatch, Counterparty, CounterpartyId,
@@ -243,18 +243,27 @@ impl CounterpartyRequest {
                 let company = Company::bind(db.read(), self.company)?;
                 suggest_counterparties(&company, label, page).map(PartyOutput::Suggestions)
             }
-            CounterpartyAction::Create(details) => {
-                counterparties::mutate(db, actor, &self.company, PartyMutation::Create(details))
-                    .map(PartyOutput::Change)
-            }
-            CounterpartyAction::Amend(id, patch) => {
-                counterparties::mutate(db, actor, &self.company, PartyMutation::Amend(id, patch))
-                    .map(PartyOutput::Change)
-            }
-            CounterpartyAction::Archive(id) => {
-                counterparties::mutate(db, actor, &self.company, PartyMutation::Archive(id))
-                    .map(PartyOutput::Change)
-            }
+            CounterpartyAction::Create(details) => counterparties::mutate(
+                db,
+                actor,
+                &self.company,
+                PartyMutation::Edit(PartyEdit::Create(details)),
+            )
+            .map(PartyOutput::Change),
+            CounterpartyAction::Amend(id, patch) => counterparties::mutate(
+                db,
+                actor,
+                &self.company,
+                PartyMutation::Edit(PartyEdit::Amend(id, patch)),
+            )
+            .map(PartyOutput::Change),
+            CounterpartyAction::Archive(id) => counterparties::mutate(
+                db,
+                actor,
+                &self.company,
+                PartyMutation::Edit(PartyEdit::Archive(id)),
+            )
+            .map(PartyOutput::Change),
             CounterpartyAction::Associate(id, transaction) => counterparties::mutate(
                 db,
                 actor,

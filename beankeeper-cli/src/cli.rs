@@ -2796,8 +2796,8 @@ pub struct AgingCommandArgs {
     pub group_by_metadata: Option<String>,
 
     /// Prefer linked counterparty records. Fall back to the legacy metadata key.
-    #[arg(long)]
-    pub group_by_counterparty: bool,
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub group_by_counterparty: Option<bool>,
 
     /// Currency code. Defaults to the company's single transaction currency.
     #[arg(long)]

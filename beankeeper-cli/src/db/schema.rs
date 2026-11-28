@@ -2258,22 +2258,28 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
         let _ = write!(action, ",'{}'", AuditAction::AccountClassify);
     }
     if table >= AuditTable::Counterparties {
-        let _ = write!(
-            entity,
-            ",'{}','{}'",
-            AuditEntity::Counterparty,
-            AuditEntity::TransactionCounterparty
-        );
-        let _ = write!(
-            action,
-            ",'{}','{}','{}','{}'",
-            AuditAction::CounterpartyCreate,
-            AuditAction::CounterpartyAmend,
-            AuditAction::CounterpartyArchive,
-            AuditAction::CounterpartyAssociate
-        );
+        append_counterparty_audit_extensions(&mut entity, &mut action);
     }
     (entity, action)
+}
+
+fn append_counterparty_audit_extensions(entity: &mut String, action: &mut String) {
+    use std::fmt::Write as _;
+
+    let _ = write!(
+        entity,
+        ",'{}','{}'",
+        AuditEntity::Counterparty,
+        AuditEntity::TransactionCounterparty
+    );
+    let _ = write!(
+        action,
+        ",'{}','{}','{}','{}'",
+        AuditAction::CounterpartyCreate,
+        AuditAction::CounterpartyAmend,
+        AuditAction::CounterpartyArchive,
+        AuditAction::CounterpartyAssociate
+    );
 }
 
 fn recategorization_action(table: AuditTable) -> &'static str {
@@ -3954,8 +3960,24 @@ mod tests {
         };
         let before = history(&conn)?;
         assert_eq!(before.len(), 1);
-        ensure_schema(&conn)?;
+        migrate_with_writer(&conn, CASH_CLASS_SCHEMA_VERSION, apply_cash_class_schema)?;
+        assert_eq!(
+            stored_schema(ReadConn::physical(&conn))?,
+            CASH_CLASS_SCHEMA_VERSION
+        );
         assert_eq!(history(&conn)?, before);
+
+        ensure_schema(&conn)?;
+        assert_eq!(stored_schema(ReadConn::physical(&conn))?, CURRENT_VERSION);
+        assert_eq!(history(&conn)?, before);
+        assert!(
+            conn.execute(
+                "UPDATE accounts SET cash_class = 'non_cash' WHERE code = '1000'",
+                []
+            )
+            .is_err()
+        );
+        super::super::audit::counterparties::verify(ReadConn::physical(&conn))?;
         let classes = |conn: &Connection| -> Result<Vec<String>, CliError> {
             Ok(conn
                 .prepare("SELECT cash_class FROM accounts ORDER BY code")?

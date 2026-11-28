@@ -267,3 +267,41 @@ fn company_scope_is_enforced_and_verify_detects_snapshot_drift() -> TestResult {
     books.command()?.args(["verify"]).assert().failure().code(4);
     Ok(())
 }
+
+#[test]
+fn snapshot_restore_and_undo_follow_counterparty_bookkeeping_history() -> TestResult {
+    let books = Books::new()?;
+    let party = books.customer()?;
+    let charge = books.post("acme", "1100:35", "4000:35")?;
+    let snapshot_path = books.path.with_extension("bk-backup");
+    let snapshot = snapshot_path.to_str().ok_or("non-UTF-8 snapshot path")?;
+    books.acme(&["counterparty", "associate", &party, &charge])?;
+    books.data(&["backup", "--output", snapshot])?;
+
+    books.acme(&["counterparty", "amend", &party, "--name", "Revised"])?;
+    let restored = books.data(&["restore", "--input", snapshot])?;
+    assert_eq!(
+        books.acme(&["counterparty", "show", &party])?["name"],
+        "Clearwater"
+    );
+    let grouped = books.aging(true)?;
+    assert_eq!(
+        grouped["groups"][0]["counterparty"],
+        format!("Clearwater [{party}]")
+    );
+    books.data(&["verify"])?;
+
+    let undo = restored["undo_id"].to_string();
+    books.data(&["restore-undo", &undo])?;
+    assert_eq!(
+        books.acme(&["counterparty", "show", &party])?["name"],
+        "Revised"
+    );
+    let grouped = books.aging(true)?;
+    assert_eq!(
+        grouped["groups"][0]["counterparty"],
+        format!("Revised [{party}]")
+    );
+    books.data(&["verify"])?;
+    Ok(())
+}

@@ -1084,7 +1084,7 @@ pub(crate) struct AgingInput {
     pub buckets: Option<String>,
     pub group_by_metadata: Option<String>,
     #[serde(default)]
-    pub group_by_counterparty: bool,
+    pub group_by_counterparty: crate::db::counterparties::CounterpartyGrouping,
     #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,

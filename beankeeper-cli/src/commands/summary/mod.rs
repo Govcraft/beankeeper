@@ -649,32 +649,21 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
     let prior = activity(periods.prior)?;
     let comparison = model::comparison(&current, &prior, currency)?;
     let movers = model::movers(&current, &prior, currency)?;
-    let parties = request
-        .group_by_counterparty
-        .then(|| db::counterparties::linked_party_labels(&scope))
-        .transpose()?;
-    let attention = attention::compute(&attention::AttentionContext {
-        conn: reader,
-        company: scope.slug(),
-        currency,
-        as_of: periods.current.to,
-        stale_hold_age,
-        parties: parties.as_ref(),
+    let selected = model::SelectedAccounts {
         cash: &cash,
-        receivables: &receivables,
-        payables: &payables,
-    })?;
-    let view = model::desktop_view(
-        company,
+        receivable: &receivables,
+        payable: &payables,
+    };
+    let attention = compute_attention(
+        reader,
+        &scope,
         currency,
-        &periods,
+        periods.current.to,
         stale_hold_age,
-        &model::SelectedAccounts {
-            cash: &cash,
-            receivable: &receivables,
-            payable: &payables,
-        },
-    );
+        &selected,
+        request.group_by_counterparty,
+    )?;
+    let view = model::desktop_view(company, currency, &periods, stale_hold_age, &selected);
     let cash_on_hand = sum(rows.iter().filter(|row| cash.contains(&row.code)))?;
     let owed_to_you = sum(rows.iter().filter(|row| receivables.contains(&row.code)))?;
     let you_owe = sum(rows
@@ -709,6 +698,31 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         highlights,
         view,
         fx_balances,
+    })
+}
+
+fn compute_attention<'a>(
+    reader: ReadConn<'a>,
+    scope: &Company<'a>,
+    currency: Currency,
+    as_of: NaiveDate,
+    stale_hold_age: StaleHoldAge,
+    accounts: &model::SelectedAccounts<'_>,
+    group_by_counterparty: bool,
+) -> Result<attention::Attention, CliError> {
+    let parties = group_by_counterparty
+        .then(|| db::counterparties::linked_party_labels(scope, as_of, currency))
+        .transpose()?;
+    attention::compute(&attention::AttentionContext {
+        conn: reader,
+        company: scope.slug(),
+        currency,
+        as_of,
+        stale_hold_age,
+        cash: accounts.cash,
+        receivables: accounts.receivable,
+        payables: accounts.payable,
+        parties: parties.as_ref(),
     })
 }
 

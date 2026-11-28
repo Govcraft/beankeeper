@@ -2046,8 +2046,8 @@ Use the explicit ID and transaction number to apply a selected association.
 
 Aging and financial summary preserve their original behavior by default.
 Pass `report aging --group-by-counterparty` or
-`summary --group-by-counterparty` to match settlements within linked
-companies' counterparties. Unassociated rows fall back to customer/vendor
+`summary --group-by-counterparty` to match settlements within each linked
+counterparty. Unassociated rows fall back to customer/vendor
 metadata and appear under legacy labels in aging. With aging, supply
 `--group-by-metadata KEY` alongside the new option to choose a different
 legacy field. Aging still measures from transaction dates. The party profile

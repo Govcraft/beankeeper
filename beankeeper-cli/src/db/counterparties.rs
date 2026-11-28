@@ -193,6 +193,7 @@ contact_text!(
 );
 
 fn valid_mailbox(value: &str) -> bool {
+    const LOCAL_PUNCTUATION: &[u8] = b"!#$%&'*+-/=?^_`{|}~.";
     if value.len() > 254 || !value.is_ascii() {
         return false;
     }
@@ -200,7 +201,6 @@ fn valid_mailbox(value: &str) -> bool {
         return false;
     };
 
-    const LOCAL_PUNCTUATION: &[u8] = b"!#$%&'*+-/=?^_`{|}~.";
     !local.is_empty()
         && local.len() <= 64
         && !local.starts_with('.')
@@ -693,6 +693,27 @@ pub(crate) fn suggest_counterparties(
     page.finish(suggestions)
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "bool", into = "bool")]
+#[schemars(with = "bool")]
+pub(crate) enum CounterpartyGrouping {
+    #[default]
+    Legacy,
+    Linked,
+}
+
+impl From<bool> for CounterpartyGrouping {
+    fn from(enabled: bool) -> Self {
+        if enabled { Self::Linked } else { Self::Legacy }
+    }
+}
+
+impl From<CounterpartyGrouping> for bool {
+    fn from(value: CounterpartyGrouping) -> Self {
+        matches!(value, CounterpartyGrouping::Linked)
+    }
+}
+
 pub(crate) struct LinkedParties(BTreeMap<TransactionId, (CounterpartyId, CounterpartyName)>);
 
 impl LinkedParties {
@@ -708,13 +729,18 @@ impl LinkedParties {
     }
 }
 
-pub(crate) fn linked_party_labels(company: &Company<'_>) -> Result<LinkedParties, CliError> {
+pub(crate) fn linked_party_labels(
+    company: &Company<'_>,
+    as_of: chrono::NaiveDate,
+    currency: beankeeper::types::Currency,
+) -> Result<LinkedParties, CliError> {
     let mut statement = company.read().connection().prepare(
         "SELECT link.transaction_id, party.id, party.name FROM transaction_counterparties link
          JOIN counterparties party ON party.company_slug = link.company_slug AND party.id = link.counterparty_id
-         WHERE link.company_slug = ?1",
+         JOIN posted_transactions txn ON txn.company_slug = link.company_slug AND txn.id = link.transaction_id
+         WHERE link.company_slug = ?1 AND txn.date <= ?2 AND txn.currency = ?3",
     )?;
-    let rows = statement.query_map([company.slug()], |row| {
+    let rows = statement.query_map(params![company.slug(), as_of, currency.code()], |row| {
         Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
     })?;
     Ok(LinkedParties(rows.collect::<rusqlite::Result<_>>()?))

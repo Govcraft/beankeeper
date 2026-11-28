@@ -22,10 +22,14 @@ use crate::{
 };
 
 pub(crate) enum PartyMutation {
+    Edit(PartyEdit),
+    Associate(CounterpartyId, TransactionId),
+}
+
+pub(crate) enum PartyEdit {
     Create(ContactDetails),
     Amend(CounterpartyId, ContactPatch),
     Archive(CounterpartyId),
-    Associate(CounterpartyId, TransactionId),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,10 +55,13 @@ pub(crate) fn mutate(
     Granted::<Admin>::with_db(db, actor, |grant| {
         grant.mutate("sp_counterparty", |tx, actor| {
             let company = Company::bind(tx.read(), slug.clone())?;
-            if let PartyMutation::Associate(id, transaction) = mutation {
-                return associate(tx.connection(), actor, &company, id, transaction);
-            }
-            let (before, party, action) = prepare(&company, mutation)?;
+            let edit = match mutation {
+                PartyMutation::Edit(edit) => edit,
+                PartyMutation::Associate(id, transaction) => {
+                    return associate(tx.connection(), actor, &company, id, transaction);
+                }
+            };
+            let (before, party, action) = prepare(&company, edit)?;
             let receipt_id = if before.as_ref() == Some(&party) {
                 None
             } else {
@@ -74,10 +81,10 @@ pub(crate) fn mutate(
 
 fn prepare(
     company: &Company<'_>,
-    mutation: PartyMutation,
+    edit: PartyEdit,
 ) -> Result<(Option<Counterparty>, Counterparty, AuditAction), CliError> {
-    match mutation {
-        PartyMutation::Create(details) => Ok((
+    match edit {
+        PartyEdit::Create(details) => Ok((
             None,
             Counterparty {
                 id: CounterpartyId::generate(),
@@ -86,20 +93,17 @@ fn prepare(
             },
             AuditAction::CounterpartyCreate,
         )),
-        PartyMutation::Amend(id, patch) => {
+        PartyEdit::Amend(id, patch) => {
             let before = find_counterparty(company, &id)?;
             let after = apply_contact_change(before.clone(), patch)?;
             Ok((Some(before), after, AuditAction::CounterpartyAmend))
         }
-        PartyMutation::Archive(id) => {
+        PartyEdit::Archive(id) => {
             let before = find_counterparty(company, &id)?;
             let mut after = before.clone();
             after.archived = true;
             Ok((Some(before), after, AuditAction::CounterpartyArchive))
         }
-        PartyMutation::Associate(..) => Err(CliError::Database(
-            "expected a counterparty record mutation".into(),
-        )),
     }
 }
 

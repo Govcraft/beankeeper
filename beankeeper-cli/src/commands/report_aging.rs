@@ -1572,7 +1572,7 @@ pub(crate) struct AgingSelection {
     pub as_of: crate::request::LocalDate,
     pub buckets: Option<String>,
     pub group_by: Option<String>,
-    pub group_by_counterparty: bool,
+    pub group_by_counterparty: db::counterparties::CounterpartyGrouping,
     pub currency: Option<Currency>,
     pub method: MatchMethod,
     pub link_key: Option<String>,
@@ -1773,7 +1773,7 @@ impl TryFrom<AgingSelection> for AgingRequest {
             projection: AgingProjection {
                 matching: (selection.method, selection.link_key).try_into()?,
                 grouping: (selection.group_by, selection.across).into(),
-                group_by_counterparty: selection.group_by_counterparty,
+                group_by_counterparty: selection.group_by_counterparty.into(),
                 filters: metadata_filter::parse_filters(&selection.filters)?,
                 detail: selection.detail,
                 include_children: selection.include_children,
@@ -1788,7 +1788,7 @@ impl TryFrom<&crate::cli::AgingCommandArgs> for AgingRequest {
     fn try_from(args: &crate::cli::AgingCommandArgs) -> Result<Self, Self::Error> {
         if args.group_across_accounts
             && args.group_by_metadata.is_none()
-            && !args.group_by_counterparty
+            && !args.group_by_counterparty.unwrap_or_default()
         {
             return Err(CliError::Usage(
                 "--group-across-accounts requires --group-by-counterparty or --group-by-metadata"
@@ -1801,7 +1801,7 @@ impl TryFrom<&crate::cli::AgingCommandArgs> for AgingRequest {
             as_of: args.as_of.map(NaiveDate::from).into(),
             buckets: args.buckets.clone(),
             group_by: args.group_by_metadata.clone(),
-            group_by_counterparty: args.group_by_counterparty,
+            group_by_counterparty: args.group_by_counterparty.unwrap_or_default().into(),
             currency: args.currency,
             method: args.method.map(Into::into).unwrap_or_default(),
             link_key: args.link_key.clone(),
@@ -1823,7 +1823,7 @@ impl TryFrom<&AgingOptions<'_>> for AgingRequest {
             as_of: options.as_of.into(),
             buckets: Some(options.buckets.to_owned()),
             group_by: options.group_by_metadata.map(str::to_owned),
-            group_by_counterparty: false,
+            group_by_counterparty: db::counterparties::CounterpartyGrouping::default(),
             currency: options.currency,
             method: options.method,
             link_key: options.link_key.map(str::to_owned),
@@ -1886,17 +1886,18 @@ impl AgingRequest {
             .map(|account| account.code.clone())
             .collect();
         let kind = common_kind(&accounts)?;
+        let slug = company.slug().as_str();
+        let currency = resolve_currency(reader, slug, self.currency)?;
+        let as_of = self.as_of.into();
         let parties = self
             .projection
             .group_by_counterparty
-            .then(|| db::counterparties::linked_party_labels(company))
+            .then(|| db::counterparties::linked_party_labels(company, as_of, currency))
             .transpose()?;
-        let company = company.slug().as_str();
-        let currency = resolve_currency(reader, company, self.currency)?;
         let method = self.projection.matching.method();
         let scope = AgingScope {
             kind,
-            as_of: self.as_of.into(),
+            as_of,
             currency,
             buckets: self.buckets,
             method,
@@ -1908,13 +1909,13 @@ impl AgingRequest {
         };
         let per_account = accounts
             .into_iter()
-            .map(|account| age_account(reader, company, account, &scope))
+            .map(|account| age_account(reader, slug, account, &scope))
             .collect::<Result<Vec<_>, _>>()?;
         let report = combine(kind, method, scope.buckets, per_account)?;
         Ok(AgingResponse {
             report,
             selected,
-            as_of: self.as_of.into(),
+            as_of,
             currency,
             projection: self.projection,
         })
