@@ -48,7 +48,7 @@ pub(crate) use review::{ApprovalAction, ReviewRecord, review, review_requests};
 pub enum DocumentOutcome {
     /// Current document and change attribution.
     Document {
-        record: DocumentRecord,
+        record: Box<DocumentRecord>,
         receipt_id: Option<ReceiptId>,
     },
     /// A batch of applied settlements.
@@ -86,6 +86,7 @@ pub(crate) fn submit(
     })
 }
 
+#[derive(Clone, Copy)]
 enum Execution {
     Direct,
     Propose,
@@ -104,7 +105,7 @@ fn mutate(
             return drafts::save_draft(tx, actor, &company, None, draft);
         }
         DocumentMutation::Amend(id, version, draft) => {
-            return drafts::save_draft(tx, actor, &company, Some((id, version)), draft);
+            return drafts::save_draft(tx, actor, &company, Some((&id, version)), draft);
         }
         DocumentMutation::Issue(id, date) => {
             let record = find_document(&company, &id)?;
@@ -129,14 +130,30 @@ pub(super) fn guard_linked_posting(
     company: &Company<'_>,
     transaction: TransactionId,
 ) -> Result<(), CliError> {
+    guard_posting(company, transaction, None)
+}
+
+pub(super) fn guard_linked_reversal(
+    company: &Company<'_>,
+    transaction: TransactionId,
+    date: NaiveDate,
+) -> Result<(), CliError> {
+    guard_posting(company, transaction, Some(date))
+}
+
+fn guard_posting(
+    company: &Company<'_>,
+    transaction: TransactionId,
+    reversal_date: Option<NaiveDate>,
+) -> Result<(), CliError> {
     if company.read().schema_version()? < crate::db::schema::DOCUMENT_SCHEMA_VERSION {
         return Ok(());
     }
     let protected: bool = company.read().query_row(
         "SELECT EXISTS(SELECT 1 FROM book_documents WHERE company_slug=?1 AND posting_id=?2)
            OR EXISTS(SELECT 1 FROM document_allocations WHERE company_slug=?1 AND source_id=?2
-                     AND (kind='credit' OR reversed_on IS NULL))",
-        params![company.slug(), transaction],
+                     AND (kind='credit' OR ?3 IS NULL OR reversed_on IS NULL OR reversed_on>?3))",
+        params![company.slug(), transaction, reversal_date],
         |row| row.get(0),
     )?;
     if protected {
@@ -159,8 +176,7 @@ fn persist_event<T: Serialize>(
     company: &CompanySlug,
     event: (AuditEntity, AuditAction),
     id: &impl std::fmt::Display,
-    before: Option<&T>,
-    after: &T,
+    (before, after): (Option<&T>, &T),
 ) -> Result<ReceiptId, CliError> {
     let (entity, action) = event;
     let before = before.map(encode).transpose()?;

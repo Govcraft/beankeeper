@@ -84,19 +84,18 @@ pub(super) fn save_draft(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,
-    edit: Option<(DocumentId, DocumentRevision)>,
+    edit: Option<(&DocumentId, DocumentRevision)>,
     draft: DocumentDraft,
 ) -> Result<DocumentOutcome, CliError> {
     terms(company, &draft)?;
     validate_accounts(company, &draft)?;
     let previous = edit
-        .as_ref()
         .map(|(id, revision)| -> Result<_, CliError> {
             let record = find_document(company, id)?;
             if record.issued.is_some() {
                 return Err(DocumentError::AlreadyIssued.into());
             }
-            if record.revision != *revision {
+            if record.revision != revision {
                 return Err(DocumentError::StaleDraft.into());
             }
             Ok(record)
@@ -136,8 +135,7 @@ pub(super) fn save_draft(
         company.slug(),
         (AuditEntity::Document, action),
         &record.id,
-        previous.as_ref(),
-        &record,
+        (previous.as_ref(), &record),
     )?;
     tx.connection().execute(
         "INSERT INTO book_documents(company_slug,id,number,counterparty_id,revision,draft,receipt)
@@ -156,7 +154,7 @@ pub(super) fn save_draft(
         ],
     )?;
     Ok(DocumentOutcome::Document {
-        record,
+        record: Box::new(record),
         receipt_id: Some(receipt),
     })
 }
@@ -289,8 +287,7 @@ fn persist_issue(
         company.slug(),
         (AuditEntity::Document, AuditAction::DocumentIssue),
         &record.id,
-        Some(before),
-        record,
+        (Some(before), record),
     )?;
     tx.connection().execute(
         "UPDATE book_documents SET issued=?1, issue_date=?2, due_date=?3,
@@ -309,7 +306,7 @@ fn persist_issue(
         ],
     )?;
     Ok(DocumentOutcome::Document {
-        record: record.clone(),
+        record: Box::new(record.clone()),
         receipt_id: Some(receipt),
     })
 }
@@ -321,7 +318,7 @@ pub(super) fn repeat_issue(
 ) -> Result<DocumentOutcome, CliError> {
     if document.issue_date == date {
         Ok(DocumentOutcome::Document {
-            record: record.clone(),
+            record: Box::new(record.clone()),
             receipt_id: None,
         })
     } else {

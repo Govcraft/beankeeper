@@ -230,6 +230,7 @@ pub fn open_items_as_of(
         .collect()
 }
 
+#[derive(Clone, Copy)]
 pub(in crate::db) enum CapacityFor<'a> {
     Document(&'a DocumentId),
     Source(TransactionId),

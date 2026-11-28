@@ -98,8 +98,15 @@ fn verify_sources(reader: ReadConn<'_>) -> Result<(), CliError> {
          SELECT allocation.id FROM document_allocations allocation
          JOIN book_documents doc ON doc.company_slug=allocation.company_slug AND doc.id=allocation.document_id
          LEFT JOIN posted_transactions txn ON txn.id=allocation.source_id
+         LEFT JOIN transaction_counterparties party
+           ON party.company_slug=allocation.company_slug AND party.transaction_id=allocation.source_id
          WHERE doc.issue_date IS NULL OR txn.date IS NULL OR allocation.effective_on < doc.issue_date
             OR allocation.effective_on < txn.date OR txn.currency IS NOT doc.currency
+            OR party.counterparty_id IS NOT doc.counterparty_id
+            OR NOT EXISTS(SELECT 1 FROM entries entry
+                 WHERE entry.transaction_id=allocation.source_id AND entry.account_code=doc.control_account
+                   AND entry.direction=CASE json_extract(doc.issued,'$.kind')
+                        WHEN 'invoice' THEN 'credit' ELSE 'debit' END)
          LIMIT 1", [], |row| row.get(0),
     ).optional()?;
     if let Some(id) = invalid {

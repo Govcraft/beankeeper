@@ -54,7 +54,7 @@ impl ReviewedMutation {
                 settlement::apply_payment(tx, actor, company, source, on, items)
             }
             Self::Credit(input) => settlement::credit(tx, actor, company, input),
-            Self::Revoke { id, on } => settlement::revoke(tx, actor, company, id, on),
+            Self::Revoke { id, on } => settlement::revoke(tx, actor, company, &id, on),
         }
     }
 }
@@ -139,8 +139,7 @@ pub(super) fn reserve(
         company.slug(),
         (AuditEntity::DocumentReview, AuditAction::DocumentPropose),
         &record.id,
-        None,
-        &record,
+        (None, &record),
     )?;
     tx.connection().execute(
         "INSERT INTO document_review_requests(company_slug,id,request,proposer,status,receipt)
@@ -216,7 +215,7 @@ pub(crate) fn review(
     db: &Db,
     actor: &Actor,
     slug: &CompanySlug,
-    id: DocumentReviewId,
+    id: &DocumentReviewId,
     action: ApprovalAction,
 ) -> Result<ReviewRecord, CliError> {
     Granted::<CorrectionApprove>::with_db(db, actor, |grant| {
@@ -284,7 +283,7 @@ pub(crate) fn review(
             record.status = status;
             let raw_resolution = encode(&resolution)?;
             record.resolution = Some(resolution);
-            persist_resolution(tx, actor, slug, record, change, &old, raw_resolution)
+            persist_resolution(tx, actor, slug, record, change, (&old, &raw_resolution))
         })
     })
 }
@@ -295,8 +294,7 @@ fn persist_resolution(
     slug: &CompanySlug,
     record: ReviewRecord,
     change: AuditAction,
-    old: &str,
-    raw_resolution: String,
+    (old, raw_resolution): (&str, &str),
 ) -> Result<ReviewRecord, CliError> {
     let before = decode::<ReviewRecord>(old)?;
     let receipt: ReceiptId = persist_event(
@@ -305,8 +303,7 @@ fn persist_resolution(
         slug,
         (AuditEntity::DocumentReview, change),
         &record.id,
-        Some(&before),
-        &record,
+        (Some(&before), &record),
     )?;
     tx.connection().execute(
         "UPDATE document_review_requests SET status=?1,resolution=?2,receipt=?3

@@ -2069,7 +2069,6 @@ fn reverse_in_scope(
     })?;
     reject_investment_reversal(conn, p.id)?;
     payroll::reject_generic_reversal(tx.read(), p.id)?;
-    documents::guard_linked_posting(&company, p.id)?;
     let mut original_metadata: serde_json::Value = original
         .metadata
         .as_deref()
@@ -2090,6 +2089,7 @@ fn reverse_in_scope(
     let date = undo_of.map_or(p.date, |_| {
         receipts::UndoPostingDate::from((p.date, original.date)).into()
     });
+    documents::guard_linked_reversal(&company, p.id, date)?;
     recategorize::MoveHistory::load(&company, p.id, None)?.check_reversal(p.id, date)?;
     super::holds::check_reversal(tx, &original, date)?;
     validate_reversal(conn, p.id, date, original.date)?;

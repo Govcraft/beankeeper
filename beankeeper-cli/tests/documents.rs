@@ -43,10 +43,10 @@ impl Books {
             "--payment-terms",
             "30",
         ])?;
-        books.party = created["party"]["id"]
+        created["party"]["id"]
             .as_str()
             .ok_or("party without ID")?
-            .to_owned();
+            .clone_into(&mut books.party);
         Ok(books)
     }
 
@@ -197,6 +197,17 @@ fn split_payments_credit_and_revocation_follow_the_effective_cutoff() -> TestRes
     assert_eq!(row(&after, "INV-1")?["open_minor"], 2_000);
     assert_eq!(row(&after, "INV-2")?["open_minor"], 3_000);
     assert_eq!(row(&after, "INV-2")?["status"], "partial");
+    let control = books.data(&[
+        "report",
+        "balance",
+        "--account",
+        "1100",
+        "--to",
+        "2026-02-07",
+    ])?;
+    let debit = control["debit_total"].as_i64().ok_or("control debits")?;
+    let credit = control["credit_total"].as_i64().ok_or("control credits")?;
+    assert_eq!(debit - credit, 4_000); // 5,000 open less 1,000 unapplied.
     let impossible = json!([{"document_id":second,"amount_minor":2000}]).to_string();
     books
         .command()?

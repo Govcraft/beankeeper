@@ -183,6 +183,7 @@ pub(super) fn associate_issued(
     )
 }
 
+#[derive(Clone, Copy)]
 enum AssociationMode {
     Active,
     IssuedSnapshot,

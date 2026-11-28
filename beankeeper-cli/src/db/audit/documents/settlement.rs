@@ -167,6 +167,7 @@ fn plan_payment(
         });
     }
     let document = base.ok_or(DocumentError::IncompatibleSource)?;
+    ensure_source_account(company, source, &document)?;
     let usable = source_capacity(&entries, &document);
     let peak = peak_applied(company, CapacityFor::Source(source), on)?;
     validate_capacity(usable, peak, sum)?;
@@ -184,6 +185,25 @@ fn plan_payment(
         link_party: party.is_none().then_some(document.counterparty.id),
         unapplied_minor,
     })
+}
+
+fn ensure_source_account(
+    company: &Company<'_>,
+    source: TransactionId,
+    document: &IssuedDocument,
+) -> Result<(), CliError> {
+    let incompatible: bool = company.read().query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM document_allocations allocation
+            JOIN book_documents doc ON doc.company_slug=allocation.company_slug AND doc.id=allocation.document_id
+            WHERE allocation.company_slug=?1 AND allocation.source_id=?2 AND doc.control_account IS NOT ?3)",
+        params![company.slug(), source, document.control_account.as_str()], |row| row.get(0),
+    )?;
+    if incompatible {
+        Err(DocumentError::IncompatibleSource.into())
+    } else {
+        Ok(())
+    }
 }
 
 fn source_capacity(entries: &[crate::db::EntryRow], document: &IssuedDocument) -> i128 {
@@ -286,8 +306,7 @@ fn save_allocation(
             AuditAction::DocumentAllocate,
         ),
         &a.id,
-        None,
-        &history,
+        (None, &history),
     )?;
     tx.connection().execute(
         "INSERT INTO document_allocations(company_slug,id,document_id,source_id,effective_on,amount_minor,kind,credit_line,receipt)
@@ -390,10 +409,10 @@ pub(super) fn revoke(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,
-    id: AllocationId,
+    id: &AllocationId,
     date: NaiveDate,
 ) -> Result<DocumentOutcome, CliError> {
-    let before = read_allocation(company, &id)?;
+    let before = read_allocation(company, id)?;
     if before.reversed_on == Some(date) {
         return Ok(DocumentOutcome::Revoked {
             allocation: before,
@@ -427,9 +446,8 @@ pub(super) fn revoke(
             AuditEntity::DocumentAllocation,
             AuditAction::DocumentUnallocate,
         ),
-        &id,
-        Some(&before),
-        &after,
+        id,
+        (Some(&before), &after),
     )?;
     tx.connection().execute(
         "UPDATE document_allocations SET reversed_on=?1, receipt=?2 WHERE company_slug=?3 AND id=?4 AND reversed_on IS NULL",

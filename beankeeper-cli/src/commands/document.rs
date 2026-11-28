@@ -249,7 +249,7 @@ impl DocumentRequest {
                 documents::submit(db, actor, &self.company, mutation).map(Response::Change)
             }
             Action::Review(id, action) => {
-                documents::review(db, actor, &self.company, id, action).map(Response::Review)
+                documents::review(db, actor, &self.company, &id, action).map(Response::Review)
             }
             action => {
                 let company = Company::bind(db.read(), self.company)?;
@@ -266,7 +266,9 @@ impl DocumentRequest {
     ) -> Result<Response, CliError> {
         use DocumentAction as Action;
         match action {
-            Action::Find(id) => find_document(company, &id).map(Response::Document),
+            Action::Find(id) => find_document(company, &id)
+                .map(Box::new)
+                .map(Response::Document),
             Action::Print(id) => {
                 let doc = find_document(company, &id)?.issued.ok_or_else(|| {
                     CliError::Validation("only issued documents can be printed".into())
@@ -335,7 +337,7 @@ pub struct DocumentResponse(Response);
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum Response {
-    Document(DocumentRecord),
+    Document(Box<DocumentRecord>),
     Printable {
         document: String,
     },
