@@ -574,6 +574,8 @@ When `txn post` or `txn_post` omits currency, the posting uses
 | `bk bank-feed connect`, `bk bank-feed disconnect`, `bk bank-feed sync` | Manage bank connections and poll the provider from the owner host, which supplies the provider credentials. |
 | `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
 | `bk schedule create`, `bk schedule cancel`, `bk schedule run` | Recurring template management and execution are deferred until the MCP scheduling contract is available. |
+| `bk payroll import` | Imports a local provider aggregate file and checks it against the preview digest. |
+| `bk payroll fund` | Applies an existing withdrawal to a payroll liability entry through the local CLI. |
 | `bk loan pay` | The dedicated loan-terms input and payment calculation are deferred. Agents can already post a balanced payment through `txn_post`. |
 
 Results match the CLI JSON `data` payload. JSON text content is always included;
@@ -2066,3 +2068,90 @@ MCP exposes `counterparty_create`, `counterparty_amend`,
 object. Omit a field to keep it. For optional contact fields, use
 `"clear"` or `{"set": value}`. Pass `group_by_counterparty: true` to the
 `report` aging or `financial_summary` tools to opt in.
+
+## Import finalized payroll
+
+A payroll provider adapter can export aggregate employer totals to this JSON
+format. Use currency minor units throughout the file. Each included component
+has a positive amount and a corresponding account code. Omit components with
+a zero amount. The supplied control total must agree with both journal sides.
+
+```json
+{
+  "run": {
+    "key": {
+      "provider": "provider-adapter",
+      "organization": "employer-key",
+      "run": "finalized-run-key"
+    },
+    "revision": 1,
+    "kind": "regular",
+    "period": {"start": "2026-01-01", "end": "2026-01-14"},
+    "pay_date": "2026-01-16",
+    "currency": "USD",
+    "total_minor": 10000,
+    "components": [
+      {"component": "gross_wages", "amount_minor": 10000},
+      {"component": "net_pay", "amount_minor": 8000},
+      {"component": "tax_withholdings", "amount_minor": 2000}
+    ]
+  },
+  "accounts": [
+    {"component": "gross_wages", "code": "5000"},
+    {"component": "net_pay", "code": "2000"},
+    {"component": "tax_withholdings", "code": "2100"}
+  ]
+}
+```
+
+Debit components are `gross_wages`, `reimbursements`, `employer_taxes`,
+`employer_benefits`, and `provider_fees`. Map those to expense accounts.
+Credit components are `net_pay`, `tax_withholdings`, `benefit_withholdings`,
+and `funding_clearing`. Map those to liability accounts. Combine taxes paid by
+the employer and employee into the tax liability where appropriate. Use
+`off_cycle` for a distinct, separately finalized payroll run.
+
+```sh
+bk --company acme --json payroll preview --file payroll.json
+bk --company acme --json payroll import --file payroll.json --digest REVIEWED_DIGEST
+bk --company acme --json payroll show --payroll PAYROLL_ID
+bk --company acme --json payroll fund --payroll PAYROLL_ID \
+  --liability-entry 20 --payment-transaction 18 --payment-entry 42 \
+  --amount-minor 2500
+```
+
+Preview prints the journal and its review digest. Import rechecks the exact
+plan and returns its payroll TypeID plus the posting or proposal ID. An exact
+retry returns the recorded result. A changed revision of an already imported
+run requires a separately keyed correction. A run with kind `reversal`
+takes an additional `reverses` object with the original provider,
+organization and run keys. The new journal must exactly mirror the original
+and have a posting date on or after it.
+
+Record or categorize the bank withdrawal using the normal ledger workflow so
+it debits the payroll liability. The funding command applies a portion of
+that posted debit to a posted payroll credit on the same account. A debit
+may fund multiple runs up to its amount, and a run may be funded in
+installments. Funding allocation links existing entries and leaves their
+statement reconciliation state intact. The show command lists allocations
+and outstanding balances per liability entry. Payroll calculation, payment
+execution and payroll forms remain with the provider.
+
+### Gusto aggregate totals
+
+For simple US wage runs, the same commands accept a local Gusto totals export.
+Replace the top-level `run` object with `gusto`, and keep `accounts` alongside
+it. The Gusto object takes `processed: true`, `organization`, `run_id`,
+`revision`, `period`, `check_date`, `kind` (`regular` or `off_cycle`), and
+a `totals` object with these decimal-string fields from the
+[Gusto payroll totals](https://docs.gusto.com/embedded-payroll/reference/get-v1-companies-company_id-payrolls-payroll_id):
+
+- `gross_pay`, `net_pay`, `employee_taxes`, and `employer_taxes`.
+- `reimbursements`, `benefits`, `employee_benefits_deductions`,
+  `other_deductions`, `employee_cash_tips`, `employee_paycheck_tips`,
+  `imputed_pay`, `owners_draw`, and `deferred_payroll_taxes`. Each must be zero
+  for this adapter. Use the reviewed aggregate format for more complex runs.
+
+Supply aggregate totals only. The adapter does not need employee records or
+provider credentials. It recognizes gross wages and employer tax expense
+against net pay and combined employee and employer taxes payable.

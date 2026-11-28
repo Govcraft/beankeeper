@@ -73,6 +73,8 @@ enum Check {
     AccountClassifications,
     Counterparties,
     BankFeed,
+
+    PayrollRuns,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -94,6 +96,7 @@ impl Check {
             Self::CreationSnapshots => "creation_snapshots",
             Self::AccountArchives => "account_archives",
             Self::AccountLabels => "account_labels",
+            Self::PayrollRuns => "payroll_runs",
             Self::AccountClassifications => "account_classifications",
             Self::Counterparties => "counterparties",
             Self::BankFeed => "bank_feed",
@@ -253,6 +256,9 @@ impl VerifiedLedger {
         if version >= schema::STATEMENT_RECONCILIATION_SCHEMA_VERSION {
             Check::StatementReconciliations
                 .record(audit::statement::verify(reader), &mut checks)?;
+        }
+        if version >= schema::PAYROLL_SCHEMA_VERSION {
+            Check::PayrollRuns.record(audit::payroll::verify(reader), &mut checks)?;
         }
         Check::ForeignKeys.record(verify_foreign_keys(reader), &mut checks)?;
         Check::SqliteIntegrity.record(verify_integrity(reader), &mut checks)?;

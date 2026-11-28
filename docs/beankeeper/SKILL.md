@@ -629,6 +629,8 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk report aging` | Receivables/payables aging buckets (FIFO or specific invoice matching, by transaction date) |
 | `bk reconcile statement/list` | Match and lock monthly statements, get an undo receipt, and list account months that still need statements |
 | `bk report reconciliation` | Bank balances by default; `--mode settlement --statement ID` compares AR/AP charge applications with statement net, listing short pays, overpays and linked/unmatched credits. Supports metadata filters/grouping |
+| `bk payroll preview/import` | Review and post or propose a finalized aggregate payroll journal |
+| `bk payroll fund/show` | Match a posted withdrawal to a payroll liability and review the outstanding amount |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk report trend` | Show revenue, spending or net worth across periods |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |
