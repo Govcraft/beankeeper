@@ -123,7 +123,12 @@ fn event(id: &str, kind: &str, object: &Value) -> Value {
     json!({"id":id,"type":kind,"created":1_767_657_600_i64,"livemode":false,"data":{"object":object}})
 }
 
-fn pay(books: &Books, spool: &Path, index: usize, link: &CollectionId) -> TestResult {
+fn pay(
+    books: &Books,
+    spool: &Path,
+    index: usize,
+    link: &CollectionId,
+) -> Result<Value, Box<dyn Error>> {
     let delivery = format!("receipt{index}");
     let event = event(
         &format!("evt_receipt{index}"),
@@ -138,7 +143,7 @@ fn pay(books: &Books, spool: &Path, index: usize, link: &CollectionId) -> TestRe
     let applied = send(books, spool, &delivery, &event, true)?;
     assert_eq!(applied["status"], "applied");
     assert_eq!(send(books, spool, &delivery, &event, true)?, applied);
-    Ok(())
+    Ok(applied)
 }
 
 #[test]
@@ -197,5 +202,42 @@ fn verify_payout(books: &Books) -> TestResult {
     assert_eq!(summary[0]["gross_minor"], 12000);
     assert_eq!(summary[0]["fees_minor"], 400);
     assert_eq!(summary[0]["refunds_minor"], 2000);
+    Ok(())
+}
+
+#[test]
+fn restored_collection_keeps_audited_receipt_and_reuses_its_posting() -> TestResult {
+    let books = Books::new()?;
+    books.data(&["account", "create", "1150", "Processor", "--type", "asset"])?;
+    let spool = tempfile::tempdir()?;
+    let provider = CheckoutFixture {
+        timeout: Cell::new(false),
+        sequence: Cell::new(0),
+    };
+    let (_, id) = collection(&books, "STRIPE-RESTORE", 6000, &provider)?;
+    let path = spool.path().join("pre-payment.bk-backup");
+    let path = path.to_str().ok_or("backup path is not Unicode")?;
+    books.data(&["backup", "--output", path])?;
+    let payment = pay(&books, spool.path(), 1, &id)?;
+    let restored = books.data(&["restore", "--input", path])?;
+    let open = books.aging("2026-01-15")?;
+    assert_eq!(super::row(&open, "STRIPE-RESTORE")?["open_minor"], 10_000);
+    books.data(&["restore-undo", &restored["undo_id"].to_string()])?;
+    let after = books.aging("2026-01-15")?;
+    assert_eq!(super::row(&after, "STRIPE-RESTORE")?["open_minor"], 4000);
+    assert_eq!(pay(&books, spool.path(), 1, &id)?, payment);
+
+    let db = Db::open_existing(&books.path, None)?;
+    let receipt: String = db.read().query_row(
+        "SELECT after FROM bookkeeping_audit WHERE company_slug='acme'
+           AND entity='collection_event' AND entity_id='evt_receipt1'",
+        [],
+        |row| row.get(0),
+    )?;
+    let receipt: Value = serde_json::from_str(&receipt)?;
+    assert_eq!(receipt["collection"], id.to_string());
+    assert_eq!(receipt["payment"], "pi_receipt1");
+    assert_eq!(receipt["posting"], payment["detail"]);
+    assert_eq!(books.data(&["verify"])?["status"], "healthy");
     Ok(())
 }
