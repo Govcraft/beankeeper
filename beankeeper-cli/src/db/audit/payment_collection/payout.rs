@@ -10,7 +10,7 @@ use serde_json::json;
 
 use super::{
     Actor, AuditEntity, CollectionOutcome, ReadConn, record,
-    reported::{self, Facts, Origin, Source},
+    reported::{self, Facts, Origin, ReviewedSource, Source},
     validation,
 };
 use crate::{
@@ -38,8 +38,8 @@ pub struct PayoutView {
     gross_minor: Option<i64>,
     refunds_minor: Option<i64>,
     reported_fees_minor: Option<i64>,
-    source: Source,
-    original_source: Source,
+    #[serde(flatten)]
+    provenance: ReviewedSource,
     bank_confirmed: bool,
 }
 
@@ -540,8 +540,7 @@ pub(crate) fn report(
             gross_minor,
             refunds_minor,
             reported_fees_minor,
-            source: original_source.effective(reader, company, &key)?,
-            original_source,
+            provenance: original_source.review(reader, company, &key)?,
             bank_confirmed: bank_confirmed(reader, company, &key)?,
         })
     })
@@ -569,7 +568,7 @@ fn bank_confirmed(
                          AND (f.environment='production')=p.live)
                 OR e.amount=(SELECT COALESCE(SUM(c.amount),0) FROM entry_clearings c
                        WHERE c.entry_id=e.id AND c.company_slug=e.company_slug
-                         AND (c.status='reconciled' OR c.statement_ref IS NOT NULL))
+                         AND c.status='reconciled')
             )
         )",
         params![company, payout],

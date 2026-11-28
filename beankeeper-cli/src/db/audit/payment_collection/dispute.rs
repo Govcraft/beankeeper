@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::{
     Actor, AuditEntity, CollectionOutcome, ReadConn, record,
-    reported::{self, Facts, Origin, Source},
+    reported::{self, Facts, Origin, ReviewedSource, Source},
     validation,
 };
 use crate::{
@@ -145,8 +145,8 @@ pub struct DisputeView {
     amount_minor: PositiveMinorUnits,
     original_receipt: Option<TransactionId>,
     allocation_effect: &'static str,
-    source: Source,
-    original_source: Source,
+    #[serde(flatten)]
+    provenance: ReviewedSource,
 }
 
 pub(crate) fn report(
@@ -190,8 +190,7 @@ pub(crate) fn report(
             currency,
             amount_minor,
             original_receipt,
-            source: original_source.effective(reader, company, &key)?,
-            original_source,
+            provenance: original_source.review(reader, company, &key)?,
             allocation_effect: "unchanged_pending_review",
         })
     })

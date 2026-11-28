@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::{
     Actor, AuditEntity, CollectionOutcome, ReadConn, record,
-    reported::{self, Facts, Origin, Source},
+    reported::{self, Facts, Origin, ReviewedSource, Source},
     validation,
 };
 use crate::{
@@ -276,8 +276,8 @@ pub struct RefundView {
     currency: Currency,
     amount_minor: PositiveMinorUnits,
     transaction: Option<TransactionId>,
-    source: Source,
-    original_source: Source,
+    #[serde(flatten)]
+    provenance: ReviewedSource,
 }
 
 pub(crate) fn report(
@@ -308,8 +308,7 @@ pub(crate) fn report(
             currency,
             amount_minor,
             transaction,
-            source: original_source.effective(reader, company, &key)?,
-            original_source,
+            provenance: original_source.review(reader, company, &key)?,
         })
     })
     .collect()

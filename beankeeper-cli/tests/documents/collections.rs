@@ -521,17 +521,32 @@ fn complete_agent_payout(books: &Books) -> TestResult {
         .iter()
         .find(|entry| entry["account_code"] == "1000")
         .ok_or("missing bank debit")?;
-    books.data(&[
-        "txn",
-        "clear",
-        &transaction,
-        "--entry",
-        &debit["id"].to_string(),
-        "--date",
-        "2026-01-09",
-        "--statement",
-        "bank-jan",
-    ])?;
+    let entry = debit["id"].to_string();
+    let clear = |status| {
+        books.data(&[
+            "txn",
+            "clear",
+            &transaction,
+            "--entry",
+            &entry,
+            "--date",
+            "2026-01-09",
+            "--statement",
+            "bank-jan",
+            "--status",
+            status,
+        ])
+    };
+    clear("cleared")?;
+    assert_eq!(
+        books.data(&["collection", "payouts"])?[0]["bank_confirmed"],
+        false
+    );
+    assert_eq!(
+        books.data(&["collection", "exceptions"])?[0]["payout"],
+        "po_agent"
+    );
+    clear("reconciled")?;
     assert_eq!(
         books.data(&["collection", "payouts"])?[0]["bank_confirmed"],
         true
@@ -573,15 +588,6 @@ fn signed_delivery_upgrades_agreement_and_retains_conflicts_without_reposting() 
             &json!({"id":"pi_agent","status":"succeeded","amount_received":amount,"currency":"usd"}),
         )
     };
-    let conflict = expected("evt_conflict", 7100);
-    assert_eq!(
-        send(&books, spool.path(), "conflict", &conflict, true)?["status"],
-        "review"
-    );
-    assert_eq!(
-        books.data(&["collection", "exceptions"])?[0]["evidence_key"],
-        "pi_agent"
-    );
     let exact = expected("evt_confirms", 6000);
     assert_eq!(
         send(&books, spool.path(), "confirms", &exact, true)?["status"],
@@ -595,6 +601,20 @@ fn signed_delivery_upgrades_agreement_and_retains_conflicts_without_reposting() 
     assert_eq!(view["payment"]["source"], "signed");
     assert_eq!(view["payment"]["original_source"], "agent_reported");
     assert_eq!(view["payment"]["posting"], applied["detail"]["transaction"]);
+    assert_eq!(view["payment"]["signed_conflict"], false);
+    let conflict = expected("evt_conflict", 7100);
+    assert_eq!(
+        send(&books, spool.path(), "conflict", &conflict, true)?["status"],
+        "review"
+    );
+    assert_eq!(
+        books.data(&["collection", "exceptions"])?[0]["evidence_key"],
+        "pi_agent"
+    );
+    let disputed = books.data(&["collection", "show", collection])?;
+    assert_eq!(disputed["payment"]["source"], "agent_reported");
+    assert_eq!(disputed["payment"]["signed_conflict"], true);
+
     assert_eq!(
         super::row(&books.aging("2026-01-15")?, "COMPARE-STRIPE")?["open_minor"],
         4000

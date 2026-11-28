@@ -279,8 +279,7 @@ pub(super) fn payment_status(
             Ok(PaymentView {
                 payment,
                 posting,
-                source: original_source.effective(reader, company, &key)?,
-                original_source,
+                provenance: original_source.review(reader, company, &key)?,
             })
         })
         .transpose()
