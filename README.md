@@ -617,7 +617,7 @@ operation catalog. Input schemas describe nested fields inline. Send objects and
 arrays directly. Clients that encode a structured field as JSON text can send
 the same arguments and receive the same validation. Capability enforcement can
 restrict discovery further. Company-scoped tools require a `company` argument.
-`report` takes a `kind` and its options, with all 13 CLI report kinds available, including `schedule-c`,
+`report` takes a `kind` and its options, with all 14 CLI report kinds available, including `schedule-c`,
 `1099` and `trend`. See the [report-kind list](docs/beankeeper/references/commands.md#report-kinds).
 For `trial-balance`, `balance`, `balance-sheet`, and `reconciliation`, use
 `as_of` or `to` in MCP and `--as-of` or `--to` in the CLI. Use `as_of` for

@@ -161,6 +161,19 @@ impl TryFrom<(i32, Option<Month>, Option<Month>, Option<Month>)> for VarianceMon
     }
 }
 
+impl TryFrom<&crate::commands::report_tax::VendorArgs> for ReportQuery {
+    type Error = CliError;
+
+    fn try_from(args: &crate::commands::report_tax::VendorArgs) -> Result<Self, Self::Error> {
+        let TaxSelection(dates, currency) = (&args.period).try_into()?;
+        Ok(Self::Vendor1099 {
+            dates,
+            currency,
+            threshold: args.threshold.clone().unwrap_or_default(),
+        })
+    }
+}
+
 impl TryFrom<&BudgetVarianceArgs> for VarianceMonths {
     type Error = CliError;
 
@@ -201,6 +214,7 @@ pub(crate) enum ReportQuery {
     IncomeStatement {
         scope: ReportScope,
         window: ReportWindow,
+        basis: super::super::report_cash_basis::BasisMode,
     },
     BalanceSheet {
         scope: ReportScope,
@@ -241,6 +255,7 @@ pub(crate) enum ReportQuery {
         accounts: Vec<AccountSelector>,
         window: ComparisonWindow,
     },
+    CashForecast(crate::commands::report_forecast::ForecastRequest),
     Aging(AgingRequest),
     Reconciliation(ReconciliationSelection),
 }
@@ -266,6 +281,7 @@ impl ReportQuery {
             Self::Ledger { .. } => Operation::ReportLedger,
             Self::BudgetVariance { .. } => Operation::ReportBudgetVariance,
             Self::Trend { .. } => Operation::ReportTrend,
+            Self::CashForecast(_) => Operation::ReportCashForecast,
             Self::CashFlow { .. } => Operation::ReportCashFlow,
             Self::Aging(_) => Operation::ReportAging,
             Self::Reconciliation(_) => Operation::ReportReconciliation,
@@ -370,8 +386,16 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 period,
                 compare,
                 explain_change,
+                basis,
+                allow_incomplete,
+                card_accounts,
             } => Self::IncomeStatement {
                 scope: scope(from, to, currency)?,
+                basis: super::super::report_cash_basis::BasisMode::resolve(
+                    *basis,
+                    *allow_incomplete,
+                    card_accounts.clone(),
+                )?,
                 window: (*period, *compare, account(explain_change)).try_into()?,
             },
             ReportCommand::BalanceSheet {
@@ -394,14 +418,7 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 let TaxSelection(dates, currency) = args.try_into()?;
                 Self::ScheduleC { dates, currency }
             }
-            ReportCommand::Vendor1099(args) => {
-                let TaxSelection(dates, currency) = (&args.period).try_into()?;
-                Self::Vendor1099 {
-                    dates,
-                    currency,
-                    threshold: args.threshold.clone().unwrap_or_default(),
-                }
-            }
+            ReportCommand::Vendor1099(args) => return args.try_into(),
             ReportCommand::Ledger {
                 account,
                 from,
@@ -420,6 +437,7 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 metric: args.metric,
                 window: (args.compare, account(&args.explain_change)).try_into()?,
             },
+            ReportCommand::CashForecast(args) => Self::CashForecast(args.into()),
             ReportCommand::CashFlow(args) => Self::CashFlow {
                 scope: scope(&args.from, &args.to, &args.currency)?,
                 accounts: accounts(&args.cash_account),

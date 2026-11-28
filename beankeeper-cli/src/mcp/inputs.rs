@@ -939,6 +939,25 @@ pub(crate) enum ReportOptions {
     Aging(AgingInput),
     Reconciliation(ReconciliationInput),
     CashFlow(CashFlowInput),
+    CashForecast(CashForecastInput),
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CashForecastInput {
+    pub as_of: Date,
+    pub through: Date,
+    pub cadence: Option<crate::commands::report_forecast::ForecastCadenceArg>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
+    #[serde(default)]
+    pub cash_account: Vec<Account>,
+    #[serde(default)]
+    pub adjust: Vec<String>,
+    /// Confirmed scheduled:TEMPLATE:DATE=open-item:DOCUMENT source links.
+    #[serde(default)]
+    pub link_sources: Vec<crate::commands::report_forecast::ForecastLink>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -1013,6 +1032,11 @@ pub(crate) struct IncomeStatementInput {
     pub period: Option<PeriodArg>,
     pub compare: Option<Comparison>,
     pub explain_change: Option<Account>,
+    pub basis: Option<crate::commands::report_cash_basis::AccountingBasis>,
+    #[serde(default)]
+    pub allow_incomplete: bool,
+    #[serde(default)]
+    pub card_accounts: Vec<Account>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

@@ -9,8 +9,8 @@ use serde::Serialize;
 
 use super::report_periods::MultiReportKind;
 use super::{
-    report_aging, report_cash_flow, report_compare, report_ledger, report_periods,
-    report_reconciliation, report_tax, report_trend,
+    report_aging, report_cash_basis, report_cash_flow, report_compare, report_forecast,
+    report_ledger, report_periods, report_reconciliation, report_tax, report_trend,
 };
 use crate::cli::{Cli, Command, OutputFormat, ReportCommand, resolve_format};
 use crate::commands::report_currency::resolve_report_currency;
@@ -337,6 +337,8 @@ enum ReportData {
     Ledger(report_ledger::LedgerReport),
     Aging(report_aging::AgingResponse),
     CashFlow(report_cash_flow::CashFlowStatement),
+    CashForecast(report_forecast::Forecast),
+    CashBasis(Box<report_cash_basis::CashBasisReport>),
 }
 
 struct StatementWindow {
@@ -406,9 +408,11 @@ impl ReportReader<'_> {
             } => {
                 self.financial_statement(MultiReportKind::TrialBalance, scope, window, account_type)
             }
-            ReportQuery::IncomeStatement { scope, window } => {
-                self.financial_statement(MultiReportKind::IncomeStatement, scope, window, None)
-            }
+            ReportQuery::IncomeStatement {
+                scope,
+                window,
+                basis,
+            } => self.income_with_basis(scope, window, basis),
             ReportQuery::Balance {
                 scope,
                 account,
@@ -429,6 +433,13 @@ impl ReportReader<'_> {
             } => self.compare_or(Kind::Trend(period, metric), scope, &window, || {
                 self.trend(scope, period, metric)
             }),
+            ReportQuery::CashForecast(request) => report_forecast::read(
+                self.reader,
+                self.company,
+                &request,
+                self.currency(request.currency)?,
+            )
+            .map(ReportData::CashForecast),
             ReportQuery::CashFlow {
                 scope,
                 accounts,
@@ -480,6 +491,28 @@ impl ReportReader<'_> {
             ReportQuery::Aging(request) => request
                 .compute(self.reader, self.company)
                 .map(ReportData::Aging),
+        }
+    }
+
+    fn income_with_basis(
+        &self,
+        scope: ReportScope,
+        window: ReportWindow,
+        basis: report_cash_basis::BasisMode,
+    ) -> Result<ReportData, CliError> {
+        match basis {
+            report_cash_basis::BasisMode::Accrual => {
+                self.financial_statement(MultiReportKind::IncomeStatement, scope, window, None)
+            }
+            report_cash_basis::BasisMode::Cash(policy) => report_cash_basis::read_windows(
+                self.reader,
+                self.company,
+                scope.dates.try_into()?,
+                self.currency(scope.currency)?,
+                window,
+                &policy,
+            )
+            .map(|r| ReportData::CashBasis(Box::new(r))),
         }
     }
 
@@ -659,6 +692,8 @@ impl ReportData {
             Self::Ledger(report) => report_ledger::render(context, report, output),
             Self::Aging(report) => report.render(context, output),
             Self::Reconciliation(report) => report_reconciliation::render(context, report, output),
+            Self::CashBasis(report) => report_cash_basis::render(context, report, output),
+            Self::CashForecast(report) => report_forecast::render(context, report, output),
             Self::CashFlow(report) => report_cash_flow::render(context, report, output),
         }
     }

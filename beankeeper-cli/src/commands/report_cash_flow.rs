@@ -452,7 +452,7 @@ fn read_account_type(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result
 }
 
 /// Resolve the set of cash accounts (explicit or by the default rule).
-fn resolve_cash_accounts<'a>(
+pub(super) fn resolve_cash_accounts<'a>(
     conn: ReadConn<'_>,
     company: &str,
     explicit: impl IntoIterator<Item = &'a str>,
@@ -682,7 +682,7 @@ fn amount_overflow() -> CliError {
 
 /// Sum of debits minus credits on the cash accounts for transactions whose
 /// date is before `date` (or on it, when `inclusive`).
-fn cash_balance(
+pub(super) fn cash_balance(
     conn: ReadConn<'_>,
     company: &str,
     currency: Currency,

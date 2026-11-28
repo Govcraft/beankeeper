@@ -96,9 +96,6 @@ impl TryFrom<ReportOptions> for ReportQuery {
     type Error = CliError;
 
     fn try_from(options: ReportOptions) -> Result<Self, Self::Error> {
-        let scope = |from, to, currency: Option<beankeeper::types::Currency>| {
-            ReportScope::try_from((date(from), date(to), currency))
-        };
         Ok(match options {
             ReportOptions::TrialBalance(input) => Self::TrialBalance {
                 scope: scope(input.from, input.to, input.currency)?,
@@ -119,15 +116,7 @@ impl TryFrom<ReportOptions> for ReportQuery {
                 )
                     .try_into()?,
             },
-            ReportOptions::IncomeStatement(input) => Self::IncomeStatement {
-                scope: scope(input.from, input.to, input.currency)?,
-                window: (
-                    input.period.map(Into::into),
-                    input.compare.map(Text::into_inner),
-                    input.explain_change.map(account),
-                )
-                    .try_into()?,
-            },
+            ReportOptions::IncomeStatement(input) => return income_statement_query(input),
             ReportOptions::BalanceSheet(input) => Self::BalanceSheet {
                 scope: scope(None, input.to, input.currency)?,
                 window: (
@@ -179,6 +168,7 @@ impl TryFrom<ReportOptions> for ReportQuery {
                 )
                     .try_into()?,
             },
+            ReportOptions::CashForecast(input) => Self::CashForecast(input.into()),
             ReportOptions::CashFlow(input) => Self::CashFlow {
                 scope: scope(input.from, input.to, input.currency)?,
                 accounts: accounts(input.cash_account),
@@ -296,4 +286,35 @@ impl From<AuditLog> for AuditQuery {
             offset: input.offset.unwrap_or_default(),
         }
     }
+}
+
+fn income_statement_query(
+    input: super::inputs::IncomeStatementInput,
+) -> Result<ReportQuery, CliError> {
+    Ok(ReportQuery::IncomeStatement {
+        scope: scope(input.from, input.to, input.currency)?,
+        basis: crate::commands::report_cash_basis::BasisMode::resolve(
+            input.basis.unwrap_or_default(),
+            input.allow_incomplete,
+            input
+                .card_accounts
+                .into_iter()
+                .map(super::input_values::Text::into_inner)
+                .collect(),
+        )?,
+        window: (
+            input.period.map(Into::into),
+            input.compare.map(Text::into_inner),
+            input.explain_change.map(account),
+        )
+            .try_into()?,
+    })
+}
+
+fn scope(
+    from: Option<Text<CalendarDate>>,
+    to: Option<Text<CalendarDate>>,
+    currency: Option<beankeeper::types::Currency>,
+) -> Result<ReportScope, CliError> {
+    ReportScope::try_from((date(from), date(to), currency))
 }

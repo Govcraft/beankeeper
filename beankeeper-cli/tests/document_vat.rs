@@ -307,3 +307,89 @@ fn assert_register(
     assert_eq!(payable["differences"][0]["posted_minor"], 35);
     Ok(report)
 }
+
+#[test]
+fn cash_income_excludes_output_vat_from_a_partial_receipt() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("cash-vat.db");
+    seed(&path)?;
+    company(&path, &["account", "classify", "1000", "cash"])?;
+    let customer = company(
+        &path,
+        &[
+            "counterparty",
+            "create",
+            "--name",
+            "Buyer",
+            "--role",
+            "customer",
+        ],
+    )?;
+    let party = selector(&customer["party"], "id")?;
+    let configured = configure(&path, "MAIN", "2026-01-01", "20")?;
+    let code = selector(&configured, "code")?;
+    let draft = json!({
+        "kind":"invoice", "number":"CASH-VAT-1", "counterparty_id":party,
+        "control_account":"1100", "lines":[{"description":"Service", "quantity":"1",
+        "unit_price_minor":10000, "account":"4000", "tax":{"code":code}}]
+    });
+    let invoice = company(&path, &["document", "draft", "--terms", &draft.to_string()])?;
+    let invoice = selector(&invoice["record"], "id")?;
+    company(
+        &path,
+        &["document", "issue", invoice, "--date", "2026-06-01"],
+    )?;
+    let receipt = company(
+        &path,
+        &[
+            "txn",
+            "post",
+            "--description",
+            "Half paid",
+            "--date",
+            "2026-07-02",
+            "--debit",
+            "1000:60",
+            "--credit",
+            "1100:60",
+        ],
+    )?;
+    let receipt = receipt["id"].to_string();
+    company(&path, &["counterparty", "associate", party, &receipt])?;
+    let allocation = json!([{"document_id":invoice,"amount_minor":6000}]).to_string();
+    company(
+        &path,
+        &[
+            "document",
+            "allocate",
+            &receipt,
+            "--date",
+            "2026-07-02",
+            "--allocations",
+            &allocation,
+        ],
+    )?;
+    let result = company(
+        &path,
+        &[
+            "report",
+            "income-statement",
+            "--basis",
+            "cash",
+            "--from",
+            "2026-07-01",
+            "--to",
+            "2026-07-31",
+        ],
+    )?;
+    assert_eq!(result["net_income"], 5000);
+    assert_eq!(
+        result["recognition"]
+            .as_array()
+            .ok_or("missing recognition")?
+            .len(),
+        1
+    );
+    assert_eq!(result["recognition"][0]["account"], "4000");
+    Ok(())
+}
