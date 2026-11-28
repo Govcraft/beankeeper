@@ -158,7 +158,7 @@ mod tests {
                         jti: "review-token".into(),
                     },
                 },
-                transaction_id: crate::db::ids::fixture_id(12),
+                transaction_id: crate::db::ids::fixture_id(12)?,
             },
             payload: PostingPayload {
                 description: "Expense".into(),

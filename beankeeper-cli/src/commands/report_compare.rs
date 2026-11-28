@@ -1676,8 +1676,10 @@ mod tests {
             normal_balance: None,
             values: ComparisonValues::new(usd(150), usd(100))?,
         };
-        let contribution = |id, minor| TransactionContribution {
-            transaction_id: crate::db::ids::fixture_id(id),
+        let first = crate::db::ids::fixture_id(1)?;
+        let second = crate::db::ids::fixture_id(2)?;
+        let contribution = |transaction_id, minor| TransactionContribution {
+            transaction_id,
             date: NaiveDate::default(),
             description: "Rent".into(),
             reference: None,
@@ -1685,9 +1687,11 @@ mod tests {
             amount: usd(minor),
             change: usd(minor),
         };
-        assert!(finish_explanation(&account, vec![contribution(1, 49)]).is_err());
-        let result =
-            finish_explanation(&account, vec![contribution(2, -100), contribution(1, 150)])?;
+        assert!(finish_explanation(&account, vec![contribution(first, 49)]).is_err());
+        let result = finish_explanation(
+            &account,
+            vec![contribution(second, -100), contribution(first, 150)],
+        )?;
         assert_eq!(result.change, usd(50));
         assert_eq!(result.payees.len(), 1);
         assert_eq!(result.payees[0].change, usd(50));

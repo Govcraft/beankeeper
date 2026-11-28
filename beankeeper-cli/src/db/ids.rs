@@ -137,6 +137,6 @@ impl From<TransactionId> for PartnerTransactionId {
 }
 
 #[cfg(test)]
-pub(crate) fn fixture_id<T: TryFrom<i64, Error = CliError>>(id: i64) -> T {
-    id.try_into().expect("positive fixture identifier")
+pub(crate) fn fixture_id<T: TryFrom<i64, Error = CliError>>(id: i64) -> Result<T, CliError> {
+    id.try_into()
 }

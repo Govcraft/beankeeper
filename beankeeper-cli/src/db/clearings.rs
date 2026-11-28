@@ -632,15 +632,15 @@ mod tests {
         amount: PositiveMinorUnits,
         stmt: Option<&str>,
         status: ClearingStatus,
-    ) -> Clearing {
-        Clearing {
-            id: crate::db::ids::fixture_id(id),
-            entry_id: crate::db::ids::fixture_id(1),
+    ) -> Result<Clearing, CliError> {
+        Ok(Clearing {
+            id: crate::db::ids::fixture_id(id)?,
+            entry_id: crate::db::ids::fixture_id(1)?,
             amount,
             cleared_date: date(TXN_DATE),
             statement_ref: stmt.map(str::to_string),
             state: status.on(date(TXN_DATE)),
-        }
+        })
     }
 
     const TXN_DATE: &str = "2026-01-01";
@@ -725,31 +725,32 @@ mod tests {
     }
 
     #[test]
-    fn persisted_clearing_totals_reject_overflow_and_overclear() {
+    fn persisted_clearing_totals_reject_overflow_and_overclear() -> Result<(), CliError> {
         let wide = [
-            c(1, units(i64::MAX), None, Cleared),
-            c(2, units(1), None, Cleared),
+            c(1, units(i64::MAX), None, Cleared)?,
+            c(2, units(1), None, Cleared)?,
         ];
         assert!(matches!(cleared_sum(&wide), Err(CliError::Database(_))));
         assert!(matches!(
-            derive_status(units(1), &[c(1, units(2), None, Cleared)]),
+            derive_status(units(1), &[c(1, units(2), None, Cleared)?]),
             Err(CliError::Database(_))
         ));
+        Ok(())
     }
 
     #[test]
     fn derive_status_rules() -> Result<(), CliError> {
         assert_eq!(derive_status(units(100), &[])?, EntryStatus::Uncleared);
         assert_eq!(
-            derive_status(units(100), &[c(1, units(40), None, Cleared)])?,
+            derive_status(units(100), &[c(1, units(40), None, Cleared)?])?,
             EntryStatus::Uncleared
         );
         assert_eq!(
             derive_status(
                 units(100),
                 &[
-                    c(1, units(40), None, Cleared),
-                    c(2, units(60), None, Reconciled)
+                    c(1, units(40), None, Cleared)?,
+                    c(2, units(60), None, Reconciled)?
                 ]
             )?,
             EntryStatus::Cleared
@@ -758,8 +759,8 @@ mod tests {
             derive_status(
                 units(100),
                 &[
-                    c(1, units(40), None, Reconciled),
-                    c(2, units(60), None, Reconciled)
+                    c(1, units(40), None, Reconciled)?,
+                    c(2, units(60), None, Reconciled)?
                 ]
             )?,
             EntryStatus::Reconciled
@@ -768,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn default_clears_full_remaining() {
+    fn default_clears_full_remaining() -> Result<(), CliError> {
         assert_eq!(
             plan_clear(units(100), &[], &spec(None, None)).ok(),
             Some(ClearPlan::Insert {
@@ -779,7 +780,7 @@ mod tests {
         assert_eq!(
             plan_clear(
                 units(100),
-                &[c(1, units(30), Some("S1"), Cleared)],
+                &[c(1, units(30), Some("S1"), Cleared)?],
                 &spec(None, None)
             )
             .ok(),
@@ -788,11 +789,12 @@ mod tests {
                 promote: vec![]
             })
         );
+        Ok(())
     }
 
     #[test]
-    fn partial_clears_accumulate_until_full() {
-        let existing = [c(1, units(30), Some("S1"), Cleared)];
+    fn partial_clears_accumulate_until_full() -> Result<(), CliError> {
+        let existing = [c(1, units(30), Some("S1"), Cleared)?];
         assert_eq!(
             plan_clear(units(100), &existing, &spec(Some(70), Some("S2"))).ok(),
             Some(ClearPlan::Insert {
@@ -801,29 +803,31 @@ mod tests {
             })
         );
         let full = [
-            c(1, units(30), Some("S1"), Cleared),
-            c(2, units(70), Some("S2"), Cleared),
+            c(1, units(30), Some("S1"), Cleared)?,
+            c(2, units(70), Some("S2"), Cleared)?,
         ];
         assert_eq!(
             plan_clear(units(100), &full, &spec(None, None)).ok(),
             Some(ClearPlan::Skip(SkipReason::FullyCleared))
         );
+        Ok(())
     }
 
     #[test]
-    fn over_clearing_is_rejected() {
-        let existing = [c(1, units(60), None, Cleared)];
+    fn over_clearing_is_rejected() -> Result<(), CliError> {
+        let existing = [c(1, units(60), None, Cleared)?];
         assert!(matches!(
             plan_clear(units(100), &existing, &spec(Some(41), None)),
             Err(CliError::Validation(_))
         ));
         assert!(plan_clear(units(100), &existing, &spec(Some(40), None)).is_ok());
         assert!(PositiveMinorUnits::try_from(0_i64).is_err());
+        Ok(())
     }
 
     #[test]
-    fn same_statement_is_idempotent() {
-        let existing = [c(7, units(30), Some("S1"), Cleared)];
+    fn same_statement_is_idempotent() -> Result<(), CliError> {
+        let existing = [c(7, units(30), Some("S1"), Cleared)?];
         assert_eq!(
             plan_clear(units(100), &existing, &spec(Some(30), Some("S1"))).ok(),
             Some(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement))
@@ -841,34 +845,36 @@ mod tests {
         assert_eq!(
             plan_clear(units(100), &existing, &reconcile(Some("S1"), DATE)).ok(),
             Some(ClearPlan::Promote {
-                ids: vec![crate::db::ids::fixture_id(7)]
+                ids: vec![crate::db::ids::fixture_id(7)?]
             })
         );
+        Ok(())
     }
 
     #[test]
-    fn reconcile_in_full_promotes_existing() {
+    fn reconcile_in_full_promotes_existing() -> Result<(), CliError> {
         let reconcile = reconcile(None, DATE);
-        let partial = [c(1, units(40), None, Cleared)];
+        let partial = [c(1, units(40), None, Cleared)?];
         assert_eq!(
             plan_clear(units(100), &partial, &reconcile).ok(),
             Some(ClearPlan::Insert {
                 amount: units(60),
-                promote: vec![crate::db::ids::fixture_id(1)]
+                promote: vec![crate::db::ids::fixture_id(1)?]
             })
         );
-        let full = [c(1, units(100), None, Cleared)];
+        let full = [c(1, units(100), None, Cleared)?];
         assert_eq!(
             plan_clear(units(100), &full, &reconcile).ok(),
             Some(ClearPlan::Promote {
-                ids: vec![crate::db::ids::fixture_id(1)]
+                ids: vec![crate::db::ids::fixture_id(1)?]
             })
         );
-        let done = [c(1, units(100), None, Reconciled)];
+        let done = [c(1, units(100), None, Reconciled)?];
         assert_eq!(
             plan_clear(units(100), &done, &reconcile).ok(),
             Some(ClearPlan::Skip(SkipReason::FullyCleared))
         );
+        Ok(())
     }
 
     #[test]
@@ -894,8 +900,8 @@ mod tests {
     }
 
     #[test]
-    fn reconciled_date_must_not_precede_cleared_date() {
-        let mut feb = c(7, units(100), Some("S1"), Cleared);
+    fn reconciled_date_must_not_precede_cleared_date() -> Result<(), CliError> {
+        let mut feb = c(7, units(100), Some("S1"), Cleared)?;
         feb.cleared_date = date("2026-02-15");
         let existing = [feb];
         // Promote by statement and promote in full both check the date.
@@ -912,15 +918,16 @@ mod tests {
         assert_eq!(
             plan_clear(units(100), &existing, &reconcile(Some("S1"), "2026-02-15")).ok(),
             Some(ClearPlan::Promote {
-                ids: vec![crate::db::ids::fixture_id(7)]
+                ids: vec![crate::db::ids::fixture_id(7)?]
             })
         );
+        Ok(())
     }
 
     #[test]
-    fn cleared_request_on_reconciled_clearings_is_locked() {
+    fn cleared_request_on_reconciled_clearings_is_locked() -> Result<(), CliError> {
         // By statement.
-        let existing = [c(7, units(30), Some("S1"), Reconciled)];
+        let existing = [c(7, units(30), Some("S1"), Reconciled)?];
         let err = plan_clear(units(100), &existing, &spec(None, Some("S1")));
         assert!(
             matches!(&err, Err(CliError::Validation(m))
@@ -929,8 +936,8 @@ mod tests {
         );
         // Fully reconciled entry, no statement.
         let full = [
-            c(1, units(40), None, Reconciled),
-            c(2, units(60), Some("S2"), Reconciled),
+            c(1, units(40), None, Reconciled)?,
+            c(2, units(60), Some("S2"), Reconciled)?,
         ];
         let err = plan_clear(units(100), &full, &spec(None, None));
         assert!(
@@ -952,8 +959,8 @@ mod tests {
         );
         // Mixed, fully covered: still a plain skip.
         let mixed = [
-            c(1, units(40), None, Reconciled),
-            c(2, units(60), None, Cleared),
+            c(1, units(40), None, Reconciled)?,
+            c(2, units(60), None, Cleared)?,
         ];
         assert_eq!(
             plan_clear(units(100), &mixed, &spec(None, None)).ok(),
@@ -964,25 +971,30 @@ mod tests {
             plan_clear(units(100), &existing, &reconcile(Some("S1"), DATE)).ok(),
             Some(ClearPlan::Skip(SkipReason::AlreadyClearedByStatement))
         );
+        Ok(())
     }
 
     #[test]
-    fn unclear_selects_by_statement() {
+    fn unclear_selects_by_statement() -> Result<(), CliError> {
         let existing = [
-            c(1, units(30), Some("S1"), Cleared),
-            c(2, units(20), None, Cleared),
+            c(1, units(30), Some("S1"), Cleared)?,
+            c(2, units(20), None, Cleared)?,
         ];
         assert_eq!(
             plan_unclear(&existing, None),
-            vec![crate::db::ids::fixture_id(1), crate::db::ids::fixture_id(2)]
+            vec![
+                crate::db::ids::fixture_id(1)?,
+                crate::db::ids::fixture_id(2)?
+            ]
         );
         assert_eq!(
             plan_unclear(&existing, Some("S1")),
-            vec![crate::db::ids::fixture_id(1)]
+            vec![crate::db::ids::fixture_id(1)?]
         );
         assert_eq!(
             plan_unclear(&existing, Some("S9")),
             Vec::<ClearingId>::new()
         );
+        Ok(())
     }
 }

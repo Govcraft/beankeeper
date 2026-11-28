@@ -1449,7 +1449,7 @@ mod tests {
         let db = setup()?;
         let result = get_transaction(
             &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
-            crate::db::ids::fixture_id(999),
+            crate::db::ids::fixture_id(999)?,
         );
         assert!(matches!(result, Err(CliError::NotFound(_))));
         Ok(())
@@ -1663,7 +1663,7 @@ mod tests {
         )?;
         let result = get_transaction(
             &crate::db::companies::Company::bind(ReadConn::physical(conn), "acme".parse()?)?,
-            crate::db::ids::fixture_id(conn.last_insert_rowid()),
+            crate::db::ids::fixture_id(conn.last_insert_rowid())?,
         );
         assert!(matches!(
             result,

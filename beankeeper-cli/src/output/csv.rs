@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn render_transactions_with_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(1),
+            id: crate::db::ids::fixture_id(1)?,
             company_slug: "acme".parse()?,
             description: "Sale".into(),
             metadata: Some("INV-001".into()),
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn render_transactions_without_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(1),
+            id: crate::db::ids::fixture_id(1)?,
             company_slug: "acme".parse()?,
             description: "Sale".into(),
             metadata: None,

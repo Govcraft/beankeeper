@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn render_transactions_with_entries() -> Result<(), Box<dyn std::error::Error>> {
         let txns = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(1),
+            id: crate::db::ids::fixture_id(1)?,
             company_slug: "acme".parse()?,
             description: "Sale".into(),
             metadata: None,
@@ -1287,11 +1287,11 @@ mod tests {
         }];
         let mut map = HashMap::new();
         map.insert(
-            crate::db::ids::fixture_id(1),
+            crate::db::ids::fixture_id(1)?,
             vec![
                 EntryRow {
-                    id: crate::db::ids::fixture_id(1),
-                    transaction_id: crate::db::ids::fixture_id(1),
+                    id: crate::db::ids::fixture_id(1)?,
+                    transaction_id: crate::db::ids::fixture_id(1)?,
                     account_code: "1000".into(),
                     company_slug: "acme".parse()?,
                     direction: beankeeper::types::DebitOrCredit::Debit,
@@ -1304,8 +1304,8 @@ mod tests {
                     posting_status: crate::db::holds::EntryStatus::Posted,
                 },
                 EntryRow {
-                    id: crate::db::ids::fixture_id(2),
-                    transaction_id: crate::db::ids::fixture_id(1),
+                    id: crate::db::ids::fixture_id(2)?,
+                    transaction_id: crate::db::ids::fixture_id(1)?,
                     account_code: "4000".into(),
                     company_slug: "acme".parse()?,
                     direction: beankeeper::types::DebitOrCredit::Credit,
@@ -1332,7 +1332,7 @@ mod tests {
     #[test]
     fn render_transactions_missing_entries() -> Result<(), Box<dyn std::error::Error>> {
         let txns = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(99),
+            id: crate::db::ids::fixture_id(99)?,
             company_slug: "acme".parse()?,
             description: "Orphan".into(),
             metadata: None,

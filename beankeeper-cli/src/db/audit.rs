@@ -3910,7 +3910,7 @@ mod tests {
                 &actor,
                 &acme,
                 fixture_txn(1)?,
-                crate::db::ids::fixture_id(partner_id),
+                crate::db::ids::fixture_id(partner_id)?,
             )
         })?;
 
@@ -3933,7 +3933,7 @@ mod tests {
                 &actor,
                 &acme,
                 fixture_txn(1)?,
-                crate::db::ids::fixture_id(partner_id)
+                crate::db::ids::fixture_id(partner_id)?
             ))
             .is_err()
         );

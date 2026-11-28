@@ -2784,24 +2784,33 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap_or_else(|e| panic!("bad date {s}: {e}"))
     }
 
-    fn mv(id: i64, date: &str, amount: i128) -> Movement {
+    fn mv(id: i64, date: &str, amount: i128) -> Result<Movement, CliError> {
         movement_with_links(id, date, amount, LinkSpec::None)
     }
 
-    fn movement_with_links(id: i64, date: &str, amount: i128, links: LinkSpec) -> Movement {
+    fn movement_with_links(
+        id: i64,
+        date: &str,
+        amount: i128,
+        links: LinkSpec,
+    ) -> Result<Movement, CliError> {
         Movement::new(
-            crate::db::ids::fixture_id(id),
+            crate::db::ids::fixture_id(id)?,
             d(date),
             format!("txn {id}"),
             Some(format!("R{id}")),
             amount.into(),
             links,
         )
-        .unwrap_or_else(|error| panic!("test movement: {error}"))
     }
 
     /// A settlement linked to the given targets.
-    fn linked(id: i64, date: &str, amount: i128, targets: Vec<LinkTarget>) -> Movement {
+    fn linked(
+        id: i64,
+        date: &str,
+        amount: i128,
+        targets: Vec<LinkTarget>,
+    ) -> Result<Movement, CliError> {
         movement_with_links(id, date, amount, LinkSpec::Targets(targets))
     }
 
@@ -2855,64 +2864,69 @@ mod tests {
     }
 
     #[test]
-    fn fifo_partial_payments_settle_oldest_first() {
+    fn fifo_partial_payments_settle_oldest_first() -> Result<(), CliError> {
         let r = apply_fifo(&[
-            mv(1, "2026-01-01", 1000),
-            mv(2, "2026-02-01", 500),
-            mv(3, "2026-02-15", -1200),
+            mv(1, "2026-01-01", 1000)?,
+            mv(2, "2026-02-01", 500)?,
+            mv(3, "2026-02-15", -1200)?,
         ]);
         assert_eq!(r.unapplied_credit, 0);
         assert_eq!(r.open_items.len(), 1);
         assert_eq!(r.open_items[0].transaction_id.get(), 2);
         assert_eq!(r.open_items[0].original, 500);
         assert_eq!(r.open_items[0].open, 300);
+        Ok(())
     }
 
     #[test]
-    fn fifo_overpayment_becomes_unapplied_credit() {
-        let r = apply_fifo(&[mv(1, "2026-01-01", 1000), mv(2, "2026-01-10", -1500)]);
+    fn fifo_overpayment_becomes_unapplied_credit() -> Result<(), CliError> {
+        let r = apply_fifo(&[mv(1, "2026-01-01", 1000)?, mv(2, "2026-01-10", -1500)?]);
         assert_eq!(r.open_items, Vec::<OpenItem>::new());
         assert_eq!(r.unapplied_credit, 500);
+        Ok(())
     }
 
     #[test]
-    fn fifo_unapplied_credit_is_consumed_by_later_charges() {
+    fn fifo_unapplied_credit_is_consumed_by_later_charges() -> Result<(), CliError> {
         let r = apply_fifo(&[
-            mv(1, "2026-01-01", -300),
-            mv(2, "2026-01-05", 200),
-            mv(3, "2026-01-06", 500),
+            mv(1, "2026-01-01", -300)?,
+            mv(2, "2026-01-05", 200)?,
+            mv(3, "2026-01-06", 500)?,
         ]);
         assert_eq!(r.unapplied_credit, 0);
         assert_eq!(r.open_items.len(), 1);
         assert_eq!(r.open_items[0].transaction_id.get(), 3);
         assert_eq!(r.open_items[0].open, 400);
+        Ok(())
     }
 
     #[test]
-    fn fifo_sorts_by_date_then_id() {
+    fn fifo_sorts_by_date_then_id() -> Result<(), CliError> {
         // Payment listed first but dated after the charge.
-        let r = apply_fifo(&[mv(5, "2026-03-01", -100), mv(9, "2026-02-01", 100)]);
+        let r = apply_fifo(&[mv(5, "2026-03-01", -100)?, mv(9, "2026-02-01", 100)?]);
         assert_eq!(r.open_items, Vec::<OpenItem>::new());
         assert_eq!(r.unapplied_credit, 0);
+        Ok(())
     }
 
     #[test]
-    fn fifo_ignores_zero_net_movements() {
-        let r = apply_fifo(&[mv(1, "2026-01-01", 0)]);
+    fn fifo_ignores_zero_net_movements() -> Result<(), CliError> {
+        let r = apply_fifo(&[mv(1, "2026-01-01", 0)?]);
         assert_eq!(r, MatchResult::default());
+        Ok(())
     }
 
     #[test]
-    fn fifo_invariant_open_minus_unapplied_equals_balance() {
+    fn fifo_invariant_open_minus_unapplied_equals_balance() -> Result<(), CliError> {
         let cases: Vec<Vec<Movement>> = vec![
-            vec![mv(1, "2026-01-01", 100), mv(2, "2026-01-02", -40)],
-            vec![mv(1, "2026-01-01", 100), mv(2, "2026-01-02", -400)],
+            vec![mv(1, "2026-01-01", 100)?, mv(2, "2026-01-02", -40)?],
+            vec![mv(1, "2026-01-01", 100)?, mv(2, "2026-01-02", -400)?],
             vec![
-                mv(1, "2026-01-01", -50),
-                mv(2, "2026-01-02", 30),
-                mv(3, "2026-01-03", -10),
-                mv(4, "2026-01-04", 500),
-                mv(5, "2026-01-05", -200),
+                mv(1, "2026-01-01", -50)?,
+                mv(2, "2026-01-02", 30)?,
+                mv(3, "2026-01-03", -10)?,
+                mv(4, "2026-01-04", 500)?,
+                mv(5, "2026-01-05", -200)?,
             ],
         ];
         for movements in cases {
@@ -2924,6 +2938,7 @@ mod tests {
             assert_eq!(r.total_open() - r.unapplied_credit, balance);
             assert!(r.total_open() == 0 || r.unapplied_credit == 0);
         }
+        Ok(())
     }
 
     #[test]
@@ -2968,27 +2983,28 @@ mod tests {
     }
 
     #[test]
-    fn aging_rejects_overflow_instead_of_wrapping_bucket_total() {
+    fn aging_rejects_overflow_instead_of_wrapping_bucket_total() -> Result<(), CliError> {
         let result = build_report(
             vec![
-                (None, mv(1, "2026-01-01", i128::from(i64::MAX))),
-                (None, mv(2, "2026-01-01", 1)),
+                (None, mv(1, "2026-01-01", i128::from(i64::MAX))?),
+                (None, mv(2, "2026-01-01", 1)?),
             ],
             d("2026-02-01"),
             default_buckets(),
             MatchMethod::Fifo,
         );
         assert!(matches!(result, Err(CliError::Validation(_))));
+        Ok(())
     }
 
     #[test]
-    fn large_intermediate_credit_is_retained_until_matching_completes() {
+    fn large_intermediate_credit_is_retained_until_matching_completes() -> Result<(), CliError> {
         let report = report_for(
             vec![
-                (None, mv(1, "2026-01-01", -i128::from(i64::MAX))),
-                (None, mv(2, "2026-01-02", -i128::from(i64::MAX))),
-                (None, mv(3, "2026-01-03", i128::from(i64::MAX))),
-                (None, mv(4, "2026-01-04", i128::from(i64::MAX))),
+                (None, mv(1, "2026-01-01", -i128::from(i64::MAX))?),
+                (None, mv(2, "2026-01-02", -i128::from(i64::MAX))?),
+                (None, mv(3, "2026-01-03", i128::from(i64::MAX))?),
+                (None, mv(4, "2026-01-04", i128::from(i64::MAX))?),
             ],
             d("2026-02-01"),
             default_buckets(),
@@ -2997,24 +3013,26 @@ mod tests {
         assert_eq!(report.total_open, 0);
         assert_eq!(report.unapplied_credit, 0);
         assert_eq!(report.account_balance, 0);
+        Ok(())
     }
 
     #[test]
-    fn neutral_movement_is_a_known_target_but_cannot_be_settled() {
+    fn neutral_movement_is_a_known_target_but_cannot_be_settled() -> Result<(), CliError> {
         let result = apply_specific(&[
-            mv(1, "2026-01-01", 0),
+            mv(1, "2026-01-01", 0)?,
             linked(
                 2,
                 "2026-01-02",
                 -10,
-                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(1))],
-            ),
+                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(1)?)],
+            )?,
         ]);
         assert_eq!(result.unapplied_credit, 10);
         assert_eq!(
             result.unmatched_links[0].reason,
             UnmatchedReason::NotACharge
         );
+        Ok(())
     }
 
     #[test]
@@ -3023,7 +3041,7 @@ mod tests {
         let account = AccountAging {
             account: account("1110", "asset")?,
             report: report_for(
-                vec![(None, mv(1, "2026-01-01", 100))],
+                vec![(None, mv(1, "2026-01-01", 100)?)],
                 d("2026-02-01"),
                 test_buckets("20,40,60"),
                 MatchMethod::Fifo,
@@ -3071,15 +3089,15 @@ mod tests {
     }
 
     #[test]
-    fn build_report_buckets_and_grand_total_matches_balance() {
+    fn build_report_buckets_and_grand_total_matches_balance() -> Result<(), CliError> {
         let as_of = d("2026-06-30");
         let grouped = vec![
-            (Some("A".to_string()), mv(1, "2026-06-30", 100)), // current
-            (Some("A".to_string()), mv(2, "2026-06-10", 200)), // 20 days
-            (Some("A".to_string()), mv(3, "2026-04-01", 300)), // 90 days
-            (Some("B".to_string()), mv(4, "2026-01-01", 400)), // 180 days
-            (Some("B".to_string()), mv(5, "2026-06-01", -450)), // pays 4 + 50 over
-            (Some("A".to_string()), mv(6, "2026-06-15", -100)), // pays half of 3
+            (Some("A".to_string()), mv(1, "2026-06-30", 100)?), // current
+            (Some("A".to_string()), mv(2, "2026-06-10", 200)?), // 20 days
+            (Some("A".to_string()), mv(3, "2026-04-01", 300)?), // 90 days
+            (Some("B".to_string()), mv(4, "2026-01-01", 400)?), // 180 days
+            (Some("B".to_string()), mv(5, "2026-06-01", -450)?), // pays 4 + 50 over
+            (Some("A".to_string()), mv(6, "2026-06-15", -100)?), // pays half of 3
         ];
         let r = report_for(grouped, as_of, default_buckets(), MatchMethod::Fifo);
 
@@ -3104,162 +3122,173 @@ mod tests {
         assert_eq!(r.account_balance, 450);
         assert_eq!(r.net(), r.account_balance);
         assert_eq!(r.bucket_totals.sum().ok(), Some(r.total_open));
+        Ok(())
     }
 
     #[test]
-    fn grouping_changes_fifo_application() {
+    fn grouping_changes_fifo_application() -> Result<(), CliError> {
         // Ungrouped, the payment settles the oldest charge (X's); grouped, it
         // belongs to Y and settles Y's charge.
-        let rows = |grouped: bool| {
+        let rows = |grouped: bool| -> Result<_, CliError> {
             let key = |s: &str| grouped.then(|| s.to_string());
-            vec![
-                (key("X"), mv(1, "2026-01-01", 100)),
-                (key("Y"), mv(2, "2026-02-01", 100)),
-                (key("Y"), mv(3, "2026-02-02", -100)),
-            ]
+            Ok(vec![
+                (key("X"), mv(1, "2026-01-01", 100)?),
+                (key("Y"), mv(2, "2026-02-01", 100)?),
+                (key("Y"), mv(3, "2026-02-02", -100)?),
+            ])
         };
         let as_of = d("2026-03-01");
-        let ungrouped = report_for(rows(false), as_of, default_buckets(), MatchMethod::Fifo);
+        let ungrouped = report_for(rows(false)?, as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(ungrouped.groups.len(), 1);
         assert_eq!(ungrouped.groups[0].items[0].item.transaction_id.get(), 2);
 
-        let grouped = report_for(rows(true), as_of, default_buckets(), MatchMethod::Fifo);
+        let grouped = report_for(rows(true)?, as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(grouped.groups.len(), 2);
         assert_eq!(grouped.groups[0].items[0].item.transaction_id.get(), 1);
         assert_eq!(grouped.groups[1].items, Vec::<AgedItem>::new());
         assert_eq!(grouped.net(), ungrouped.net());
+        Ok(())
     }
 
     #[test]
-    fn fifo_ignores_links() {
+    fn fifo_ignores_links() -> Result<(), CliError> {
         let r = apply_fifo(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 100),
-            linked(3, "2026-02-10", -100, vec![by_ref("R2")]),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 100)?,
+            linked(3, "2026-02-10", -100, vec![by_ref("R2")])?,
         ]);
         assert_eq!(open_of(&r), vec![(2, 100)]);
         assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
+        Ok(())
     }
 
     #[test]
-    fn fifo_same_day_order_does_not_change_open_amounts() {
+    fn fifo_same_day_order_does_not_change_open_amounts() -> Result<(), CliError> {
         // Settlement id before the same-day charge id: charges sort first, but
         // the result equals strict (date, id) processing.
         let r = apply_fifo(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-01-05", -150),
-            mv(3, "2026-01-05", 100),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-01-05", -150)?,
+            mv(3, "2026-01-05", 100)?,
         ]);
         assert_eq!(open_of(&r), vec![(3, 50)]);
         assert_eq!(r.unapplied_credit, 0);
+        Ok(())
     }
 
     #[test]
-    fn specific_short_payment_on_recent_item() {
+    fn specific_short_payment_on_recent_item() -> Result<(), CliError> {
         let movements = [
-            mv(1, "2026-01-01", 1000),
-            mv(2, "2026-03-01", 500),
-            linked(3, "2026-03-10", -300, vec![by_ref("R2")]),
+            mv(1, "2026-01-01", 1000)?,
+            mv(2, "2026-03-01", 500)?,
+            linked(3, "2026-03-10", -300, vec![by_ref("R2")])?,
         ];
         let specific = apply_specific(&movements);
         assert_eq!(open_of(&specific), vec![(1, 1000), (2, 200)]);
         assert_eq!(specific.unmatched_links, Vec::<UnmatchedLink>::new());
         // FIFO would have reduced the oldest item instead.
         assert_eq!(open_of(&apply_fifo(&movements)), vec![(1, 700), (2, 500)]);
+        Ok(())
     }
 
     #[test]
-    fn specific_excess_and_unlinked_fall_back_to_fifo() {
+    fn specific_excess_and_unlinked_fall_back_to_fifo() -> Result<(), CliError> {
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 100),
-            mv(3, "2026-03-01", 100),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 100)?,
+            mv(3, "2026-03-01", 100)?,
             // 100 to charge 3, excess 50 FIFO to charge 1.
-            linked(4, "2026-03-05", -150, vec![by_ref("R3")]),
+            linked(4, "2026-03-05", -150, vec![by_ref("R3")])?,
             // Unlinked: FIFO to the rest of charge 1, then charge 2.
-            mv(5, "2026-03-06", -70),
+            mv(5, "2026-03-06", -70)?,
         ]);
         assert_eq!(open_of(&r), vec![(2, 80)]);
         assert_eq!(r.unapplied_credit, 0);
         assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
+        Ok(())
     }
 
     #[test]
-    fn specific_links_by_id_and_by_numeric_string() {
+    fn specific_links_by_id_and_by_numeric_string() -> Result<(), CliError> {
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 100),
-            mv(3, "2026-02-02", 100),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 100)?,
+            mv(3, "2026-02-02", 100)?,
             linked(
                 4,
                 "2026-03-01",
                 -100,
-                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(2))],
-            ),
-            linked(5, "2026-03-02", -40, vec![by_ref("#3")]),
-            linked(6, "2026-03-03", -10, vec![by_ref("3")]),
+                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(2)?)],
+            )?,
+            linked(5, "2026-03-02", -40, vec![by_ref("#3")])?,
+            linked(6, "2026-03-03", -10, vec![by_ref("3")])?,
         ]);
         assert_eq!(open_of(&r), vec![(1, 100), (3, 50)]);
         assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
+        Ok(())
     }
 
     #[test]
-    fn specific_reference_wins_over_id() {
+    fn specific_reference_wins_over_id() -> Result<(), CliError> {
         // Charge 1 has reference "2"; the string "2" names it, not txn 2.
-        let mut c1 = mv(1, "2026-01-01", 100);
+        let mut c1 = mv(1, "2026-01-01", 100)?;
         c1.reference = Some("2".to_string());
         let r = apply_specific(&[
             c1,
-            mv(2, "2026-01-02", 100),
-            linked(3, "2026-01-03", -100, vec![by_ref("2")]),
+            mv(2, "2026-01-02", 100)?,
+            linked(3, "2026-01-03", -100, vec![by_ref("2")])?,
         ]);
         assert_eq!(open_of(&r), vec![(2, 100)]);
+        Ok(())
     }
 
     #[test]
-    fn specific_multiple_targets_in_order() {
+    fn specific_multiple_targets_in_order() -> Result<(), CliError> {
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 100),
-            mv(3, "2026-03-01", 100),
-            linked(4, "2026-03-05", -150, vec![by_ref("R3"), by_ref("R2")]),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 100)?,
+            mv(3, "2026-03-01", 100)?,
+            linked(4, "2026-03-05", -150, vec![by_ref("R3"), by_ref("R2")])?,
         ]);
         assert_eq!(open_of(&r), vec![(1, 100), (2, 50)]);
+        Ok(())
     }
 
     #[test]
-    fn specific_reversal_cancels_its_charge() {
+    fn specific_reversal_cancels_its_charge() -> Result<(), CliError> {
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 250),
-            linked(3, "2026-02-03", -250, vec![by_ref("R2")]),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 250)?,
+            linked(3, "2026-02-03", -250, vec![by_ref("R2")])?,
         ]);
         assert_eq!(open_of(&r), vec![(1, 100)]);
+        Ok(())
     }
 
     #[test]
-    fn specific_same_day_link_works() {
+    fn specific_same_day_link_works() -> Result<(), CliError> {
         // Settlement posted before its same-day charge (lower id).
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            linked(2, "2026-02-01", -60, vec![by_ref("R3")]),
-            mv(3, "2026-02-01", 60),
+            mv(1, "2026-01-01", 100)?,
+            linked(2, "2026-02-01", -60, vec![by_ref("R3")])?,
+            mv(3, "2026-02-01", 60)?,
         ]);
         assert_eq!(open_of(&r), vec![(1, 100)]);
         assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
+        Ok(())
     }
 
     #[test]
-    fn specific_invalid_links_fall_back_to_fifo() {
+    fn specific_invalid_links_fall_back_to_fifo() -> Result<(), CliError> {
         let invalid =
-            movement_with_links(9, "2026-04-04", -10, LinkSpec::Invalid(Value::Bool(true)));
+            movement_with_links(9, "2026-04-04", -10, LinkSpec::Invalid(Value::Bool(true)))?;
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 100),
-            linked(3, "2026-02-05", -10, vec![by_ref("NOPE")]),
-            linked(4, "2026-02-06", -10, vec![by_ref("R5")]), // later charge
-            mv(5, "2026-03-01", 100),
-            linked(6, "2026-03-02", -10, vec![by_ref("R4")]), // a settlement
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 100)?,
+            linked(3, "2026-02-05", -10, vec![by_ref("NOPE")])?,
+            linked(4, "2026-02-06", -10, vec![by_ref("R5")])?, // later charge
+            mv(5, "2026-03-01", 100)?,
+            linked(6, "2026-03-02", -10, vec![by_ref("R4")])?, // a settlement
             invalid,
         ]);
         assert_eq!(open_of(&r), vec![(1, 60), (2, 100), (5, 100)]);
@@ -3279,46 +3308,49 @@ mod tests {
         );
         assert_eq!(r.unmatched_links[0].link, Value::from("NOPE"));
         assert_eq!(r.unmatched_links[0].settlement_amount, 10);
+        Ok(())
     }
 
     #[test]
-    fn specific_link_to_settled_charge_falls_back_without_warning() {
+    fn specific_link_to_settled_charge_falls_back_without_warning() -> Result<(), CliError> {
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            mv(2, "2026-02-01", 100),
-            linked(3, "2026-02-05", -100, vec![by_ref("R2")]),
-            linked(4, "2026-02-06", -30, vec![by_ref("R2")]),
+            mv(1, "2026-01-01", 100)?,
+            mv(2, "2026-02-01", 100)?,
+            linked(3, "2026-02-05", -100, vec![by_ref("R2")])?,
+            linked(4, "2026-02-06", -30, vec![by_ref("R2")])?,
         ]);
         assert_eq!(open_of(&r), vec![(1, 70)]);
         assert_eq!(r.unmatched_links, Vec::<UnmatchedLink>::new());
+        Ok(())
     }
 
     #[test]
-    fn specific_overpayment_and_net_credit() {
+    fn specific_overpayment_and_net_credit() -> Result<(), CliError> {
         let r = apply_specific(&[
-            mv(1, "2026-01-01", 100),
-            linked(2, "2026-01-05", -180, vec![by_ref("R1")]),
-            mv(3, "2026-01-10", 50), // consumes credit
+            mv(1, "2026-01-01", 100)?,
+            linked(2, "2026-01-05", -180, vec![by_ref("R1")])?,
+            mv(3, "2026-01-10", 50)?, // consumes credit
         ]);
         assert_eq!(r.open_items, Vec::<OpenItem>::new());
         assert_eq!(r.unapplied_credit, 30);
+        Ok(())
     }
 
     #[test]
-    fn specific_invariant_open_minus_unapplied_equals_balance() {
+    fn specific_invariant_open_minus_unapplied_equals_balance() -> Result<(), CliError> {
         let movements = vec![
-            mv(1, "2026-01-01", 100),
-            linked(2, "2026-01-02", -40, vec![by_ref("R4")]),
-            mv(3, "2026-01-03", 300),
-            mv(4, "2026-01-03", 30),
-            linked(5, "2026-01-04", -500, vec![by_ref("R3"), by_ref("R1")]),
-            mv(6, "2026-01-05", 120),
+            mv(1, "2026-01-01", 100)?,
+            linked(2, "2026-01-02", -40, vec![by_ref("R4")])?,
+            mv(3, "2026-01-03", 300)?,
+            mv(4, "2026-01-03", 30)?,
+            linked(5, "2026-01-04", -500, vec![by_ref("R3"), by_ref("R1")])?,
+            mv(6, "2026-01-05", 120)?,
             linked(
                 7,
                 "2026-01-06",
                 -4,
-                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(6))],
-            ),
+                vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(6)?)],
+            )?,
         ];
         let balance: i128 = movements
             .iter()
@@ -3332,10 +3364,11 @@ mod tests {
         // credit; charge 6 consumes the 110, and txn 7 takes 4 more off it.
         assert_eq!(open_of(&r), vec![(6, 6)]);
         assert_eq!(r.unapplied_credit, 0);
+        Ok(())
     }
 
     #[test]
-    fn parse_link_spec_is_lenient() {
+    fn parse_link_spec_is_lenient() -> Result<(), CliError> {
         let k = "applies_to";
         assert_eq!(
             parse_link_spec(Some(r#"{"applies_to":" INV-1 "}"#), k),
@@ -3345,13 +3378,13 @@ mod tests {
             parse_link_spec(Some(r#"{"applies_to":42}"#), k),
             LinkSpec::Targets(vec![LinkTarget::TransactionId(crate::db::ids::fixture_id(
                 42
-            ))])
+            )?)])
         );
         assert_eq!(
             parse_link_spec(Some(r#"{"applies_to":["A",7]}"#), k),
             LinkSpec::Targets(vec![
                 by_ref("A"),
-                LinkTarget::TransactionId(crate::db::ids::fixture_id(7))
+                LinkTarget::TransactionId(crate::db::ids::fixture_id(7)?)
             ])
         );
         for none in [
@@ -3377,19 +3410,20 @@ mod tests {
                 "{bad}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn build_report_flags_links_to_other_counterparties() {
+    fn build_report_flags_links_to_other_counterparties() -> Result<(), CliError> {
         let a = || Some("A".to_string());
         let b = || Some("B".to_string());
         let grouped = vec![
-            (a(), mv(1, "2026-01-01", 100)),
-            (b(), mv(2, "2026-01-02", 100)),
-            (b(), mv(3, "2026-01-03", -5)),
-            (b(), linked(4, "2026-01-04", -50, vec![by_ref("R1")])),
-            (b(), linked(5, "2026-01-05", -10, vec![by_ref("R9")])),
-            (a(), linked(6, "2026-01-06", -1, vec![by_ref("R3")])),
+            (a(), mv(1, "2026-01-01", 100)?),
+            (b(), mv(2, "2026-01-02", 100)?),
+            (b(), mv(3, "2026-01-03", -5)?),
+            (b(), linked(4, "2026-01-04", -50, vec![by_ref("R1")])?),
+            (b(), linked(5, "2026-01-05", -10, vec![by_ref("R9")])?),
+            (a(), linked(6, "2026-01-06", -1, vec![by_ref("R3")])?),
         ];
         let r = report_for(
             grouped,
@@ -3420,14 +3454,15 @@ mod tests {
         assert_eq!(r.groups[0].total_open, 99);
         assert_eq!(r.groups[1].total_open, 35);
         assert_eq!(r.net(), r.account_balance);
+        Ok(())
     }
 
     #[test]
-    fn group_net_credit() {
+    fn group_net_credit() -> Result<(), CliError> {
         let r = report_for(
             vec![
-                (Some("A".to_string()), mv(1, "2026-01-01", 100)),
-                (Some("A".to_string()), mv(2, "2026-01-02", -130)),
+                (Some("A".to_string()), mv(1, "2026-01-01", 100)?),
+                (Some("A".to_string()), mv(2, "2026-01-02", -130)?),
             ],
             d("2026-02-01"),
             default_buckets(),
@@ -3436,6 +3471,7 @@ mod tests {
         assert_eq!(r.groups[0].net(), -30);
         assert_eq!(format_net(r.groups[0].net(), Currency::USD), "-0.30 CR");
         assert_eq!(format_net(30, Currency::USD), "0.30");
+        Ok(())
     }
 
     #[test]
@@ -3583,14 +3619,14 @@ mod tests {
     }
 
     #[test]
-    fn restrict_keeps_matching_charges_after_matching() {
+    fn restrict_keeps_matching_charges_after_matching() -> Result<(), CliError> {
         let as_of = d("2026-06-30");
         let grouped = vec![
-            (Some("A".to_string()), mv(1, "2026-01-01", 400)), // 180 days
-            (Some("A".to_string()), mv(2, "2026-06-20", 200)), // 10 days
-            (Some("B".to_string()), mv(3, "2026-06-01", 100)),
-            (Some("A".to_string()), mv(4, "2026-06-25", -150)), // FIFO -> 1
-            (Some("C".to_string()), mv(5, "2026-06-25", -70)),  // credit only
+            (Some("A".to_string()), mv(1, "2026-01-01", 400)?), // 180 days
+            (Some("A".to_string()), mv(2, "2026-06-20", 200)?), // 10 days
+            (Some("B".to_string()), mv(3, "2026-06-01", 100)?),
+            (Some("A".to_string()), mv(4, "2026-06-25", -150)?), // FIFO -> 1
+            (Some("C".to_string()), mv(5, "2026-06-25", -70)?),  // credit only
         ];
         let mut r = report_for(grouped, as_of, default_buckets(), MatchMethod::Fifo);
         assert_eq!(r.unapplied_credit, 70);
@@ -3615,6 +3651,7 @@ mod tests {
         // Unapplied credit is not attributable to a charge.
         assert_eq!(r.unapplied_credit, 0);
         assert_eq!(r.account_balance, 480);
+        Ok(())
     }
 
     #[test]
@@ -3622,8 +3659,8 @@ mod tests {
         let as_of = d("2026-06-30");
         let east = report_for(
             vec![
-                (Some("A".to_string()), mv(1, "2026-06-30", 100)),
-                (Some("B".to_string()), mv(2, "2026-01-01", 50)),
+                (Some("A".to_string()), mv(1, "2026-06-30", 100)?),
+                (Some("B".to_string()), mv(2, "2026-01-01", 50)?),
             ],
             as_of,
             default_buckets(),
@@ -3631,8 +3668,8 @@ mod tests {
         );
         let west = report_for(
             vec![
-                (Some("A".to_string()), mv(3, "2026-06-10", 30)),
-                (Some("A".to_string()), mv(4, "2026-06-20", -40)),
+                (Some("A".to_string()), mv(3, "2026-06-10", 30)?),
+                (Some("A".to_string()), mv(4, "2026-06-20", -40)?),
             ],
             as_of,
             default_buckets(),

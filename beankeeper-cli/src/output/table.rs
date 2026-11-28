@@ -801,8 +801,9 @@ mod tests {
     #[test]
     fn budgets_use_each_rows_currency() -> Result<(), Box<dyn std::error::Error>> {
         let company_slug: crate::db::companies::CompanySlug = "acme".parse()?;
+        let id = crate::db::ids::fixture_id(1)?;
         let rows = [Currency::USD, Currency::JPY, Currency::BHD].map(|currency| BudgetRow {
-            id: crate::db::ids::fixture_id(1),
+            id,
             company_slug: company_slug.clone(),
             account_code: "5000".into(),
             currency,
@@ -946,7 +947,7 @@ mod tests {
     #[test]
     fn render_transaction_list_shows_id_and_date() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(1),
+            id: crate::db::ids::fixture_id(1)?,
             company_slug: "acme".parse()?,
             description: "Test sale".into(),
             metadata: None,
@@ -974,7 +975,7 @@ mod tests {
     #[test]
     fn render_transaction_detail_balanced() -> Result<(), Box<dyn std::error::Error>> {
         let txn = TransactionRow {
-            id: crate::db::ids::fixture_id(42),
+            id: crate::db::ids::fixture_id(42)?,
             company_slug: "acme".parse()?,
             description: "Cash sale".into(),
             metadata: Some("INV-001".into()),
@@ -991,8 +992,8 @@ mod tests {
         };
         let entries = vec![
             EntryRow {
-                id: crate::db::ids::fixture_id(1),
-                transaction_id: crate::db::ids::fixture_id(42),
+                id: crate::db::ids::fixture_id(1)?,
+                transaction_id: crate::db::ids::fixture_id(42)?,
                 account_code: "1000".into(),
                 company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Debit,
@@ -1005,8 +1006,8 @@ mod tests {
                 posting_status: crate::db::holds::EntryStatus::Posted,
             },
             EntryRow {
-                id: crate::db::ids::fixture_id(2),
-                transaction_id: crate::db::ids::fixture_id(42),
+                id: crate::db::ids::fixture_id(2)?,
+                transaction_id: crate::db::ids::fixture_id(42)?,
                 account_code: "4000".into(),
                 company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Credit,
@@ -1033,7 +1034,7 @@ mod tests {
     #[test]
     fn render_transaction_detail_unbalanced() -> Result<(), Box<dyn std::error::Error>> {
         let txn = TransactionRow {
-            id: crate::db::ids::fixture_id(1),
+            id: crate::db::ids::fixture_id(1)?,
             company_slug: "acme".parse()?,
             description: "Bad".into(),
             metadata: None,
@@ -1050,8 +1051,8 @@ mod tests {
         };
         let entries = vec![
             EntryRow {
-                id: crate::db::ids::fixture_id(1),
-                transaction_id: crate::db::ids::fixture_id(1),
+                id: crate::db::ids::fixture_id(1)?,
+                transaction_id: crate::db::ids::fixture_id(1)?,
                 account_code: "1000".into(),
                 company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Debit,
@@ -1064,8 +1065,8 @@ mod tests {
                 posting_status: crate::db::holds::EntryStatus::Posted,
             },
             EntryRow {
-                id: crate::db::ids::fixture_id(2),
-                transaction_id: crate::db::ids::fixture_id(1),
+                id: crate::db::ids::fixture_id(2)?,
+                transaction_id: crate::db::ids::fixture_id(1)?,
                 account_code: "4000".into(),
                 company_slug: "acme".parse()?,
                 direction: DebitOrCredit::Credit,
