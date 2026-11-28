@@ -656,6 +656,10 @@ fn one_invoice_is_accrual_income_at_issue_and_cash_income_as_paid()
         "--through",
         "2026-02-28",
     ])?;
+    assert_invoice_forecast(&forecast)
+}
+
+fn assert_invoice_forecast(forecast: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let events = forecast["data"]["events"]
         .as_array()
         .ok_or("missing forecast events")?;

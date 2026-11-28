@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use beankeeper::{
     reporting::cash_recognition::recognize_settlement,
-    types::{AccountType, Currency, DebitOrCredit, Money, NonNegativeMoney, PositiveMoney},
+    types::{
+        AccountCode, AccountType, Amount, Currency, DebitOrCredit, Money, NonNegativeMoney,
+        PositiveMoney,
+    },
 };
 use chrono::NaiveDate;
 use rusqlite::params;
@@ -268,16 +271,16 @@ fn replay(
             ))
         },
     );
-    let mut open = item
-        .lines
+    let components = initial_components(item)?;
+    let mut open = components
         .iter()
-        .map(|line| nonnegative(line.subtotal_minor.into(), item.currency))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|component| component.initial)
+        .collect::<Vec<_>>();
     let mut applied = BTreeMap::<AllocationId, Applied>::new();
     for (date, action, row) in timeline {
         let effect = match action {
             ReplayAction::Apply => {
-                let effect = apply_row(item, row, company, cash, &mut open)?;
+                let effect = apply_row(item, row, company, cash, &components, &mut open)?;
                 applied.insert(row.allocation.id.clone(), effect.clone());
                 effect
             }
@@ -296,10 +299,48 @@ fn replay(
             }
         };
         if date >= dates.from() && date <= dates.to() {
-            record_effect(item, row, date, action, &effect, plan);
+            record_effect(item, row, date, action, &effect, &components, plan);
         }
     }
     Ok(())
+}
+
+struct CashComponent<'a> {
+    line: u32,
+    account: Option<&'a AccountCode>,
+    initial: NonNegativeMoney,
+}
+
+fn initial_components(item: &IssuedDocument) -> Result<Vec<CashComponent<'_>>, CliError> {
+    let mut components = Vec::new();
+    for (index, line) in item.lines.iter().enumerate() {
+        let number = u32::try_from(index + 1).map_err(validation)?;
+        let tax = item.vat.iter().find(|tax| tax.number == number);
+        let (recognized, withheld) =
+            tax.map_or((Amount::from(line.subtotal_minor), Amount::ZERO), |tax| {
+                if item.kind == DocumentKind::Bill && tax.revision.terms.input_account.is_none() {
+                    (Amount::from(tax.amounts.gross_minor), Amount::ZERO)
+                } else {
+                    (
+                        Amount::from(tax.amounts.net_minor),
+                        Amount::from(tax.amounts.vat_minor),
+                    )
+                }
+            });
+        components.push(CashComponent {
+            line: number,
+            account: Some(&line.line.account),
+            initial: nonnegative(recognized, item.currency)?,
+        });
+        if withheld.is_positive() {
+            components.push(CashComponent {
+                line: number,
+                account: None,
+                initial: nonnegative(withheld, item.currency)?,
+            });
+        }
+    }
+    Ok(components)
 }
 
 #[derive(Clone)]
@@ -317,6 +358,7 @@ fn apply_row(
     row: &AllocationHistory,
     company: &Company<'_>,
     cash: &BTreeSet<String>,
+    components: &[CashComponent<'_>],
     open: &mut [NonNegativeMoney],
 ) -> Result<Applied, CliError> {
     let amount = PositiveMoney::new(Money::new(
@@ -327,20 +369,9 @@ fn apply_row(
     let credit = row.allocation.kind == AllocationKind::Credit;
     let mut amounts = vec![NonNegativeMoney::zero(item.currency); open.len()];
     if credit {
-        let index = row
-            .credit_line
-            .and_then(|line| line.checked_sub(1))
-            .and_then(|line| usize::try_from(line).ok())
-            .filter(|&line| line < open.len());
-        let Some(index) = index else {
+        if !apply_credit(item, row, company, components, open, &mut amounts)? {
             return Ok(Applied::Unsupported);
-        };
-        let relief = amount.nonnegative();
-        let Ok(remaining) = open[index].checked_sub(relief) else {
-            return Ok(Applied::Unsupported);
-        };
-        open[index] = remaining;
-        amounts[index] = relief;
+        }
     } else {
         let split = recognize_settlement(open, amount).map_err(validation)?;
         for ((remaining, amount), result) in open.iter_mut().zip(&mut amounts).zip(split) {
@@ -354,6 +385,68 @@ fn apply_row(
         cash_supported,
         credit,
     })
+}
+
+fn apply_credit(
+    item: &IssuedDocument,
+    row: &AllocationHistory,
+    company: &Company<'_>,
+    components: &[CashComponent<'_>],
+    open: &mut [NonNegativeMoney],
+    amounts: &mut [NonNegativeMoney],
+) -> Result<bool, CliError> {
+    let Some(line) = row.credit_line else {
+        return Ok(false);
+    };
+    let Some((index, component)) = components
+        .iter()
+        .enumerate()
+        .find(|(_, component)| component.line == line && component.account.is_some())
+    else {
+        return Ok(false);
+    };
+    let gross = Amount::from(row.allocation.amount_minor);
+    let tax = components
+        .iter()
+        .position(|component| component.line == line && component.account.is_none());
+    let recognized = if tax.is_none() {
+        gross
+    } else {
+        let (_, entries) = db::transactions::get_transaction(company, row.allocation.source_id)?;
+        entries
+            .into_iter()
+            .filter(|entry| {
+                component
+                    .account
+                    .is_some_and(|account| account.as_str() == entry.account_code)
+            })
+            .try_fold(Amount::ZERO, |amount, entry| {
+                amount.checked_add(entry.amount.into()).ok_or_else(|| {
+                    CliError::Validation("cash-basis credit exceeds the supported range".into())
+                })
+            })?
+    };
+    let Some(withheld) = gross
+        .checked_sub(recognized)
+        .filter(|amount| !amount.is_negative())
+    else {
+        return Ok(false);
+    };
+    let pnl = nonnegative(recognized, item.currency)?;
+    let Ok(remaining) = open[index].checked_sub(pnl) else {
+        return Ok(false);
+    };
+    if let Some(tax) = tax {
+        let vat = nonnegative(withheld, item.currency)?;
+        let Ok(remaining_tax) = open[tax].checked_sub(vat) else {
+            return Ok(false);
+        };
+        open[tax] = remaining_tax;
+        amounts[tax] = vat;
+    }
+    open[index] = remaining;
+    amounts[index] = pnl;
+    Ok(true)
 }
 
 fn has_cash_payment(
@@ -382,6 +475,7 @@ fn record_effect(
     date: NaiveDate,
     action: ReplayAction,
     effect: &Applied,
+    components: &[CashComponent<'_>],
     plan: &mut LinePlan,
 ) {
     let amounts = match effect {
@@ -404,13 +498,15 @@ fn record_effect(
         | (DocumentKind::Bill, ReplayAction::Reverse) => DebitOrCredit::Credit,
         _ => DebitOrCredit::Debit,
     };
-    for (line, amount) in item.lines.iter().zip(amounts) {
-        if !amount.money().is_zero() {
+    for (component, amount) in components.iter().zip(amounts) {
+        if let Some(account) = component.account
+            && !amount.money().is_zero()
+        {
             plan.events.push(Recognized {
                 transaction: row.allocation.source_id,
                 date,
                 document: Some(item.id.clone()),
-                account: line.line.account.to_string(),
+                account: account.to_string(),
                 direction,
                 amount: MoneyField::new("amount", amount.money()),
             });
