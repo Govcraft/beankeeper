@@ -4084,7 +4084,7 @@ mod tests {
         let old_chain = super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
         ensure_schema(&conn)?;
         let reader = ReadConn::physical(&conn);
-        assert_eq!(stored_schema(reader)?, BANK_FEED_SCHEMA_VERSION);
+        assert_eq!(stored_schema(reader)?, CURRENT_VERSION);
         assert_eq!(
             super::super::audit::verify_hash_chain(reader)?.head(),
             old_chain.head()
