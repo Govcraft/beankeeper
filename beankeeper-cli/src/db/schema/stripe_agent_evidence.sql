@@ -3,7 +3,7 @@ ALTER TABLE collection_events ADD COLUMN source TEXT NOT NULL DEFAULT 'signed'
 ALTER TABLE stripe_payouts ADD COLUMN source TEXT NOT NULL DEFAULT 'signed'
     CHECK(source IN ('signed', 'agent_reported'));
 ALTER TABLE stripe_payouts ADD COLUMN reported_fees INTEGER
-    CHECK(reported_fees >= 0 AND source = 'agent_reported');
+    CHECK(reported_fees IS NULL OR (reported_fees >= 0 AND source = 'agent_reported'));
 ALTER TABLE stripe_refunds ADD COLUMN source TEXT NOT NULL DEFAULT 'signed'
     CHECK(source IN ('signed', 'agent_reported'));
 ALTER TABLE stripe_disputes ADD COLUMN source TEXT NOT NULL DEFAULT 'signed'
