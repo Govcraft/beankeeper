@@ -6,17 +6,36 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-27
+
+This release advances the ledger schema from v39 to v51. Make and verify a
+backup with your current binary before upgrading. Older binaries refuse to
+write to an upgraded ledger. Restore a pre-upgrade backup if you need to use
+the older binary on that data. See the [backup and restore guide](README.md#backup-and-restore).
+
 ### Added
 
 - Run a cross-company income statement or balance sheet for selected books in one ledger and currency. The CLI and MCP return company detail, combined totals before eliminations, and intercompany link evidence. ([#362](https://github.com/Govcraft/beankeeper/issues/362))
-
-- Hosts can discover typed MCP operation/tool pairs before setup and filter them with verified effective grants, including bookkeeper Chart and Reverse rules. (#329)
-
 - Import historical balanced JSON journal batches through MCP with the same atomic posting, dry-run, and duplicate handling as the CLI journal import. ([#364](https://github.com/Govcraft/beankeeper/issues/364))
+- Manage company-scoped customers and vendors with stable identifiers, payment terms, and audited links to postings. (#332)
+- Draft, issue and print invoices and bills. Allocate payments and credits, review proposed changes, and age outstanding amounts by due date. (#333)
+- Connect and sync read-only Plaid bank and card feeds. Review staged revisions, link existing journals, and post or propose reviewed items through CLI or MCP. (#334, #357)
+- Run cash-basis income statements for supported cash, card and document settlements, with transaction-level explanations of gaps. (#335)
+- Configure effective-dated UK VAT codes for GBP invoices and bills, preserve the rate on issue and credit, and reconcile the VAT register. (#336)
+- Collect invoices with Stripe Checkout. Reconcile verified receipts, grouped payouts, fees and refunds. Review disputes and resolve receipts held by a closed accounting period. (#337)
+- Approve, dispatch and reconcile reviewed vendor disbursements, including returns and recovery after a timeout. The release archive includes the Wise bridge for supported zero-fee domestic USD ACH transfers. (#338)
+- Track fixed assets, straight-line book depreciation and disposals. (#339)
+- Track project costs, time, budgets, profitability and unbilled work, and prepare invoices from approved sources. (#340)
+- Stage receipts and host-supplied OCR findings, review expense claims and reconcile reimbursements. (#341)
+- Track perpetual FIFO inventory, including receipts, shipments, counts, returns, valuation and links to invoices or bills. (#342)
+- Preview and import reviewed aggregate payroll journals, then match actual withdrawals against payroll liabilities through CLI or MCP. (#343, #357)
+- Forecast cash from posted movements, open items and schedules. Link a scheduled payment to a specific document and compare alternative scenarios. (#344)
+- Prepare the 2025 US Form 1099-NEC worksheet, with redacted review and signed access to encrypted W-9 details and preparer exports. (#345)
+- Discover typed MCP operation and tool pairs before setup, filtered by verified effective grants. (#329)
 
 ### Fixed
 
-- Encrypted ledgers opened concurrently right after process start no longer fail intermittently with "An error occurred with PRAGMA key or rekey"; the first SQLite use now completes SQLCipher setup before other threads open ledgers. ([#330](https://github.com/Govcraft/beankeeper/issues/330))
+- Serialize the first SQLCipher initialization so concurrent encrypted ledger opens complete reliably. (#330)
 
 ## [0.40.0] - 2026-11-27
 

@@ -124,7 +124,8 @@ of the payable selection.
   excluded. The total adds one side of each balanced scheduled template,
   including income and noncash postings: **transaction volume**, not cash due.
 - `overdue_receivables` and `overdue_payables` have `available: false`, with
-  `count` and `total` both `null`, because there is no invoice/due-date model.
+  `count` and `total` both `null`. For overdue issued invoices and bills, run
+  `bk document aging` or call MCP `document_aging`.
 - `aged_receivables` and `aged_payables` separately count open charges more than
   30 days old by posting date, after specific `applies_to` links and FIFO
   matching within each account. These totals do not establish payment deadlines.

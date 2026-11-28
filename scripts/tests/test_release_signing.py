@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -17,6 +18,39 @@ SIGNING_SCRIPT = textwrap.dedent(re.search(
     r"        working-directory: release\n        run: \|\n((?:          .+\n)+)",
     RELEASE_JOB,
 ).group(1))
+
+
+class ReleaseArchiveTests(unittest.TestCase):
+    def test_packages_both_executables_for_each_release_target(self):
+        step = WORKFLOW.split("\n      - name: Package binaries\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for target in re.findall(r"- target: (\S+)", WORKFLOW):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                build = root / "target" / target / "release"
+                build.mkdir(parents=True)
+                for binary in ("bk", "bk-wise-bridge"):
+                    executable = build / binary
+                    executable.write_text(binary)
+                    executable.chmod(0o755)
+                for file in ("README.md", "LICENSE-MIT", "LICENSE-APACHE"):
+                    (root / file).touch()
+
+                result = subprocess.run(
+                    ["bash", "-eo", "pipefail", "-c", script],
+                    cwd=root, env={
+                        **os.environ, "TARGET": target, "VERSION": "0.41.0",
+                        "GITHUB_ENV": str(root / "github-env"),
+                    }, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                name = f"bk-0.41.0-{target}"
+                with tarfile.open(root / "staging" / f"{name}.tar.gz") as archive:
+                    for binary in ("bk", "bk-wise-bridge"):
+                        member = archive.getmember(f"{name}/{binary}")
+                        self.assertTrue(member.isfile())
+                        self.assertEqual(member.mode & 0o111, 0o111)
 
 
 class ReleaseSigningTests(unittest.TestCase):

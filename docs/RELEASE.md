@@ -18,7 +18,7 @@ CLI ships as GitHub Release binaries.
 
 CLI [0.40.0](https://github.com/Govcraft/beankeeper/releases/tag/beankeeper-cli-v0.40.0)
 was released on 2026-11-27, including the changes previously tracked under 0.28.0
-through 0.39.0 and later Unreleased work. The examples below use `0.40.0`;
+through 0.39.0 and later Unreleased work. The examples below use `0.41.0`;
 substitute the version selected during release preparation.
 
 Beankeeper Desktop depends on the `beankeeper-cli-vX.Y.Z` release tag, not on
@@ -87,7 +87,7 @@ Build a fresh binary from that same tree and run the offline preflight:
 
 ```sh
 cargo build --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.40.0
+scripts/check-release.sh --tag beankeeper-cli-v0.41.0
 ```
 
 The script reads the CLI manifest, requires a stable `X.Y.Z` version and an exact
@@ -100,7 +100,7 @@ other builds:
 
 ```sh
 cargo build --release --locked -p beankeeper-cli
-scripts/check-release.sh --tag beankeeper-cli-v0.40.0 "${CARGO_TARGET_DIR:-target}/release/bk"
+scripts/check-release.sh --tag beankeeper-cli-v0.41.0 "${CARGO_TARGET_DIR:-target}/release/bk"
 cargo fetch --locked
 python3 -B -m unittest discover -s scripts/tests -v
 ```
@@ -122,8 +122,8 @@ checks pass. Recheck the working tree is clean, then create a signed tag on the
 confirmed commit and push only that tag:
 
 ```sh
-git tag -s beankeeper-cli-v0.40.0 -m 'bk 0.40.0'
-git push origin refs/tags/beankeeper-cli-v0.40.0
+git tag -s beankeeper-cli-v0.41.0 -m 'bk 0.41.0'
+git push origin refs/tags/beankeeper-cli-v0.41.0
 ```
 
 Do not move an existing published tag. Correct an already published release with
@@ -141,7 +141,9 @@ a new version and tag.
 2. Four builds produce `bk` for x86_64 and aarch64 on Linux GNU and macOS. Linux
    aarch64 uses the installed cross-compilation toolchain.
 3. Each archive is `bk-X.Y.Z-TARGET.tar.gz`, containing a directory of the same
-   name with `bk`, `README.md`, `LICENSE-MIT`, and `LICENSE-APACHE`.
+   name with `bk`, `bk-wise-bridge`, `README.md`, `LICENSE-MIT`, and
+   `LICENSE-APACHE`. Run the bridge directly from a verified archive when
+   configuring the [Wise adapter](wise-bridge.md).
 4. The release job collects the four archives, computes `checksums-sha256.txt`,
    signs each of those five files with cosign keyless signing, and records GitHub
    SLSA build provenance attestations for them. It creates the GitHub release
@@ -162,7 +164,7 @@ Watch the Release workflow in GitHub Actions and inspect the resulting release:
 
 ```sh
 gh run list --workflow release.yml --limit 5
-gh release view beankeeper-cli-v0.40.0
+gh release view beankeeper-cli-v0.41.0
 ```
 
 AUR requires repository secret `AUR_SSH_KEY` with push access to `bk-bin`. If it
@@ -186,11 +188,11 @@ BK_INSTALL="$latest_dir" sh install.sh
 "$latest_dir/bk" --version
 
 pinned_dir=$(mktemp -d)
-BK_INSTALL="$pinned_dir" BK_VERSION=0.40.0 sh install.sh
+BK_INSTALL="$pinned_dir" BK_VERSION=0.41.0 sh install.sh
 "$pinned_dir/bk" --version
 ```
 
-Immediately after this release becomes latest, both should print `bk 0.40.0`.
+Immediately after this release becomes latest, both should print `bk 0.41.0`.
 `BK_VERSION` is the bare CLI version, without `v` or the tag prefix. The installer
 downloads from `beankeeper-cli-v${VERSION}` and, when `cosign` is on `PATH`, verifies
 both the archive and checksum file against their bundles using the exact tag's
