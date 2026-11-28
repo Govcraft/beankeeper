@@ -412,22 +412,7 @@ impl ReportReader<'_> {
                 scope,
                 window,
                 basis,
-            } => match basis {
-                report_cash_basis::BasisMode::Accrual => {
-                    self.financial_statement(MultiReportKind::IncomeStatement, scope, window, None)
-                }
-                report_cash_basis::BasisMode::Cash { allow_incomplete } => {
-                    report_cash_basis::read_windows(
-                        self.reader,
-                        self.company,
-                        scope.dates.try_into()?,
-                        self.currency(scope.currency)?,
-                        window,
-                        allow_incomplete,
-                    )
-                    .map(|r| ReportData::CashBasis(Box::new(r)))
-                }
-            },
+            } => self.income_with_basis(scope, window, basis),
             ReportQuery::Balance {
                 scope,
                 account,
@@ -506,6 +491,30 @@ impl ReportReader<'_> {
             ReportQuery::Aging(request) => request
                 .compute(self.reader, self.company)
                 .map(ReportData::Aging),
+        }
+    }
+
+    fn income_with_basis(
+        &self,
+        scope: ReportScope,
+        window: ReportWindow,
+        basis: report_cash_basis::BasisMode,
+    ) -> Result<ReportData, CliError> {
+        match basis {
+            report_cash_basis::BasisMode::Accrual => {
+                self.financial_statement(MultiReportKind::IncomeStatement, scope, window, None)
+            }
+            report_cash_basis::BasisMode::Cash { allow_incomplete } => {
+                report_cash_basis::read_windows(
+                    self.reader,
+                    self.company,
+                    scope.dates.try_into()?,
+                    self.currency(scope.currency)?,
+                    window,
+                    allow_incomplete,
+                )
+                .map(|r| ReportData::CashBasis(Box::new(r)))
+            }
         }
     }
 

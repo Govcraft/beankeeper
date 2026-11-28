@@ -161,6 +161,19 @@ impl TryFrom<(i32, Option<Month>, Option<Month>, Option<Month>)> for VarianceMon
     }
 }
 
+impl TryFrom<&crate::commands::report_tax::VendorArgs> for ReportQuery {
+    type Error = CliError;
+
+    fn try_from(args: &crate::commands::report_tax::VendorArgs) -> Result<Self, Self::Error> {
+        let TaxSelection(dates, currency) = (&args.period).try_into()?;
+        Ok(Self::Vendor1099 {
+            dates,
+            currency,
+            threshold: args.threshold.clone().unwrap_or_default(),
+        })
+    }
+}
+
 impl TryFrom<&BudgetVarianceArgs> for VarianceMonths {
     type Error = CliError;
 
@@ -403,14 +416,7 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 let TaxSelection(dates, currency) = args.try_into()?;
                 Self::ScheduleC { dates, currency }
             }
-            ReportCommand::Vendor1099(args) => {
-                let TaxSelection(dates, currency) = (&args.period).try_into()?;
-                Self::Vendor1099 {
-                    dates,
-                    currency,
-                    threshold: args.threshold.clone().unwrap_or_default(),
-                }
-            }
+            ReportCommand::Vendor1099(args) => return args.try_into(),
             ReportCommand::Ledger {
                 account,
                 from,

@@ -77,7 +77,7 @@ pub(super) enum CashBasisReport {
     Comparison {
         basis: AccountingBasis,
         current: BasisStatement,
-        prior: BasisStatement,
+        prior: Box<BasisStatement>,
         #[serde(flatten)]
         change: MoneyField,
     },
@@ -112,7 +112,7 @@ pub(super) fn read_windows(
             Ok(CashBasisReport::Comparison {
                 basis: AccountingBasis::Cash,
                 current,
-                prior,
+                prior: Box::new(prior),
                 change: MoneyField::new("net_income_change", change),
             })
         }
@@ -582,7 +582,7 @@ fn rollup(
         match row.account_type {
             AccountType::Revenue => revenue.push(row),
             AccountType::Expense => expenses.push(row),
-            _ => continue,
+            _ => {}
         }
     }
     build_income_statement(dates, currency, revenue, expenses)
