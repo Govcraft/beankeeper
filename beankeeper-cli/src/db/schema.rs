@@ -3192,6 +3192,7 @@ mod tests {
                 FX_SCHEMA_VERSION,
                 RESTORE_SCHEMA_VERSION,
                 CASH_CLASS_SCHEMA_VERSION,
+                COUNTERPARTY_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
