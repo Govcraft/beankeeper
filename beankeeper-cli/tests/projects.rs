@@ -166,7 +166,7 @@ fn expense(books: &Books) -> Result<(String, String), Box<dyn Error>> {
     ])?;
     let posting = posted["id"].to_string();
     let details = books.data(&["txn", "show", &posting])?;
-    let entry = details["entries"]
+    let entry = details[0]["entries"]
         .as_array()
         .ok_or("missing entries")?
         .iter()
