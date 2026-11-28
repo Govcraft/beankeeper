@@ -257,15 +257,7 @@ fn dispatch_ledger(
 
     let request = match &cli.command {
         Command::Setup(command) => return dispatch_setup(cli, meta, command).map(|()| true),
-        Command::BankFeed(command) => command
-            .request()
-            .map(|request| {
-                Ok::<_, CliError>(LedgerRequest::BankFeed((
-                    require_company(cli)?.clone(),
-                    request,
-                )))
-            })
-            .transpose()?,
+        Command::BankFeed(command) => bank_feed::ledger_request(cli, command)?,
         Command::Summary(args) => Some(LedgerRequest::Summary(
             (require_company(cli)?, args, chart).try_into()?,
         )),

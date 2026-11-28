@@ -2277,34 +2277,34 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
     if table >= AuditTable::CashClassification {
         let _ = write!(action, ",'{}'", AuditAction::AccountClassify);
     }
+    append_subledger_audit_extensions(table, &mut entity, &mut action);
+    (entity, action)
+}
+
+fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, action: &mut String) {
+    use super::audit::{AuditAction, AuditEntity};
+    use std::fmt::Write as _;
+
     if table >= AuditTable::Counterparties {
-        append_counterparty_audit_extensions(&mut entity, &mut action);
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::Counterparty,
+            AuditEntity::TransactionCounterparty
+        );
+        let _ = write!(
+            action,
+            ",'{}','{}','{}','{}'",
+            AuditAction::CounterpartyCreate,
+            AuditAction::CounterpartyAmend,
+            AuditAction::CounterpartyArchive,
+            AuditAction::CounterpartyAssociate
+        );
     }
     if table >= AuditTable::BankFeed {
         let _ = write!(entity, ",'{}'", AuditEntity::BankFeed);
         let _ = write!(action, ",'{}'", AuditAction::BankFeedChange);
     }
-    (entity, action)
-}
-
-fn append_counterparty_audit_extensions(entity: &mut String, action: &mut String) {
-    use super::audit::{AuditAction, AuditEntity};
-    use std::fmt::Write as _;
-
-    let _ = write!(
-        entity,
-        ",'{}','{}'",
-        AuditEntity::Counterparty,
-        AuditEntity::TransactionCounterparty
-    );
-    let _ = write!(
-        action,
-        ",'{}','{}','{}','{}'",
-        AuditAction::CounterpartyCreate,
-        AuditAction::CounterpartyAmend,
-        AuditAction::CounterpartyArchive,
-        AuditAction::CounterpartyAssociate
-    );
 }
 
 fn recategorization_action(table: AuditTable) -> &'static str {

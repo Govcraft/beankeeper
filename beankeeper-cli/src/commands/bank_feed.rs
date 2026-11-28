@@ -162,6 +162,19 @@ impl BankFeedResponse {
     }
 }
 
+pub(crate) fn ledger_request(
+    cli: &Cli,
+    command: &BankFeedCommand,
+) -> Result<Option<crate::request::LedgerRequest>, CliError> {
+    let Some(request) = command.request() else {
+        return Ok(None);
+    };
+    Ok(Some(crate::request::LedgerRequest::BankFeed((
+        require_company(cli)?.clone(),
+        request,
+    ))))
+}
+
 pub(crate) fn check_output(cli: &Cli) -> Result<(), CliError> {
     if !cli.is_json() && cli.output.format == Some(OutputFormat::Csv) {
         return Err(CliError::Usage(
