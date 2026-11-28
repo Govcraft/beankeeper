@@ -322,85 +322,7 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     // Rewind to a v8-shaped database holding legacy free-text metadata.
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
-        conn.execute_batch(
-            "DROP TABLE transaction_counterparties;
-             DROP TABLE counterparties;
-             DROP TRIGGER protect_cash_class_update;
-             ALTER TABLE accounts DROP COLUMN cash_class;
-             DROP TABLE fx_postings;
-             DROP TABLE fx_accounts;
-             DROP TRIGGER protect_statement_clearing_update;
-             DROP TRIGGER protect_statement_clearing_delete;
-             DROP TRIGGER protect_statement_clearing_replace;
-             DROP TRIGGER protect_statement_undo;
-             DROP VIEW statement_locked_clearings;
-             DROP TABLE statement_reconciliation_clearings;
-             DROP TABLE statement_reconciliations;
-             DROP TRIGGER protect_transaction_link_undo;
-             DROP TABLE transaction_links;
-             DROP TRIGGER protect_bookkeeping_receipt_uniqueness;
-             DROP TRIGGER protect_audit_related_posting;
-             DROP VIEW active_transaction_links;
-             DROP VIEW transaction_link_creations;
-             DROP INDEX idx_transaction_company_id;
-             DROP VIEW hold_adjustments;
-             DROP VIEW posting_reversals;
-             DROP VIEW posted_transactions;
-             DROP TRIGGER protect_hold_settlement;
-             DROP TRIGGER require_hold_actor;
-             DROP TRIGGER protect_hold_fields;
-             DROP INDEX idx_hold_settlements;
-             ALTER TABLE transactions DROP COLUMN amount_delta;
-             ALTER TABLE transactions DROP COLUMN settles_hold;
-             ALTER TABLE transactions DROP COLUMN posting_status;
-             DROP VIEW audit_receipt_postings;
-             DROP TRIGGER protect_archived_account_delete;
-             DROP TRIGGER protect_archived_account_insert;
-             DROP TRIGGER protect_account_archive;
-             ALTER TABLE accounts DROP COLUMN archived;
-             DROP TABLE standing_settings;
-             DROP TABLE setup_statement_batches;
-             DROP TABLE setup_requests;
-             DROP TABLE setup_book_profiles;
-             DROP TABLE setup_sessions;
-             DROP TABLE period_locks;
-             DROP TRIGGER protect_period_post;
-             DROP TABLE txn_proposals;
-             DROP TABLE agent_spend_limits;
-             DROP TABLE ledger_policy;
-             DROP TABLE schedule_entries;
-             DROP TABLE schedules;
-             DROP TRIGGER protect_rule_deactivation;
-             DROP TABLE categorization_rules;
-             DROP VIEW bookkeeping_audit;
-             DROP TRIGGER protect_transaction_identity;
-             DROP TABLE agent_revocations;
-             DROP TABLE agent_tokens;
-             DROP TABLE identity_root;
-             ALTER TABLE transactions DROP COLUMN agent_uri;
-             ALTER TABLE transactions DROP COLUMN token_jti;
-             DROP TRIGGER protect_transactions_insert;
-             DROP TRIGGER protect_transactions_update;
-             DROP TRIGGER protect_transactions_delete;
-             DROP TRIGGER protect_entries_insert;
-             DROP TRIGGER protect_entries_update;
-             DROP TRIGGER protect_entries_delete;
-             DROP TRIGGER protect_audit_insert;
-             DROP TRIGGER protect_audit_update;
-             DROP TRIGGER protect_audit_delete;
-             CREATE TABLE audit_log_v8 AS
-                 SELECT id, changed_at, actor, company_slug, entity, entity_id, action, before, after
-                 FROM audit_log WHERE action <> 'create';
-             DROP TABLE audit_log;
-             ALTER TABLE audit_log_v8 RENAME TO audit_log;
-             ALTER TABLE transactions DROP COLUMN posted_by;
-             DROP TABLE lot_reliefs;
-             DROP TABLE investment_lots;
-             DROP TABLE security_prices;
-             DROP TABLE securities;
-             DELETE FROM schema_version WHERE version >= 9;",
-        )
-        .unwrap_or_else(|e| panic!("rewind: {e}"));
+        revert_to_v8_fixture(&conn).unwrap_or_else(|e| panic!("rewind: {e}"));
         seed_legacy_metadata(&conn).unwrap_or_else(|e| panic!("seed legacy metadata: {e}"));
     }
 
@@ -422,6 +344,87 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
         .filter_map(Result::ok)
         .collect();
     assert_eq!(metas, vec![r#"{"memo":"open:1000"}"#, r#"{"memo":"42"}"#]);
+}
+
+fn revert_to_v8_fixture(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DROP TABLE transaction_counterparties;
+         DROP TABLE counterparties;
+         DROP TRIGGER protect_cash_class_update;
+         ALTER TABLE accounts DROP COLUMN cash_class;
+         DROP TABLE fx_postings;
+         DROP TABLE fx_accounts;
+         DROP TRIGGER protect_statement_clearing_update;
+         DROP TRIGGER protect_statement_clearing_delete;
+         DROP TRIGGER protect_statement_clearing_replace;
+         DROP TRIGGER protect_statement_undo;
+         DROP VIEW statement_locked_clearings;
+         DROP TABLE statement_reconciliation_clearings;
+         DROP TABLE statement_reconciliations;
+         DROP TRIGGER protect_transaction_link_undo;
+         DROP TABLE transaction_links;
+         DROP TRIGGER protect_bookkeeping_receipt_uniqueness;
+         DROP TRIGGER protect_audit_related_posting;
+         DROP VIEW active_transaction_links;
+         DROP VIEW transaction_link_creations;
+         DROP INDEX idx_transaction_company_id;
+         DROP VIEW hold_adjustments;
+         DROP VIEW posting_reversals;
+         DROP VIEW posted_transactions;
+         DROP TRIGGER protect_hold_settlement;
+         DROP TRIGGER require_hold_actor;
+         DROP TRIGGER protect_hold_fields;
+         DROP INDEX idx_hold_settlements;
+         ALTER TABLE transactions DROP COLUMN amount_delta;
+         ALTER TABLE transactions DROP COLUMN settles_hold;
+         ALTER TABLE transactions DROP COLUMN posting_status;
+         DROP VIEW audit_receipt_postings;
+         DROP TRIGGER protect_archived_account_delete;
+         DROP TRIGGER protect_archived_account_insert;
+         DROP TRIGGER protect_account_archive;
+         ALTER TABLE accounts DROP COLUMN archived;
+         DROP TABLE standing_settings;
+         DROP TABLE setup_statement_batches;
+         DROP TABLE setup_requests;
+         DROP TABLE setup_book_profiles;
+         DROP TABLE setup_sessions;
+         DROP TABLE period_locks;
+         DROP TRIGGER protect_period_post;
+         DROP TABLE txn_proposals;
+         DROP TABLE agent_spend_limits;
+         DROP TABLE ledger_policy;
+         DROP TABLE schedule_entries;
+         DROP TABLE schedules;
+         DROP TRIGGER protect_rule_deactivation;
+         DROP TABLE categorization_rules;
+         DROP VIEW bookkeeping_audit;
+         DROP TRIGGER protect_transaction_identity;
+         DROP TABLE agent_revocations;
+         DROP TABLE agent_tokens;
+         DROP TABLE identity_root;
+         ALTER TABLE transactions DROP COLUMN agent_uri;
+         ALTER TABLE transactions DROP COLUMN token_jti;
+         DROP TRIGGER protect_transactions_insert;
+         DROP TRIGGER protect_transactions_update;
+         DROP TRIGGER protect_transactions_delete;
+         DROP TRIGGER protect_entries_insert;
+         DROP TRIGGER protect_entries_update;
+         DROP TRIGGER protect_entries_delete;
+         DROP TRIGGER protect_audit_insert;
+         DROP TRIGGER protect_audit_update;
+         DROP TRIGGER protect_audit_delete;
+         CREATE TABLE audit_log_v8 AS
+             SELECT id, changed_at, actor, company_slug, entity, entity_id, action, before, after
+             FROM audit_log WHERE action <> 'create';
+         DROP TABLE audit_log;
+         ALTER TABLE audit_log_v8 RENAME TO audit_log;
+         ALTER TABLE transactions DROP COLUMN posted_by;
+         DROP TABLE lot_reliefs;
+         DROP TABLE investment_lots;
+         DROP TABLE security_prices;
+         DROP TABLE securities;
+         DELETE FROM schema_version WHERE version >= 9;",
+    )
 }
 
 fn seed_legacy_metadata(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
