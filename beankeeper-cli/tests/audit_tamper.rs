@@ -611,6 +611,7 @@ const VERIFICATION_CHECKS: [&str; 19] = [
     "transaction_links",
     "statement_batches",
     "statement_reconciliations",
+    "payroll_runs",
     "foreign_keys",
     "sqlite_integrity",
     "row_counts",
