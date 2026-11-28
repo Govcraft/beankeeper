@@ -59,6 +59,9 @@ pub struct SummaryArgs {
     /// Show open card holds older than this many days.
     #[arg(long, default_value_t)]
     pub stale_hold_age_days: StaleHoldAge,
+    /// Match receivables and payables within each counterparty.
+    #[arg(long)]
+    pub group_by_counterparty: bool,
     /// Payable liability account (repeatable). Defaults to names containing payable.
     #[arg(long = "payable-account")]
     pub payable_account: Vec<String>,
@@ -237,6 +240,7 @@ pub struct SummaryRequest {
     accounts: SummaryAccounts,
     chart: ChartRequest,
     stale_hold_age: StaleHoldAge,
+    group_by_counterparty: bool,
 }
 
 /// Optional exact account selections, grouped by their role in the summary.
@@ -276,7 +280,13 @@ impl SummaryRequest {
             accounts,
             chart,
             stale_hold_age,
+            group_by_counterparty: false,
         })
+    }
+
+    pub(crate) fn with_counterparty_grouping(mut self, enabled: bool) -> Self {
+        self.group_by_counterparty = enabled;
+        self
     }
 }
 
@@ -337,6 +347,7 @@ impl TryFrom<(&CompanySlug, &SummaryArgs, ChartRequest)> for SummaryRequest {
             chart,
             args.stale_hold_age_days,
         )
+        .map(|request| request.with_counterparty_grouping(args.group_by_counterparty))
     }
 }
 
@@ -638,27 +649,20 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
     let prior = activity(periods.prior)?;
     let comparison = model::comparison(&current, &prior, currency)?;
     let movers = model::movers(&current, &prior, currency)?;
-    let attention = attention::compute(&attention::AttentionContext {
-        conn: reader,
-        company: scope.slug(),
-        currency,
-        as_of: periods.current.to,
-        stale_hold_age,
+    let selected = model::SelectedAccounts {
         cash: &cash,
-        receivables: &receivables,
-        payables: &payables,
-    })?;
-    let view = model::desktop_view(
-        company,
-        currency,
-        &periods,
+        receivable: &receivables,
+        payable: &payables,
+    };
+    let attention = compute_attention(
+        reader,
+        &scope,
+        (currency, periods.current.to),
         stale_hold_age,
-        &model::SelectedAccounts {
-            cash: &cash,
-            receivable: &receivables,
-            payable: &payables,
-        },
-    );
+        &selected,
+        request.group_by_counterparty,
+    )?;
+    let view = model::desktop_view(company, currency, &periods, stale_hold_age, &selected);
     let cash_on_hand = sum(rows.iter().filter(|row| cash.contains(&row.code)))?;
     let owed_to_you = sum(rows.iter().filter(|row| receivables.contains(&row.code)))?;
     let you_owe = sum(rows
@@ -693,6 +697,30 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
         highlights,
         view,
         fx_balances,
+    })
+}
+
+fn compute_attention<'a>(
+    reader: ReadConn<'a>,
+    scope: &Company<'a>,
+    (currency, as_of): (Currency, NaiveDate),
+    stale_hold_age: StaleHoldAge,
+    accounts: &model::SelectedAccounts<'_>,
+    group_by_counterparty: bool,
+) -> Result<attention::Attention, CliError> {
+    let parties = group_by_counterparty
+        .then(|| db::counterparties::linked_party_labels(scope, as_of, currency))
+        .transpose()?;
+    attention::compute(&attention::AttentionContext {
+        conn: reader,
+        company: scope.slug(),
+        currency,
+        as_of,
+        stale_hold_age,
+        cash: accounts.cash,
+        receivables: accounts.receivable,
+        payables: accounts.payable,
+        parties: parties.as_ref(),
     })
 }
 

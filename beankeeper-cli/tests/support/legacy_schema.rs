@@ -4,7 +4,9 @@ use rusqlite::Connection;
 
 pub fn before_restore(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "DROP TRIGGER protect_cash_class_update;
+        "DROP TABLE transaction_counterparties;
+         DROP TABLE counterparties;
+         DROP TRIGGER protect_cash_class_update;
          ALTER TABLE accounts DROP COLUMN cash_class;",
     )?;
     let dependents = conn

@@ -271,6 +271,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
+| `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
+| `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
@@ -531,7 +533,9 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
+Read-only mode removes `company_create`, `company_delete`,
+`counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
+`account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
 `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
@@ -2012,3 +2016,50 @@ same semantics. For spending by category select `trend --metric spending`.
 versus snapshots, currency handling, zero bases, movers, CSV rows and Desktop
 links. `--period` remains exclusive with `--compare` on income/trial reports;
 trend comparison compares the full selected range rather than calendar buckets.
+
+## Customers and vendors
+
+A counterparty belongs to one company. Its `party_` ID distinguishes records
+that share a display name and remains stable across name changes. Use
+`customer`, `vendor`, or `both` as the role. Optional payment terms are
+calendar days from issue, from 0 through 365. The directory does not store
+tax identifiers.
+
+```sh
+bk --company acme counterparty create --name "Clearwater" --role both --payment-terms 30
+bk --company acme counterparty list --search Clear --limit 20
+bk --company acme counterparty show PARTY_ID
+bk --company acme counterparty amend PARTY_ID --name "Clearwater North" --clear-payment-terms
+bk --company acme counterparty associate PARTY_ID 42
+bk --company acme counterparty archive PARTY_ID
+```
+
+Use the same associate command for new and historical postings. It records
+an association with an audit receipt without changing journal entries.
+A later association replaces the current one and records both values.
+Archive retains history while blocking new associations. Show can still
+find an archived record, and list includes it only with `--include-archived`.
+Mutations require `ledger/admin` when enforcement applies. Read operations
+require `ledger/read`. List and suggestion pages provide `next_offset` in JSON.
+
+Preview links for unassociated transactions with
+`counterparty suggest --label customer` or `--label vendor`. The preview
+uses ASCII case-insensitive name matching and shows every candidate up to
+the per-item cap. It makes no changes, including for a unique candidate.
+Use the explicit ID and transaction number to apply a selected association.
+
+Aging and financial summary preserve their original behavior by default.
+Pass `report aging --group-by-counterparty` or
+`summary --group-by-counterparty` to match settlements within each linked
+counterparty. Unassociated rows fall back to customer/vendor
+metadata and appear under legacy labels in aging. With aging, supply
+`--group-by-metadata KEY` alongside the new option to choose a different
+legacy field. Aging still measures from transaction dates. The party profile
+and associations used by grouping are the current records.
+
+MCP exposes `counterparty_create`, `counterparty_amend`,
+`counterparty_archive`, `counterparty_associate`, `counterparty_list`,
+`counterparty_show`, and `counterparty_suggest`. Amendment takes a `patch`
+object. Omit a field to keep it. For optional contact fields, use
+`"clear"` or `{"set": value}`. Pass `group_by_counterparty: true` to the
+`report` aging or `financial_summary` tools to opt in.

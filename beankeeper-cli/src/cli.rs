@@ -722,6 +722,9 @@ EXAMPLES:\n  \
     /// Manage automatic bank import categorization.
     Rule(RuleArgs),
 
+    /// Manage customer and vendor records.
+    Counterparty(crate::commands::counterparty::CounterpartyArgs),
+
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
     BookkeepingPolicy(BookkeepingPolicyCommand),
@@ -2792,6 +2795,10 @@ pub struct AgingCommandArgs {
     #[arg(long, visible_alias = "group-by", value_name = "KEY")]
     pub group_by_metadata: Option<String>,
 
+    /// Prefer linked counterparty records. Fall back to the legacy metadata key.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub group_by_counterparty: Option<bool>,
+
     /// Currency code. Defaults to the company's single transaction currency.
     #[arg(long)]
     pub currency: Option<Currency>,
@@ -2813,7 +2820,7 @@ pub struct AgingCommandArgs {
     /// With several accounts and --group-by, combine each counterparty's
     /// rows across accounts in table and CSV output (JSON always has both
     /// views). Matching still runs per account.
-    #[arg(long, requires = "group_by_metadata")]
+    #[arg(long)]
     pub group_across_accounts: bool,
 
     /// Only show open charges whose transaction metadata has KEY equal to
@@ -3113,6 +3120,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Schedule(args) => args.company.as_ref(),
         Command::Loan(args) => args.company.as_ref(),
         Command::Rule(args) => args.company.as_ref(),
+        Command::Counterparty(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),

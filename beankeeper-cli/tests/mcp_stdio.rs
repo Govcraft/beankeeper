@@ -8,6 +8,8 @@ mod audit_receipts;
 mod cash_classification;
 #[path = "mcp_stdio/corrections.rs"]
 mod corrections;
+#[path = "mcp_stdio/counterparties.rs"]
+mod counterparties;
 
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;
@@ -784,6 +786,13 @@ const LEDGER_TOOLS: &[&str] = &[
     "company_show",
     "company_create",
     "company_delete",
+    "counterparty_create",
+    "counterparty_amend",
+    "counterparty_archive",
+    "counterparty_associate",
+    "counterparty_list",
+    "counterparty_show",
+    "counterparty_suggest",
     "account_list",
     "account_show",
     "account_create",
@@ -1561,7 +1570,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 28);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3253,7 +3262,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 28);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3419,7 +3428,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 28);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

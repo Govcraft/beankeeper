@@ -1083,6 +1083,8 @@ pub(crate) struct AgingInput {
     pub as_of: Option<Date>,
     pub buckets: Option<String>,
     pub group_by_metadata: Option<String>,
+    #[serde(default)]
+    pub group_by_counterparty: crate::db::counterparties::CounterpartyGrouping,
     #[serde(default, deserialize_with = "deserialize_optional_currency")]
     #[schemars(with = "Option<Text<Currency>>")]
     pub currency: Option<Currency>,
@@ -1324,6 +1326,9 @@ pub(crate) struct SummaryOptions {
     /// Show open card holds older than this many days.
     #[serde(default)]
     pub stale_hold_age_days: StaleHoldAge,
+    /// Match receivables and payables within counterparties instead of combining all records.
+    #[serde(default)]
+    pub group_by_counterparty: bool,
     /// Payable liability accounts. Defaults to accounts named payable.
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub payable_account: Vec<Account>,
@@ -1575,4 +1580,62 @@ impl From<RestoreUndo> for crate::db::audit::restore::RestoreRequest {
     fn from(input: RestoreUndo) -> Self {
         Self::Undo(input.undo_id)
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CounterpartyCreate {
+    pub company: Company,
+    pub name: crate::db::counterparties::CounterpartyName,
+    pub role: crate::db::counterparties::CounterpartyRole,
+    pub email: Option<crate::db::counterparties::ContactEmail>,
+    pub address: Option<crate::db::counterparties::PostalAddress>,
+    pub payment_terms: Option<crate::db::counterparties::PaymentTerms>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CounterpartyAmend {
+    pub company: Company,
+    pub id: crate::db::counterparties::CounterpartyId,
+    pub patch: crate::db::counterparties::ContactPatch,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CounterpartySelector {
+    pub company: Company,
+    pub id: crate::db::counterparties::CounterpartyId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CounterpartyAssociate {
+    pub company: Company,
+    pub id: crate::db::counterparties::CounterpartyId,
+    pub transaction_id: TransactionId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CounterpartyList {
+    pub company: Company,
+    pub search: Option<crate::db::counterparties::CounterpartyName>,
+    #[serde(default)]
+    pub include_archived: bool,
+    #[serde(default)]
+    pub limit: crate::db::counterparties::PartyPageLimit,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CounterpartySuggest {
+    pub company: Company,
+    pub label: crate::db::counterparties::LegacyPartyLabel,
+    #[serde(default)]
+    pub limit: crate::db::counterparties::PartyPageLimit,
+    #[serde(default)]
+    pub offset: u32,
 }

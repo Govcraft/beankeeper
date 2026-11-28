@@ -585,6 +585,13 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk agent issue/list/revoke` | Issue attestations, inspect claims and revoke credentials |
 | `bk agent limit set/show/clear` | Manage per-agent, per-company/currency spend limits |
 | `bk policy show/set` | Inspect or change capability enforcement |
+| `bk counterparty create` | Add a customer, vendor, or both to a company |
+| `bk counterparty list` | Search and page through company counterparties |
+| `bk counterparty show` | Inspect an active or archived counterparty by ID |
+| `bk counterparty amend` | Set or clear contact details and payment terms |
+| `bk counterparty archive` | Prevent new associations and retain party history |
+| `bk counterparty associate` | Associate a posting with a party and record the change |
+| `bk counterparty suggest` | Preview possible matches for legacy customer or vendor metadata |
 | `bk rule create` | Persist a company-scoped description-to-account mapping |
 | `bk rule list` | List categorization rules in evaluation order |
 | `bk rule amend` | Supersede an active rule and retain both versions in the audit trail |

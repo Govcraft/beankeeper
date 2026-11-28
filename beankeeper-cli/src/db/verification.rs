@@ -71,6 +71,7 @@ enum Check {
     AccountArchives,
     AccountLabels,
     AccountClassifications,
+    Counterparties,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -93,6 +94,7 @@ impl Check {
             Self::AccountArchives => "account_archives",
             Self::AccountLabels => "account_labels",
             Self::AccountClassifications => "account_classifications",
+            Self::Counterparties => "counterparties",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::StatementReconciliations => "statement_reconciliations",
@@ -222,6 +224,11 @@ impl VerifiedLedger {
             Check::AccountClassifications
                 .record(audit::cash_classification::verify(reader), &mut checks)?;
         }
+        Check::Counterparties.when(
+            version >= schema::COUNTERPARTY_SCHEMA_VERSION,
+            &mut checks,
+            || audit::counterparties::verify(reader),
+        )?;
         Check::TransactionLinks.when(
             version >= schema::NORMALIZED_METADATA_SCHEMA_VERSION,
             &mut checks,

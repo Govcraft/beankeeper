@@ -31,6 +31,7 @@ pub(super) struct AttentionContext<'a> {
     pub currency: Currency,
     pub as_of: NaiveDate,
     pub stale_hold_age: StaleHoldAge,
+    pub parties: Option<&'a db::counterparties::LinkedParties>,
     pub cash: &'a [String],
     pub receivables: &'a [String],
     pub payables: &'a [String],
@@ -351,8 +352,10 @@ fn aged(
     let mut total = 0;
     for account in accounts {
         let movements = load_movements(context, account, payable)?;
-        let matched = report_aging::apply_specific(&movements);
-        for item in matched.open_items {
+        for item in movements
+            .values()
+            .flat_map(|group| report_aging::apply_specific(group).open_items)
+        {
             if (context.as_of - item.date).num_days() > 30 {
                 count += 1;
                 total = add(total, item.open)?;
@@ -367,7 +370,11 @@ fn aged(
         },
         count,
         super::money(total, context.currency),
-        "open-charges-by-transaction-date-specific-then-fifo",
+        if context.parties.is_some() {
+            "counterparty-open-charges-by-transaction-date-specific-then-fifo"
+        } else {
+            "open-charges-by-transaction-date-specific-then-fifo"
+        },
         "Open charges more than 30 days old after linked settlements and FIFO matching. Age does not establish that payment is overdue.",
     );
     item.details = Some(Details::Aged {
@@ -380,7 +387,7 @@ fn load_movements(
     context: &AttentionContext<'_>,
     account: &str,
     payable: bool,
-) -> Result<Vec<Movement>, CliError> {
+) -> Result<BTreeMap<Option<String>, Vec<Movement>>, CliError> {
     let mut statement = context.conn.prepare(
         "SELECT t.id, t.date, t.description, t.reference, t.metadata,
              SUM(CASE WHEN e.direction = 'debit' THEN e.amount ELSE 0 END),
@@ -408,9 +415,16 @@ fn load_movements(
             ))
         },
     )?;
-    rows.map(|row| {
+    let mut movements = BTreeMap::<_, Vec<_>>::new();
+    for row in rows {
         let (transaction_id, date, description, reference, metadata, debit, credit) = row?;
-        Movement::new(
+        let group = context.parties.map(|parties| {
+            let key = if payable { "vendor" } else { "customer" };
+            parties.group_label(transaction_id, || {
+                report_aging::counterparty_from_metadata(metadata.as_deref(), key)
+            })
+        });
+        let movement = Movement::new(
             transaction_id,
             date,
             description,
@@ -422,9 +436,10 @@ fn load_movements(
             }
             .into(),
             report_aging::parse_link_spec(metadata.as_deref(), report_aging::DEFAULT_LINK_KEY),
-        )
-    })
-    .collect()
+        )?;
+        movements.entry(group).or_default().push(movement);
+    }
+    Ok(movements)
 }
 
 #[cfg(test)]
@@ -524,6 +539,7 @@ mod tests {
                 .parse()
                 .map_err(|error: chrono::ParseError| CliError::Validation(error.to_string()))?,
             stale_hold_age: StaleHoldAge::default(),
+            parties: None,
             cash: &["1000".into()],
             receivables: &["1100".into()],
             payables: &["2000".into()],

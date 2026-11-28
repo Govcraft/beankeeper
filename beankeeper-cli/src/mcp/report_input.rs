@@ -223,6 +223,7 @@ impl TryFrom<AgingInput> for AgingRequest {
             as_of: date(input.as_of).into(),
             buckets: input.buckets,
             group_by: input.group_by_metadata,
+            group_by_counterparty: input.group_by_counterparty,
             currency: input.currency,
             method: input.method.map(Into::into).unwrap_or_default(),
             link_key: input.link_key,
@@ -277,6 +278,7 @@ impl TryFrom<FinancialSummary> for SummaryRequest {
             ChartRequest::try_from((input.chart, input.chart_all))?,
             options.stale_hold_age_days,
         )
+        .map(|request| request.with_counterparty_grouping(options.group_by_counterparty))
     }
 }
 
