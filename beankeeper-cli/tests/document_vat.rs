@@ -30,10 +30,10 @@ fn bk(path: &Path) -> Result<Command, Box<dyn Error>> {
 }
 
 fn run(path: &Path, args: &[&str]) -> Result<Value, Box<dyn Error>> {
-    decode_output(bk(path)?.args(args).output()?, args)
+    decode_output(&bk(path)?.args(args).output()?, args)
 }
 
-fn decode_output(output: Output, args: &[&str]) -> Result<Value, Box<dyn Error>> {
+fn decode_output(output: &Output, args: &[&str]) -> Result<Value, Box<dyn Error>> {
     assert!(
         output.status.success(),
         "{args:?}: {}",
@@ -129,12 +129,45 @@ fn issue(path: &Path, draft: &Value) -> Result<Value, Box<dyn Error>> {
         .stderr(Stdio::piped());
     let pending = command.spawn()?;
     let concurrent = command.output()?;
-    let first = decode_output(pending.wait_with_output()?, &args)?;
-    let second = decode_output(concurrent, &args)?;
+    let first = decode_output(&pending.wait_with_output()?, &args)?;
+    let second = decode_output(&concurrent, &args)?;
     let retry = run(path, &args)?;
     assert_eq!(first["record"], second["record"]);
     assert_eq!(first["record"], retry["record"]);
     Ok(first["record"]["issued"].clone())
+}
+
+fn exempt_rate_codes(path: &Path) -> Result<(Value, Value), Box<dyn Error>> {
+    let zero = company(
+        path,
+        &[
+            "tax",
+            "configure",
+            "ZERO",
+            "--effective-from",
+            "2026-01-01",
+            "--treatment",
+            "zero-rated",
+            "--rate",
+            "0",
+        ],
+    )?;
+    let exposed = company(
+        path,
+        &[
+            "tax",
+            "configure",
+            "EXEMPT",
+            "--effective-from",
+            "2026-01-01",
+            "--treatment",
+            "exempt",
+            "--rate",
+            "0",
+        ],
+    )?;
+
+    Ok((zero, exposed))
 }
 
 #[test]
@@ -157,35 +190,7 @@ fn vat_uses_frozen_rates_and_reconciles_credits_and_manual_entries() -> TestResu
     let original = configure(&path, "MAIN", "2026-01-01", "20")?;
     let original_code = selector(&original, "code")?;
     assert_eq!(configure(&path, "MAIN", "2026-01-01", "20")?, original);
-    let zero = company(
-        &path,
-        &[
-            "tax",
-            "configure",
-            "ZERO",
-            "--effective-from",
-            "2026-01-01",
-            "--treatment",
-            "zero-rated",
-            "--rate",
-            "0",
-        ],
-    )?;
-    let exposed = company(
-        &path,
-        &[
-            "tax",
-            "configure",
-            "EXEMPT",
-            "--effective-from",
-            "2026-01-01",
-            "--treatment",
-            "exempt",
-            "--rate",
-            "0",
-        ],
-    )?;
-
+    let (zero, exposed) = exempt_rate_codes(&path)?;
     let invoice = issue(
         &path,
         &json!({
@@ -261,7 +266,30 @@ fn vat_uses_frozen_rates_and_reconciles_credits_and_manual_entries() -> TestResu
         "--to",
         "2026-08-31",
     ];
-    let report = company(&path, &report_args)?;
+    let report = assert_register(&path, &report_args, &original)?;
+    assert_eq!(run(&path, &["verify"])?["status"], "healthy");
+    assert_backup_restore(&path, &report_args, &report)
+}
+
+fn assert_backup_restore(path: &Path, report_args: &[&str], report: &Value) -> TestResult {
+    let archive = path.with_file_name("backup.db");
+    let archive = archive.to_str().ok_or("backup path")?;
+    run(path, &["backup", "--output", archive])?;
+    let rates_before = company(path, &["tax", "list"])?;
+    configure(path, "MAIN", "2026-08-01", "15")?;
+    run(path, &["restore", "--input", archive])?;
+    assert_eq!(company(path, &["tax", "list"])?, rates_before);
+    assert_eq!(&company(path, report_args)?, report);
+    assert_eq!(run(path, &["verify"])?["status"], "healthy");
+    Ok(())
+}
+
+fn assert_register(
+    path: &Path,
+    report_args: &[&str],
+    original: &Value,
+) -> Result<Value, Box<dyn Error>> {
+    let report = company(path, report_args)?;
     assert_eq!(report["sales"]["vat_minor"], 300);
     assert_eq!(report["purchases"]["recovered_vat_minor"], 200);
     assert_eq!(report["net_control_vat_minor"], 100);
@@ -277,15 +305,5 @@ fn vat_uses_frozen_rates_and_reconciles_credits_and_manual_entries() -> TestResu
     assert_eq!(payable["expected_minor"], 300);
     assert_eq!(payable["posted_minor"], 335);
     assert_eq!(payable["differences"][0]["posted_minor"], 35);
-    assert_eq!(run(&path, &["verify"])?["status"], "healthy");
-    let archive = temp.path().join("backup.db");
-    let archive = archive.to_str().ok_or("backup path")?;
-    run(&path, &["backup", "--output", archive])?;
-    let rates_before = company(&path, &["tax", "list"])?;
-    configure(&path, "MAIN", "2026-08-01", "15")?;
-    run(&path, &["restore", "--input", archive])?;
-    assert_eq!(company(&path, &["tax", "list"])?, rates_before);
-    assert_eq!(company(&path, &report_args)?, report);
-    assert_eq!(run(&path, &["verify"])?["status"], "healthy");
-    Ok(())
+    Ok(report)
 }
