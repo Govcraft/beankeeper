@@ -317,20 +317,6 @@ impl LedgerRequest {
     }
 }
 
-fn authorize_actor<'snapshot>(
-    reader: ReadConn<'snapshot>,
-    operation: Operation,
-    resolve: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
-) -> Result<Actor, CliError> {
-    let actor = resolve(reader)?;
-    if let Some(identity) = actor.identity() {
-        crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
-    } else {
-        crate::identity::authorize_known_operation(reader, None, operation)?;
-    }
-    Ok(actor)
-}
-
 impl LedgerResponse {
     pub(crate) fn render(&self, cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         match self {
