@@ -43,6 +43,7 @@ use crate::{
         summary::{SummaryRequest, SummaryResponse},
         tax::{TaxRequest, TaxResponse},
         txn::{TxnRequest, TxnResponse},
+        txn_import::{self, BatchResult, JournalImportRequest},
     },
     db::{
         Actor, Db,
@@ -88,6 +89,7 @@ pub enum LedgerRequest {
     Standing(StandingRequest),
     Summary(SummaryRequest),
     Transaction(TxnRequest),
+    JournalImport(JournalImportRequest),
     Verify,
 }
 
@@ -123,6 +125,7 @@ pub enum LedgerResponse {
     Standing(Operation, CompanySlug, StandingResponse),
     Summary(SummaryResponse),
     Transaction(TxnResponse),
+    JournalImport(CompanySlug, BatchResult),
     Verify(VerifiedLedger),
 }
 
@@ -174,6 +177,7 @@ impl LedgerRequest {
             Self::Standing(request) => request.operation(),
             Self::Summary(_) => Operation::Summary,
             Self::Transaction(request) => request.operation(),
+            Self::JournalImport(_) => Operation::TxnImport,
             Self::Verify => Operation::Verify,
         }
     }
@@ -327,6 +331,12 @@ impl LedgerRequest {
             Self::Transaction(request) => {
                 request.execute(db, actor).map(LedgerResponse::Transaction)
             }
+            Self::JournalImport(request) => {
+                let company = request.company().clone();
+                request
+                    .execute(db, actor)
+                    .map(|result| LedgerResponse::JournalImport(company, result))
+            }
             Self::Verify => VerifiedLedger::read(db).map(LedgerResponse::Verify),
         }
     }
@@ -398,6 +408,13 @@ impl LedgerResponse {
             }
             Self::Summary(response) => response.render(cli),
             Self::Transaction(response) => response.render(cli, meta),
+            Self::JournalImport(company, response) => {
+                if let Some(rendered) = txn_import::render_result(cli, company.as_str(), response)?
+                {
+                    println!("{rendered}");
+                }
+                Ok(())
+            }
             Self::Verify(response) => crate::commands::verify::render(response, cli),
         }
     }

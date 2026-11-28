@@ -12,6 +12,8 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 - Hosts can discover typed MCP operation/tool pairs before setup and filter them with verified effective grants, including bookkeeper Chart and Reverse rules. (#329)
 
+- Import historical balanced JSON journal batches through MCP with the same atomic posting, dry-run, and duplicate handling as the CLI journal import. ([#364](https://github.com/Govcraft/beankeeper/issues/364))
+
 ### Fixed
 
 - Encrypted ledgers opened concurrently right after process start no longer fail intermittently with "An error occurred with PRAGMA key or rekey"; the first SQLite use now completes SQLCipher setup before other threads open ledgers. ([#330](https://github.com/Govcraft/beankeeper/issues/330))

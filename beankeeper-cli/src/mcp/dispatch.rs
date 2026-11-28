@@ -25,6 +25,7 @@ use crate::{
         standing::StandingRequest,
         tax::TaxRequest,
         txn::TxnRequest,
+        txn_import::JournalImportRequest,
     },
     confirmation::ExplicitDeleteCall,
     db::{
@@ -34,7 +35,7 @@ use crate::{
     },
     error::CliError,
     output::json::Pagination,
-    request::{LedgerRequest, LedgerResponse},
+    request::{CurrencySetting, LedgerRequest, LedgerResponse},
 };
 
 macro_rules! convert {
@@ -260,6 +261,13 @@ try_convert! {
         ).try_into()?,
     }),
     txn_post(TxnPost) => Transaction(input => input.try_into()?),
+    txn_import(TxnImport) => JournalImport(input => JournalImportRequest::new(
+        input.company.into_inner(),
+        input.transactions,
+        CurrencySetting::from(input.currency).try_into()?,
+        input.on_conflict.map_or(crate::db::transactions::ConflictStrategy::Skip, Into::into),
+        input.dry_run,
+    )?),
     txn_propose(TxnPost) => Transaction(input => TxnRequest::propose_mcp(input)?),
     txn_meta_set(TxnMetaSet) => Transaction(input => input.try_into()?),
     txn_meta_unset(TxnMetaUnset) => Transaction(input => input.try_into()?),
@@ -359,6 +367,7 @@ pub(super) fn response(
             response.check_reconciliation()?;
             (encode(response)?, response.pagination())
         }
+        LedgerResponse::JournalImport(_, response) => (encode(response)?, None),
         LedgerResponse::Verify(response) => (encode(response)?, None),
     };
     Ok((data, pagination.map(encode).transpose()?))

@@ -17,8 +17,10 @@ use super::input_values::{
 };
 use crate::cli::ActorFilterArg;
 use crate::commands::{
-    reference::TransactionReference, report_periods::CompareArg, txn_clear::StatementAmount,
-    txn_import::CsvMapping,
+    reference::TransactionReference,
+    report_periods::CompareArg,
+    txn_clear::StatementAmount,
+    txn_import::{CsvMapping, InputTransaction, MAX_JOURNAL_BATCH},
 };
 use crate::db::audit::receipts::{AuditCursor, ReceiptContinuation, ReceiptId, ReceiptPageLimit};
 use crate::db::audit::setup::{
@@ -808,6 +810,25 @@ pub(crate) struct TxnPost {
     pub credits: NonEmpty<Line>,
     #[serde(default, deserialize_with = "deserialize_structured")]
     pub meta: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TxnImport {
+    pub company: Company,
+    /// Balanced journals in the same format as the CLI JSON import.
+    #[serde(deserialize_with = "deserialize_structured")]
+    #[schemars(length(min = 1, max = MAX_JOURNAL_BATCH))]
+    pub transactions: Vec<InputTransaction>,
+    /// Default currency for journals without a currency. Defaults to `BEANKEEPER_CURRENCY` or USD.
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
+    /// Skip duplicate references (default) or reject the whole batch.
+    pub on_conflict: Option<OnConflictArg>,
+    /// Run the posting checks and roll back all mutations.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

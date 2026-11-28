@@ -301,6 +301,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
 | `account_classify` | `company`, existing account `code`, and `cash_class` (`non_cash`, `cash`, or `cash_equivalent`) |
 | `txn_link` | `company`, `source_id`, `target_id`, `kind` |
+| `txn_import` | Import balanced JSON journals into one company. Pass `transactions` and optionally `currency`, `on_conflict`, or `dry_run`. Requires Direct posting authority. |
 | `txn_post` | `company`, `description`, `debits`, `credits`; optional `status`, `date`, `currency`, `reference`, `on_conflict`, `metadata`, `meta`, `tax`, `correlate` |
 | `txn_settle_hold` | `company`, `hold` as `{"id":42}` or `{"reference":"hold-1"}`, positive decimal `amount`, posting `date`, posted `reference` |
 | `txn_propose` | Same posting arguments as `txn_post`; requires a verified proposer, reserves the reference and waits for approval without posting |
@@ -599,7 +600,7 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
-`account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
+`account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_import`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
 `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,
@@ -637,7 +638,7 @@ When `txn post` or `txn_post` omits currency, the posting uses
 | `bk key init`, `bk agent issue`, `bk agent revoke` | Owner-managed trust root and credential lifecycle. Setup sessions have their own scoped owner tools. |
 | `bk agent limit set`, `bk agent limit clear`, `bk policy set` | Owner-managed authorization policy and limits. |
 | `bk account delete` | Permanent catalog deletion uses local confirmation. |
-| `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
+| `bk txn attach` | The CLI reads an attachment from a local file. |
 | `bk schedule create`, `bk schedule cancel`, `bk schedule run` | Recurring template management and execution are deferred until the MCP scheduling contract is available. |
 | `bk loan pay` | The dedicated loan-terms input and payment calculation are deferred. Agents can already post a balanced payment through `txn_post`. |
 
@@ -1133,6 +1134,47 @@ default; a later file with one more identical row imports only that additional
 occurrence. File names and unrelated rows do not affect these references.
 Duplicate explicit references within a batch still skip or error according to
 `--on-conflict`. Explicit blank JSON references are rejected.
+
+#### Journal migration with MCP
+
+Map the source export's accounts to destination account codes and group lines
+by the source journal identifier. Keep each journal's original date, currency
+and balanced debit and credit amounts. For example, a normalized journal from
+a previous ledger can be sent as the following arguments to `txn_import`.
+
+```json
+{
+  "company": "acme",
+  "currency": "USD",
+  "dry_run": true,
+  "transactions": [
+    {
+      "date": "2025-11-18",
+      "reference": "old-ledger:journal:482",
+      "description": "Paid an office supplies bill",
+      "entries": [
+        {"account_code": "5000", "direction": "debit", "amount": "19.95"},
+        {"account_code": "1000", "direction": "credit", "amount": "19.95"}
+      ]
+    }
+  ]
+}
+```
+
+Review the dry-run outcome, then send the same arguments with `dry_run: false`
+to post. Direct posting authority is required for both calls. Under enforcement
+this requires `ledger/post`. The result has the same batch counts, references,
+and row statuses as the CLI JSON import. Dry runs omit transaction IDs. Use
+stable source references across batches so retries skip already-posted journals.
+Set `on_conflict: "error"` to roll back a batch on any duplicate. Each call
+accepts 1 to 500 journals, at most 5,000 entries total and up to 1 MiB of
+encoded journal JSON.
+
+Use the setup statement import tools for bank-only CSV, OFX or QFX. Historical
+journals reconstruct account activity. Use the counterparty and document tools
+to preserve contacts, invoices, bills and payment allocations. Exclude the
+source entries for any invoices or bills you recreate through document issuance,
+which generates their journals in Beankeeper.
 
 ### `bk txn clear`
 
