@@ -7,6 +7,7 @@ pub mod bank_feed;
 pub mod budget;
 pub mod company;
 pub mod counterparty;
+pub mod document;
 pub mod export;
 pub mod fx;
 pub mod import_ofx;
@@ -77,6 +78,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Payroll(crate::cli::PayrollCommand::Show { .. }) => Operation::PayrollShow,
         Command::Rule(args) => args.command.operation(),
         Command::Counterparty(args) => args.command.operation(),
+        Command::Document(args) => args.command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -318,6 +320,9 @@ fn dispatch_ledger(
         Command::Counterparty(args) => Some(LedgerRequest::Counterparty(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
+        Command::Document(args) => Some(LedgerRequest::Document(
+            (require_company(cli)?.clone(), args.command.clone()).into(),
+        )),
         Command::BookkeepingPolicy(command) => Some(LedgerRequest::Standing(
             (require_company(cli)?, command).into(),
         )),
@@ -489,6 +494,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Budget(_)
         | Command::Rule(_)
         | Command::Counterparty(_)
+        | Command::Document(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)

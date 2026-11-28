@@ -56,6 +56,7 @@ pub mod recategorize;
 pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
 pub(crate) mod counterparties;
+pub(crate) mod documents;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
 pub(crate) mod grant;
@@ -178,6 +179,9 @@ audit_labels! {
         Counterparty => "counterparty",
         TransactionCounterparty => "transaction_counterparty",
         BankFeed => "bank_feed",
+        Document => "document",
+        DocumentAllocation => "document_allocation",
+        DocumentReview => "document_review",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -214,6 +218,9 @@ impl AuditEntity {
             | Self::Counterparty
             | Self::TransactionCounterparty
             | Self::BankFeed
+            | Self::Document
+            | Self::DocumentAllocation
+            | Self::DocumentReview
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -264,6 +271,14 @@ audit_labels! {
         CounterpartyAmend => "counterparty_amend",
         CounterpartyArchive => "counterparty_archive",
         CounterpartyAssociate => "counterparty_associate",
+        DocumentDraft => "document_draft",
+        DocumentAmend => "document_amend",
+        DocumentIssue => "document_issue",
+        DocumentAllocate => "document_allocate",
+        DocumentUnallocate => "document_unallocate",
+        DocumentPropose => "document_propose",
+        DocumentApprove => "document_approve",
+        DocumentReject => "document_reject",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",
@@ -2054,6 +2069,7 @@ fn reverse_in_scope(
     })?;
     reject_investment_reversal(conn, p.id)?;
     payroll::reject_generic_reversal(tx.read(), p.id)?;
+    documents::guard_linked_posting(&company, p.id)?;
     let mut original_metadata: serde_json::Value = original
         .metadata
         .as_deref()

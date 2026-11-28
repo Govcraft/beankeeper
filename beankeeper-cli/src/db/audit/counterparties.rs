@@ -149,12 +149,52 @@ struct AssociationSnapshot<'a> {
     transaction_id: TransactionId,
 }
 
-fn associate(
+pub(super) fn associate(
     conn: &rusqlite::Connection,
     actor: &Actor,
     company: &Company<'_>,
     id: CounterpartyId,
     transaction: TransactionId,
+) -> Result<PartyMutationResult, CliError> {
+    associate_inner(
+        conn,
+        actor,
+        company,
+        id,
+        transaction,
+        AssociationMode::Active,
+    )
+}
+
+pub(super) fn associate_issued(
+    conn: &rusqlite::Connection,
+    actor: &Actor,
+    company: &Company<'_>,
+    id: CounterpartyId,
+    transaction: TransactionId,
+) -> Result<PartyMutationResult, CliError> {
+    associate_inner(
+        conn,
+        actor,
+        company,
+        id,
+        transaction,
+        AssociationMode::IssuedSnapshot,
+    )
+}
+
+enum AssociationMode {
+    Active,
+    IssuedSnapshot,
+}
+
+fn associate_inner(
+    conn: &rusqlite::Connection,
+    actor: &Actor,
+    company: &Company<'_>,
+    id: CounterpartyId,
+    transaction: TransactionId,
+    mode: AssociationMode,
 ) -> Result<PartyMutationResult, CliError> {
     let slug = company.slug();
     let party = find_counterparty(company, &id)?;
@@ -174,7 +214,10 @@ fn associate(
     let receipt_id = if previous.as_ref() == Some(&id) {
         None
     } else {
-        party.require_active()?;
+        if matches!(mode, AssociationMode::Active) {
+            party.require_active()?;
+            super::documents::guard_linked_posting(company, transaction)?;
+        }
         let receipt = append_with_links(
             conn,
             actor,

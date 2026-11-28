@@ -608,6 +608,7 @@ const VERIFICATION_CHECKS: &[&str] = &[
     "account_classifications",
     "counterparties",
     "bank_feed",
+    "open_items",
     "transaction_links",
     "statement_batches",
     "statement_reconciliations",

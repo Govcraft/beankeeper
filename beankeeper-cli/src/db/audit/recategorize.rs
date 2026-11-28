@@ -143,8 +143,10 @@ impl TransactionSelector {
                     .ok_or(RecategorizeBlock::TransactionMissing)?
             }
         };
-        transactions::find_transaction_row(company, id)?
-            .ok_or_else(|| RecategorizeBlock::TransactionMissing.into())
+        let row = transactions::find_transaction_row(company, id)?
+            .ok_or(RecategorizeBlock::TransactionMissing)?;
+        super::documents::guard_linked_posting(company, id)?;
+        Ok(row)
     }
 }
 

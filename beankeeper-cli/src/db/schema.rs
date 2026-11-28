@@ -9,7 +9,7 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 42;
+const LATEST_VERSION: i64 = 43;
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -42,6 +42,7 @@ pub(crate) const CASH_CLASS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known
 pub(super) const COUNTERPARTY_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(40);
 pub(super) const PAYROLL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(42);
 pub(super) const BANK_FEED_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(41);
+pub(super) const DOCUMENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(43);
 /// Earliest ledger that supports the read-only setup operations.
 pub(crate) const OLDEST_SETUP_READ_SCHEMA: SchemaVersion = SchemaVersion::known(20);
 
@@ -347,6 +348,10 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
         migrate_with_writer(conn, PAYROLL_SCHEMA_VERSION, apply_payroll_schema)?;
     }
 
+    if version < DOCUMENT_SCHEMA_VERSION {
+        migrate_with_writer(conn, DOCUMENT_SCHEMA_VERSION, apply_document_schema)?;
+    }
+
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -354,6 +359,19 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
     );
 
     Ok(())
+}
+
+fn apply_document_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(conn, AuditTable::Documents, DOCUMENT_SCHEMA_VERSION)?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/documents.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_payroll_schema(conn: &Connection) -> Result<(), CliError> {
@@ -2175,6 +2193,7 @@ enum AuditTable {
     Counterparties,
     BankFeed,
     Payroll,
+    Documents,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2184,7 +2203,8 @@ impl From<AuditTable> for AuditHistory {
             | AuditTable::CashClassification
             | AuditTable::Counterparties
             | AuditTable::BankFeed
-            | AuditTable::Payroll => Self::Bookkeeping,
+            | AuditTable::Payroll
+            | AuditTable::Documents => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2333,6 +2353,34 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
             AuditEntity::PayrollFunding
         );
     }
+    if table >= AuditTable::Documents {
+        append_document_audit_extensions(entity, action);
+    }
+}
+
+fn append_document_audit_extensions(entity: &mut String, action: &mut String) {
+    use super::audit::{AuditAction, AuditEntity};
+    use std::fmt::Write as _;
+
+    for value in [
+        AuditEntity::Document,
+        AuditEntity::DocumentAllocation,
+        AuditEntity::DocumentReview,
+    ] {
+        let _ = write!(entity, ",'{value}'");
+    }
+    for value in [
+        AuditAction::DocumentDraft,
+        AuditAction::DocumentAmend,
+        AuditAction::DocumentIssue,
+        AuditAction::DocumentAllocate,
+        AuditAction::DocumentUnallocate,
+        AuditAction::DocumentPropose,
+        AuditAction::DocumentApprove,
+        AuditAction::DocumentReject,
+    ] {
+        let _ = write!(action, ",'{value}'");
+    }
 }
 
 fn recategorization_action(table: AuditTable) -> &'static str {
@@ -2474,7 +2522,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -3256,6 +3304,7 @@ mod tests {
                 COUNTERPARTY_SCHEMA_VERSION,
                 BANK_FEED_SCHEMA_VERSION,
                 PAYROLL_SCHEMA_VERSION,
+                DOCUMENT_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );

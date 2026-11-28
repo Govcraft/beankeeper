@@ -729,6 +729,9 @@ EXAMPLES:\n  \
     /// Manage customer and vendor records.
     Counterparty(crate::commands::counterparty::CounterpartyArgs),
 
+    /// Manage invoices, bills and allocations.
+    Document(crate::commands::document::DocumentArgs),
+
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
     BookkeepingPolicy(BookkeepingPolicyCommand),
@@ -3173,6 +3176,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Loan(args) => args.company.as_ref(),
         Command::Rule(args) => args.company.as_ref(),
         Command::Counterparty(args) => args.company.as_ref(),
+        Command::Document(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
         Command::Txn(args) => args.company.as_ref(),
