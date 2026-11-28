@@ -19,12 +19,20 @@ use super::{
     report_cash_flow::{CashAccount, cash_balance, resolve_cash_accounts},
 };
 use crate::{
-    db::{calendar_date, companies::Company, connection::ReadConn, ids::TransactionId, schedules},
+    db::{
+        calendar_date,
+        companies::Company,
+        connection::ReadConn,
+        documents::{DocumentId, DocumentKind, open_items_as_of},
+        ids::TransactionId,
+        schedules,
+    },
     error::CliError,
     output::amounts::MoneyField,
 };
 
 const MAX_SCHEDULE_OCCURRENCES: usize = 10_000;
+const MAX_OVERLAP_EXAMPLES: usize = 200;
 
 #[derive(
     Debug, Clone, Copy, clap::ValueEnum, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
@@ -95,6 +103,9 @@ enum ForecastSource {
     Posted {
         transaction: TransactionId,
     },
+    OpenItem {
+        document: DocumentId,
+    },
     Scheduled {
         template: schedules::ScheduleId,
         date: NaiveDate,
@@ -105,6 +116,7 @@ impl std::fmt::Display for ForecastSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Posted { transaction } => write!(f, "posted:{transaction}"),
+            Self::OpenItem { document } => write!(f, "open-item:{document}"),
             Self::Scheduled { template, date } => write!(f, "scheduled:{template}:{date}"),
         }
     }
@@ -118,6 +130,9 @@ impl std::str::FromStr for ForecastSource {
         match raw.split_once(':') {
             Some(("posted", id)) => Ok(Self::Posted {
                 transaction: id.parse()?,
+            }),
+            Some(("open-item", id)) => Ok(Self::OpenItem {
+                document: id.parse()?,
             }),
             Some(("scheduled", pair)) => {
                 let (template, date) = pair.split_once(':').ok_or_else(bad_source)?;
@@ -160,10 +175,18 @@ pub(super) struct Forecast {
     through: NaiveDate,
     currency: Currency,
     accounts: Vec<CashAccount>,
+    possible_overlaps: Vec<PossibleOverlap>,
+    overlaps_truncated: bool,
     #[serde(flatten)]
     baseline: Projection,
     #[serde(skip_serializing_if = "Option::is_none")]
     scenario: Option<Projection>,
+}
+
+#[derive(Serialize)]
+struct PossibleOverlap {
+    scheduled_source_id: String,
+    document_source_id: String,
 }
 
 #[derive(Serialize)]
@@ -197,6 +220,9 @@ pub(super) fn read(
         &codes,
         &references,
     )?);
+    let open_items = document_movements(company, request, currency)?;
+    let (possible_overlaps, overlaps_truncated) = find_overlaps(&events, &open_items);
+    events.extend(open_items);
     let opening = Money::from_minor(i128::from(opening), currency);
     let adjustments = parse_adjustments(&request.adjustments, currency)?;
     let scenario = if adjustments.is_empty() {
@@ -222,6 +248,8 @@ pub(super) fn read(
         through: request.through,
         currency,
         accounts,
+        possible_overlaps,
+        overlaps_truncated,
         baseline,
         scenario,
     })
@@ -300,6 +328,75 @@ fn parse_adjustment_value(change: &str, currency: Currency) -> Result<ForecastOv
 }
 
 type Events = Vec<ForecastEvent<ForecastSource>>;
+
+fn document_movements(
+    company: &Company<'_>,
+    request: &ForecastRequest,
+    currency: Currency,
+) -> Result<Events, CliError> {
+    // Allocations already posted through the horizon are reflected in the
+    // projected cash journals. Forecast only the residual obligation.
+    let items = open_items_as_of(company, request.through)?;
+    Ok(items
+        .into_iter()
+        .filter(|item| {
+            item.open_minor > 0
+                && item.document.currency == currency
+                && item.document.issue_date <= request.as_of
+        })
+        .map(|item| {
+            let due = NaiveDate::from(item.document.due_date);
+            let minor = match item.document.kind {
+                DocumentKind::Invoice => i128::from(item.open_minor),
+                DocumentKind::Bill => -i128::from(item.open_minor),
+            };
+            ForecastEvent {
+                source: ForecastSource::OpenItem {
+                    document: item.document.id,
+                },
+                on: (due > request.as_of).then_some(due),
+                movement: Money::from_minor(minor, currency),
+            }
+        })
+        .collect())
+}
+
+fn find_overlaps(
+    events: &[ForecastEvent<ForecastSource>],
+    open_items: &[ForecastEvent<ForecastSource>],
+) -> (Vec<PossibleOverlap>, bool) {
+    let mut by_date_and_amount = BTreeMap::new();
+    for event in events {
+        if let ForecastSource::Scheduled { .. } = event.source
+            && let Some(date) = event.on
+        {
+            by_date_and_amount
+                .entry((date, event.movement.amount().minor_units()))
+                .or_insert_with(Vec::new)
+                .push(&event.source);
+        }
+    }
+    let mut matches: Vec<_> = open_items
+        .iter()
+        .flat_map(|document| {
+            document
+                .on
+                .and_then(|date| {
+                    by_date_and_amount.get(&(date, document.movement.amount().minor_units()))
+                })
+                .into_iter()
+                .flatten()
+                .map(move |scheduled| PossibleOverlap {
+                    scheduled_source_id: scheduled.to_string(),
+                    document_source_id: document.source.to_string(),
+                })
+        })
+        .take(MAX_OVERLAP_EXAMPLES + 1)
+        .collect();
+    let truncated = matches.len() > MAX_OVERLAP_EXAMPLES;
+    matches.truncate(MAX_OVERLAP_EXAMPLES);
+    (matches, truncated)
+}
 
 fn posted_movements(
     reader: ReadConn<'_>,
@@ -495,6 +592,13 @@ pub(super) fn render(
             )?;
             if let Some(date) = report.baseline.first_shortfall {
                 writeln!(output.writer, "First projected shortfall: {date}")?;
+            }
+            if !report.possible_overlaps.is_empty() {
+                writeln!(
+                    output.writer,
+                    "{} schedule and open item overlap candidates. Review the sources before using this projection.",
+                    report.possible_overlaps.len()
+                )?;
             }
             if let Some(scenario) = &report.scenario {
                 writeln!(
