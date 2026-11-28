@@ -594,7 +594,7 @@ fn verify_uses_wide_totals_for_large_balanced_postings() -> TestResult {
     Ok(())
 }
 
-const VERIFICATION_CHECKS: [&str; 19] = [
+const VERIFICATION_CHECKS: &[&str] = &[
     "schema_version",
     "audit_hash_chain",
     "ledger_policy",
@@ -691,7 +691,10 @@ fn verify_returns_company_totals_counts_and_the_recomputed_audit_head() -> TestR
     let checks = data["checks"].as_array().ok_or("verification checks")?;
     assert_eq!(
         checks,
-        &VERIFICATION_CHECKS.map(|name| json!({"name": name, "outcome": "passed"}))
+        &VERIFICATION_CHECKS
+            .iter()
+            .map(|name| json!({"name": name, "outcome": "passed"}))
+            .collect::<Vec<_>>()
     );
     assert_eq!(data["desktop_view"]["link"], json!({"view_id": "review"}));
 
