@@ -272,6 +272,7 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
 | `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
+| `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect` | Administer host-authorized bank and card feeds through the audited workflow |
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
@@ -559,7 +560,9 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor_tax_export`, `company_create`, `company_delete`, `tax_configure`, `bank_feed_post`, `bank_feed_link`,
+Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor_tax_export`,
+`company_create`, `company_delete`, `tax_configure`, `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect`,
+`bank_feed_post`, `bank_feed_link`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
@@ -598,7 +601,6 @@ When `txn post` or `txn_post` omits currency, the posting uses
 | `bk key init`, `bk agent issue`, `bk agent revoke` | Owner-managed trust root and credential lifecycle. Setup sessions have their own scoped owner tools. |
 | `bk agent limit set`, `bk agent limit clear`, `bk policy set` | Owner-managed authorization policy and limits. |
 | `bk account delete` | Permanent catalog deletion uses local confirmation. |
-| `bk bank-feed connect`, `bk bank-feed disconnect`, `bk bank-feed sync` | Manage bank connections and poll the provider from the owner host, which supplies the provider credentials. |
 | `bk txn import`, `bk txn attach` | The CLI works with local files. The bounded, reviewed statement import path has separate setup MCP tools. |
 | `bk schedule create`, `bk schedule cancel`, `bk schedule run` | Recurring template management and execution are deferred until the MCP scheduling contract is available. |
 | `bk loan pay` | The dedicated loan-terms input and payment calculation are deferred. Agents can already post a balanced payment through `txn_post`. |

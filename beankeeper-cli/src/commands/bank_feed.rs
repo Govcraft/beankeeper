@@ -62,22 +62,25 @@ impl BankFeedCommand {
         }
     }
 
-    pub(crate) fn request(&self) -> Option<BankFeedRequest> {
+    pub(crate) fn request(&self) -> BankFeedRequest {
         match self {
-            Self::Show { feed } => Some(BankFeedRequest::Show(feed.clone())),
-            Self::List { feed, page } => Some(BankFeedRequest::List(feed.clone(), page.clone())),
-            Self::Review { feed, item } => {
-                Some(BankFeedRequest::Review(feed.clone(), item.clone()))
-            }
-            Self::Post(args) => Some(BankFeedRequest::Post(args.clone())),
-            Self::Link(args) => Some(BankFeedRequest::Link(args.clone())),
-            Self::Connect(_) | Self::Disconnect { .. } | Self::Sync { .. } => None,
+            Self::Connect(args) => BankFeedRequest::Connect(args.clone()),
+            Self::Disconnect { feed } => BankFeedRequest::Disconnect(feed.clone()),
+            Self::Sync { feed } => BankFeedRequest::Sync(feed.clone()),
+            Self::Show { feed } => BankFeedRequest::Show(feed.clone()),
+            Self::List { feed, page } => BankFeedRequest::List(feed.clone(), page.clone()),
+            Self::Review { feed, item } => BankFeedRequest::Review(feed.clone(), item.clone()),
+            Self::Post(args) => BankFeedRequest::Post(args.clone()),
+            Self::Link(args) => BankFeedRequest::Link(args.clone()),
         }
     }
 }
 
 /// A transport-independent bank feed request.
 pub enum BankFeedRequest {
+    Connect(ConnectArgs),
+    Disconnect(FeedConnectionId),
+    Sync(FeedConnectionId),
     Show(FeedConnectionId),
     List(FeedConnectionId, PageArgs),
     Review(FeedConnectionId, FeedItemId),
@@ -88,6 +91,9 @@ pub enum BankFeedRequest {
 impl BankFeedRequest {
     pub(crate) const fn operation(&self) -> Operation {
         match self {
+            Self::Connect(_) => Operation::BankFeedConnect,
+            Self::Disconnect(_) => Operation::BankFeedDisconnect,
+            Self::Sync(_) => Operation::BankFeedSync,
             Self::Show(_) => Operation::BankFeedShow,
             Self::List(..) => Operation::BankFeedList,
             Self::Review(..) => Operation::BankFeedReview,
@@ -104,6 +110,9 @@ impl BankFeedRequest {
         company: &CompanySlug,
     ) -> Result<BankFeedResponse, CliError> {
         match self {
+            Self::Connect(args) => encode(writes::connect(db, actor, company, &args)?),
+            Self::Disconnect(id) => encode(writes::disconnect(db, actor, company, &id)?),
+            Self::Sync(id) => encode(bank_feed::poll(db, actor, company, &id)?),
             Self::Show(id) => encode(bank_feed::connection(reader, company, &id)?),
             Self::List(id, page) => {
                 let feed = bank_feed::connection(reader, company, &id)?;
@@ -165,14 +174,11 @@ impl BankFeedResponse {
 pub(crate) fn ledger_request(
     cli: &Cli,
     command: &BankFeedCommand,
-) -> Result<Option<crate::request::LedgerRequest>, CliError> {
-    let Some(request) = command.request() else {
-        return Ok(None);
-    };
-    Ok(Some(crate::request::LedgerRequest::BankFeed((
+) -> Result<crate::request::LedgerRequest, CliError> {
+    Ok(crate::request::LedgerRequest::BankFeed((
         require_company(cli)?.clone(),
-        request,
-    ))))
+        command.request(),
+    )))
 }
 
 pub(crate) fn check_output(cli: &Cli) -> Result<(), CliError> {
@@ -182,21 +188,4 @@ pub(crate) fn check_output(cli: &Cli) -> Result<(), CliError> {
         ));
     }
     Ok(())
-}
-
-pub(crate) fn run(cli: &Cli, command: &BankFeedCommand) -> Result<(), CliError> {
-    let db = cli.command_db()?;
-    let actor = cli.principal();
-    let company = require_company(cli)?;
-    let result = match command {
-        BankFeedCommand::Connect(args) => encode(writes::connect(&db, &actor, company, args)?),
-        BankFeedCommand::Disconnect { feed } => {
-            encode(writes::disconnect(&db, &actor, company, feed)?)
-        }
-        BankFeedCommand::Sync { feed } => encode(bank_feed::poll(&db, &actor, company, feed)?),
-        _ => Err(CliError::General(
-            "bank feed request should use shared dispatch".into(),
-        )),
-    }?;
-    result.render(cli, command.operation(), company)
 }

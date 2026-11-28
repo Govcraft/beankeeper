@@ -4,7 +4,10 @@ use beankeeper::types::AccountType;
 use rusqlite::{OptionalExtension, params};
 use serde_json::json;
 
-use super::{AuditAction, AuditChange, AuditEntity, record, savepoint::AuditedTx, snapshot};
+use super::{
+    AuditAction, AuditChange, AuditEntity, grant::BankFeedAdmin, record, savepoint::AuditedTx,
+    snapshot,
+};
 use crate::{
     db::{
         Actor, Db, accounts,
@@ -15,7 +18,7 @@ use crate::{
         companies::{Company, CompanySlug},
     },
     error::CliError,
-    identity::{Admin, Granted},
+    identity::Granted,
 };
 
 pub(crate) fn connect(
@@ -24,10 +27,10 @@ pub(crate) fn connect(
     company: &CompanySlug,
     args: &ConnectArgs,
 ) -> Result<Connection, CliError> {
-    Granted::<Admin>::with_db(db, actor, |grant| {
+    Granted::<BankFeedAdmin>::with_db(db, actor, |grant| {
         grant.mutate("sp_connect_bank_feed", |tx, actor| {
             let scope = Company::bind(tx.read(), company.clone())?;
-            let account = accounts::get_active_account(&scope, &args.account)?;
+            let account = accounts::get_active_account(&scope, args.account.as_str())?;
             let has_native_fx: bool = tx.read().query_row(
                 "SELECT EXISTS(SELECT 1 FROM fx_accounts WHERE company_slug = ?1 AND account_code = ?2)",
                 params![company, account.code], |row| row.get(0),
@@ -42,12 +45,12 @@ pub(crate) fn connect(
             let existing: Option<FeedConnectionId> = tx.connection().query_row(
                 "SELECT id FROM bank_feed_connections WHERE company_slug = ?1 AND
                  (account_code = ?2 OR (environment = ?3 AND provider_account = ?4))",
-                params![company, args.account, args.environment.as_str(), args.provider_account.as_str()],
+                params![company, args.account.as_str(), args.environment.as_str(), args.provider_account.as_str()],
                 |row| row.get(0),
             ).optional()?;
             if let Some(id) = existing {
                 let current = bank_feed::connection(tx.read(), company, &id)?;
-                if current.account != args.account || current.currency != args.currency
+                if current.account != args.account.as_str() || current.currency != args.currency
                     || current.provider_account != args.provider_account || current.environment != args.environment
                 {
                     return Err(FeedError::InvalidMapping.into());
@@ -58,7 +61,7 @@ pub(crate) fn connect(
             tx.connection().execute(
                 "INSERT INTO bank_feed_connections (id, company_slug, account_code, provider_account, environment, currency)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, company, args.account, args.provider_account.as_str(), args.environment.as_str(), args.currency.code()],
+                params![id, company, args.account.as_str(), args.provider_account.as_str(), args.environment.as_str(), args.currency.code()],
             )?;
             let result = bank_feed::connection(tx.read(), company, &id)?;
             audit(tx, actor, company, &id.to_string(), None, &snapshot(&result))?;
@@ -73,7 +76,7 @@ pub(crate) fn disconnect(
     company: &CompanySlug,
     id: &FeedConnectionId,
 ) -> Result<Connection, CliError> {
-    Granted::<Admin>::with_db(db, actor, |grant| {
+    Granted::<BankFeedAdmin>::with_db(db, actor, |grant| {
         grant.mutate("sp_disconnect_bank_feed", |tx, actor| {
             let current = bank_feed::connection(tx.read(), company, id)?;
             set_connected_in_scope(tx, actor, company, current, false)
@@ -116,7 +119,7 @@ pub(in crate::db) fn commit_sync(
     cursor: &Cursor,
     delta: &SyncDelta,
 ) -> Result<Connection, CliError> {
-    Granted::<Admin>::with_db(db, actor, |grant| {
+    Granted::<BankFeedAdmin>::with_db(db, actor, |grant| {
         grant.mutate("sp_sync_bank_feed", |tx, actor| {
             let current = bank_feed::connection(tx.read(), company, &before.id)?;
             if !current.connected {
@@ -538,7 +541,8 @@ fn resolve(
 
 #[cfg(test)]
 mod tests {
-    use beankeeper::types::Currency;
+    use crate::identity::Admin;
+    use beankeeper::types::{AccountCode, Currency};
 
     use super::*;
     use crate::db::{self, CreateAccountParams, test_support, verification::VerifiedLedger};
@@ -565,12 +569,49 @@ mod tests {
             actor,
             company,
             &ConnectArgs {
-                account: "1000".into(),
+                account: AccountCode::new("1000")
+                    .map_err(|error| CliError::Validation(error.to_string()))?,
                 provider_account: "bank-key".parse()?,
                 currency: Currency::USD,
                 environment: bank_feed::PlaidEnvironment::Sandbox,
             },
         )
+    }
+
+    #[test]
+    fn sync_checks_read_state_before_requesting_a_writer() -> Result<(), CliError> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use crate::{
+            commands::bank_feed::BankFeedRequest, ledger_target::LedgerTarget,
+            request::LedgerRequest,
+        };
+
+        let db = Db::open_in_memory()?;
+        let company = "acme".parse()?;
+        let actor = Actor::new("fixture".parse()?);
+        let feed = fixture(&db, &company, &actor)?;
+        disconnect(&db, &actor, &company, &feed.id)?;
+
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&admissions);
+        let db = db.with_write_authorizer(LedgerTarget::default(), move |_: &LedgerTarget, _| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+        let result =
+            LedgerRequest::BankFeed((company, BankFeedRequest::Sync(feed.id))).execute(&db, &actor);
+        let Err(error) = result else {
+            return Err(CliError::General(
+                "a disconnected feed could not be rejected".into(),
+            ));
+        };
+        assert!(error.to_string().contains("bank feed is disconnected"));
+        assert_eq!(admissions.load(Ordering::Relaxed), 0);
+        Ok(())
     }
 
     fn provider_row(key: &str, pending: bool, amount: i64) -> Result<FeedTransaction, CliError> {

@@ -4,6 +4,8 @@
 mod account_rename;
 #[path = "mcp_stdio/audit_receipts.rs"]
 mod audit_receipts;
+#[path = "mcp_stdio/bank_feeds.rs"]
+mod bank_feeds;
 #[path = "mcp_stdio/cash_classification.rs"]
 mod cash_classification;
 #[path = "mcp_stdio/contractor_tax.rs"]
@@ -832,6 +834,9 @@ const LEDGER_TOOLS: &[&str] = &[
     "account_create",
     "account_rename",
     "account_classify",
+    "bank_feed_connect",
+    "bank_feed_sync",
+    "bank_feed_disconnect",
     "bank_feed_show",
     "bank_feed_list",
     "bank_feed_review",
@@ -1633,6 +1638,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
+    assert_eq!(names.len(), 49);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3333,6 +3339,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
+    assert_eq!(names.len(), 49);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3502,6 +3509,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
+    assert_eq!(names.len(), 49);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

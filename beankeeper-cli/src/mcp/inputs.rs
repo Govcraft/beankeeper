@@ -1683,6 +1683,17 @@ use crate::db::bank_feed::{
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct BankFeedConnect {
+    pub company: Company,
+    pub account: Account,
+    pub provider_account: crate::db::bank_feed::ProviderAccountKey,
+    pub currency: Text<Currency>,
+    #[serde(default)]
+    pub environment: crate::db::bank_feed::PlaidEnvironment,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct BankFeedShow {
     pub company: Company,
     pub feed: FeedConnectionId,

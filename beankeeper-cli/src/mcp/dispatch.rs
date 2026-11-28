@@ -51,6 +51,11 @@ macro_rules! try_convert {
 }
 
 convert! {
+    bank_feed_connect(BankFeedConnect) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Connect(crate::db::bank_feed::ConnectArgs {
+        account: input.account.into_inner(), provider_account: input.provider_account, currency: input.currency.into_inner(), environment: input.environment,
+    }))),
+    bank_feed_sync(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Sync(input.feed))),
+    bank_feed_disconnect(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Disconnect(input.feed))),
     bank_feed_link(BankFeedLink) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Link(input.args))),
     bank_feed_post(BankFeedPost) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Post(input.args))),
     bank_feed_review(BankFeedReview) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Review(input.feed, input.item))),

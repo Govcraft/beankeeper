@@ -133,7 +133,7 @@ impl VerifiedAgent {
                 operation.permission(),
                 Permission::SetupOwner
                     | Permission::OwnerUndo
-                    | Permission::RestoreAdmin
+                    | Permission::ExplicitAdmin
                     | Permission::AgentUndo
                     | Permission::Reversal
             )
@@ -384,7 +384,7 @@ fn require_operation_grant(
             permission,
             Permission::SetupOwner
                 | Permission::OwnerUndo
-                | Permission::RestoreAdmin
+                | Permission::ExplicitAdmin
                 | Permission::AgentUndo
                 | Permission::Reversal
         )

@@ -5,7 +5,7 @@ mod provider;
 
 use std::str::FromStr;
 
-use beankeeper::types::{Currency, Money};
+use beankeeper::types::{AccountCode, Currency, Money};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
 use schemars::JsonSchema;
@@ -57,7 +57,7 @@ impl FromStr for ItemStatus {
 pub struct ConnectArgs {
     /// Existing ledger asset or liability account code.
     #[arg(long)]
-    pub account: String,
+    pub account: AccountCode,
     /// Account identifier obtained via your Plaid Link host.
     #[arg(long)]
     pub provider_account: ProviderAccountKey,

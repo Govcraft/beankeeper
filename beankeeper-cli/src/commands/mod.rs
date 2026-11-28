@@ -275,7 +275,7 @@ fn dispatch_ledger(
 
     let request = match &cli.command {
         Command::Setup(command) => return dispatch_setup(cli, meta, command).map(|()| true),
-        Command::BankFeed(command) => bank_feed::ledger_request(cli, command)?,
+        Command::BankFeed(command) => Some(bank_feed::ledger_request(cli, command)?),
         Command::Summary(args) => Some(LedgerRequest::Summary(
             (require_company(cli)?, args, chart).try_into()?,
         )),
@@ -455,7 +455,6 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
-        Command::BankFeed(command) => bank_feed::run(cli, command),
         Command::ContractorTax(command) => contractor_tax::run_local(cli, command),
         Command::Backup { output, overwrite } => backup::backup(cli, output, *overwrite),
         Command::Restore { input } => backup::restore(
@@ -509,6 +508,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
             txn::run_for_company(cli, require_company(cli)?, args.command.as_ref(), meta)
         }
         Command::Setup(_)
+        | Command::BankFeed(_)
         | Command::Summary(_)
         | Command::Period(_)
         | Command::Reconcile(_)

@@ -111,6 +111,20 @@ pub enum LedgerResponse {
     Verify(VerifiedLedger),
 }
 
+fn authorize_actor<'snapshot>(
+    reader: ReadConn<'snapshot>,
+    operation: Operation,
+    resolve_actor: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
+) -> Result<Actor, CliError> {
+    let actor = resolve_actor(reader)?;
+    if let Some(identity) = actor.identity() {
+        crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
+    } else {
+        crate::identity::authorize_known_operation(reader, None, operation)?;
+    }
+    Ok(actor)
+}
+
 impl LedgerRequest {
     /// The operation used for authorization and discovery.
     #[must_use]
@@ -159,6 +173,15 @@ impl LedgerRequest {
         resolve_actor: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
         let operation = self.operation();
+        if operation == Operation::BankFeedSync {
+            // Release the authorization snapshot before the provider call.
+            // The audited commit checks the actor and the feed revision again.
+            let actor =
+                db.read_snapshot(|reader| authorize_actor(reader, operation, resolve_actor))?;
+            return self
+                .execute_authorized(db, &actor, operation)
+                .map(|response| (response, actor));
+        }
         if operation.writes_ledger() {
             db.in_write_batch_for(operation.into(), || {
                 self.execute_in_snapshot(db, db.read(), resolve_actor)
@@ -175,12 +198,7 @@ impl LedgerRequest {
         resolve_actor: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
         let operation = self.operation();
-        let actor = resolve_actor(reader)?;
-        if let Some(identity) = actor.identity() {
-            crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
-        } else {
-            crate::identity::authorize_known_operation(reader, None, operation)?;
-        }
+        let actor = authorize_actor(reader, operation, resolve_actor)?;
         let response = self.execute_authorized(db, &actor, operation)?;
         Ok((response, actor))
     }
