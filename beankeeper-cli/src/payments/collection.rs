@@ -35,6 +35,8 @@ pub enum CollectionState {
     Open(StripeSessionId),
     /// The provider reported a failed asynchronous attempt.
     Failed(StripeSessionId),
+    /// A settled payment was applied outside a managed Checkout session.
+    AppliedWithoutSession,
     /// An authenticated payment was applied.
     Applied {
         /// Hosted session used by the payment.
@@ -122,11 +124,32 @@ pub fn review_payment(
         } => (collection, session, None),
         _ => return CollectionDecision::Unrelated,
     };
+    review_observation(
+        terms,
+        state,
+        outstanding,
+        (collection, session, paid),
+        (event.account(), event.mode()),
+    )
+}
+
+pub(crate) fn review_observation(
+    terms: &CollectionTerms,
+    state: &CollectionState,
+    outstanding: Money,
+    (collection, session, paid): (
+        &CollectionId,
+        &StripeSessionId,
+        Option<(&StripePaymentIntentId, PositiveMoney)>,
+    ),
+    (account, mode): (&StripeAccountId, StripeMode),
+) -> CollectionDecision {
     let review = CollectionDecision::Review;
-    if &terms.id != collection || &terms.account != event.account() || terms.mode != event.mode() {
+    if &terms.id != collection || &terms.account != account || terms.mode != mode {
         return review(CollectionException::WrongCollection);
     }
     match state {
+        CollectionState::AppliedWithoutSession => return review(CollectionException::WrongSession),
         CollectionState::Requested => return review(CollectionException::UnattachedSession),
         CollectionState::Open(expected) | CollectionState::Failed(expected) => {
             if expected != session {

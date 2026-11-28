@@ -8,7 +8,10 @@ use super::{Applied, Correction, PendingCorrection, reserve};
 use crate::{
     db::{
         Actor, Db,
-        audit::{cash_classification, counterparties, grant, projects, savepoint::AuditedTx},
+        audit::{
+            cash_classification, counterparties, grant, payment_collection, projects,
+            savepoint::AuditedTx,
+        },
         companies::{Company, CompanySlug},
         counterparties::{ContactDetails, ContactPatch, CounterpartyId},
         ids::{EntryId, ReceiptId, TransactionId},
@@ -24,6 +27,7 @@ pub(super) enum Bookkeeping {
     Counterparty(Party),
     Project(Project),
     Classify(Classification),
+    StripeCollection(StripeCollection),
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +89,20 @@ impl Classification {
             |tx, actor, scope| cash_classification::apply(tx, actor, scope, self.code, self.class),
         )
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub(crate) enum StripeCollection {
+    ReportEvidence {
+        evidence: payment_collection::reported::ReportedEvidence,
+    },
+    ReconcilePayout {
+        manifest: payment_collection::payout::PayoutManifest,
+    },
+    ReconcileRefund {
+        terms: payment_collection::refund::RefundSettlement,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +238,7 @@ impl Bookkeeping {
             })
         }
         match self {
+            Self::StripeCollection(change) => result(change.apply(tx, actor, scope)?, None),
             Self::Counterparty(change) => {
                 use counterparties::PartyMutationResult::{Association, Record};
                 let value = change.apply(tx, actor, scope)?;

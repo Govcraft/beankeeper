@@ -214,6 +214,7 @@ audit_labels! {
         InvoiceCollection => "invoice_collection",
         CollectionLink => "collection_link",
         CollectionEvent => "collection_event",
+        StripeEvidenceReview => "stripe_evidence_review",
         StripeDispute => "stripe_dispute",
         StripeRefund => "stripe_refund",
         StripeRefundPosting => "stripe_refund_posting",
@@ -278,6 +279,7 @@ impl AuditEntity {
             | Self::InvoiceCollection
             | Self::CollectionLink
             | Self::CollectionEvent
+            | Self::StripeEvidenceReview
             | Self::StripeDispute
             | Self::StripeRefund
             | Self::StripeRefundPosting

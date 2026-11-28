@@ -93,6 +93,7 @@ table_set!(RestorableTable {
     StripePayoutPostings => "stripe_payout_postings",
     StripePayoutPayments => "stripe_payout_payments",
     StripePayoutRefunds => "stripe_payout_refunds",
+    StripeEvidenceReviews => "stripe_evidence_reviews",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

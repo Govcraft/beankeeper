@@ -81,6 +81,7 @@ enum Check {
     Projects,
     Disbursements,
     PaymentCollections,
+    StripeEvidenceProvenance,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -115,6 +116,7 @@ impl Check {
             Self::Projects => "projects",
             Self::Disbursements => "disbursements",
             Self::PaymentCollections => "payment_collections",
+            Self::StripeEvidenceProvenance => "stripe_evidence_provenance",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
@@ -224,6 +226,11 @@ fn verify_commercial_subledgers(
     Check::PaymentCollections.when(version >= schema::COLLECTION_SCHEMA_VERSION, checks, || {
         audit::payment_collection::verify(reader)
     })?;
+    Check::StripeEvidenceProvenance.when(
+        version >= schema::STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
+        checks,
+        || audit::payment_collection::verify_stripe_evidence(reader),
+    )?;
     Ok(())
 }
 

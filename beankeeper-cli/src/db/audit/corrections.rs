@@ -390,13 +390,22 @@ impl CorrectionProposal {
     /// A short description of the requested change.
     #[must_use]
     pub const fn title(&self) -> &'static str {
-        use bookkeeping::{Party, Project};
+        use bookkeeping::{Party, Project, StripeCollection};
         match &self.payload.correction {
             Correction::Reverse(_) => "Reverse a transaction",
             Correction::Recategorize(_) => "Recategorize a transaction",
             Correction::Undo { .. } => "Undo a recorded change",
             Correction::Reconciliation { change } => change.title(),
             Correction::Bookkeeping { change } => match change {
+                Bookkeeping::StripeCollection(StripeCollection::ReportEvidence { .. }) => {
+                    "Record reported Stripe evidence"
+                }
+                Bookkeeping::StripeCollection(StripeCollection::ReconcilePayout { .. }) => {
+                    "Reconcile a Stripe payout"
+                }
+                Bookkeeping::StripeCollection(StripeCollection::ReconcileRefund { .. }) => {
+                    "Reconcile a Stripe refund"
+                }
                 Bookkeeping::Counterparty(Party::Create { .. }) => "Create a customer or vendor",
                 Bookkeeping::Counterparty(Party::Associate { .. }) => {
                     "Link a customer or vendor to a transaction"

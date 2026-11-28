@@ -628,8 +628,9 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `collection_apply` | Authenticate and apply a signed Stripe delivery from the trusted host spool |
 | `collection_resolve_receipt` | Post a freshly authenticated receipt blocked solely by a closed period on an explicit open date |
 | `collection_show`, `collection_exceptions` | Inspect collection status and review exceptions |
-| `collection_reconcile_payout`, `collection_payouts` | Reconcile signed net deposits and list payout evidence |
-| `collection_reconcile_refund`, `collection_refunds` | Post approved verified refunds and list their evidence |
+| `collection_report_evidence` | Record payment, payout, refund or dispute facts read through Stripe MCP for direct posting or independent review |
+| `collection_reconcile_payout`, `collection_payouts` | Reconcile Stripe net deposits and list evidence and bank confirmation |
+| `collection_reconcile_refund`, `collection_refunds` | Post or propose a recorded Stripe refund and list its evidence |
 | `collection_disputes` | Inspect signed dispute movements pending accounting review |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |

@@ -81,14 +81,20 @@ fn apply(
         ));
     };
     periods::ensure_open(company.read(), company.slug(), booked_on)?;
-    let (outcome, payment) =
-        apply_payment(tx, actor, company, &pending, booked_on, (payment, amount))?;
+    let (outcome, payment) = apply_payment(
+        tx,
+        actor,
+        company,
+        &pending,
+        booked_on,
+        (payment, amount, super::Source::Signed),
+    )?;
     store_event(
         tx,
         actor,
         company.slug(),
         collection,
-        event,
+        event.into(),
         EventRecord {
             outcome: &outcome,
             payment: payment.as_ref(),

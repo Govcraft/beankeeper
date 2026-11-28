@@ -11,6 +11,7 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 - Give managed agents access to clearing entries and completing monthly statements. Approval mode freezes exact entries and balances for independent review. ([#367](https://github.com/Govcraft/beankeeper/issues/367))
 - Discover and refresh owner-authorized bank feeds through normal agent access and stage provider revisions for review.
 - Let agents update and archive counterparties, archive projects, set project budgets, and classify accounts for cash reports. Proposal-only access queues reviewed changes.
+- Reconcile payments, refunds, payouts, and disputes from facts read through Stripe MCP. Preserve evidence provenance and bank confirmation, with independent approval when configured. (#369)
 
 ## [0.42.0] - 2026-11-28
 

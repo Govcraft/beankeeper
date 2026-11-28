@@ -2741,3 +2741,70 @@ fn assert_restore_redo(
     db::verification::VerifiedLedger::read(observer)?;
     Ok(())
 }
+
+#[test]
+fn stripe_agent_evidence_obeys_proposal_authority_over_http() -> TestResult {
+    use beankeeper_cli::identity::WriteMode;
+    use secrecy::ExposeSecret as _;
+
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    let issue = |name, capabilities: &[String], mode| {
+        Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
+            identity::issue_credential_with_mode(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities,
+                    ttl: Duration::from_hours(1),
+                    public_key: None,
+                    generate_key: true,
+                },
+                mode,
+            )
+        })
+    };
+    let proposer = issue(
+        "stripe_proposer",
+        &["ledger/read".into(), "ledger/post".into()],
+        WriteMode::ProposeOnly,
+    )?;
+    let approver = issue(
+        "stripe_approver",
+        &["ledger/read".into(), "ledger/approve".into()],
+        WriteMode::Direct,
+    )?;
+    ledger.enforce()?;
+    let agent = proposer.token().expose_secret();
+    let human = approver.token().expose_secret();
+    let read = token(&ledger.reader)?;
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(agent), "Stripe MCP fixture")?;
+    let tool = "collection_report_evidence";
+    assert!(server.tools(Some(agent))?.iter().any(|name| name == tool));
+    assert!(!server.tools(Some(read))?.iter().any(|name| name == tool));
+    let request = json!({"company":"acme","evidence":{
+        "kind":"payout", "payout":"po_review", "fees_minor":0,
+        "facts":{"account":"acct_example","live":false,"date":"2026-01-06","currency":"USD","amount_minor":3600}
+    }});
+    let denied = server.call(tool, request.clone(), Some(read))?;
+    assert_eq!(denied["result"]["isError"], true);
+    let submitted = server.call(tool, request, Some(agent))?;
+    let pending = payload(&submitted)?;
+    assert_eq!(pending["status"], "pending");
+    let count = || -> TestResult<i64> {
+        Ok(db
+            .read()
+            .query_row("SELECT count(*) FROM stripe_payouts", [], |row| row.get(0))?)
+    };
+    assert_eq!(count()?, 0);
+    let approval = json!({"company":"acme","id":pending["proposal_id"]});
+    assert_eq!(
+        server.call("txn_approve", approval.clone(), Some(agent))?["result"]["isError"],
+        true
+    );
+    let applied = server.call("txn_approve", approval, Some(human))?;
+    assert_eq!(payload(&applied)?["status"], "approved");
+    assert_eq!(count()?, 1);
+    server.finish(&[agent, human, read])
+}

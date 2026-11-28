@@ -615,6 +615,7 @@ const VERIFICATION_CHECKS: &[&str] = &[
     "inventory",
     "disbursements",
     "payment_collections",
+    "stripe_evidence_provenance",
     "transaction_links",
     "statement_batches",
     "statement_reconciliations",

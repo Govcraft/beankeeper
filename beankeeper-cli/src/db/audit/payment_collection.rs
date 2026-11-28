@@ -2,7 +2,9 @@
 
 pub(crate) mod dispute;
 pub(crate) mod payout;
+mod receipts;
 pub(crate) mod refund;
+pub(crate) mod reported;
 pub(crate) mod resolution;
 
 use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money, PositiveMoney};
@@ -10,6 +12,11 @@ use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::Url;
 use rusqlite::{OptionalExtension, params};
 use serde_json::json;
+
+use self::{
+    receipts::{compare_reported_payment, ingest_reported_payment, payment_status},
+    reported::Source,
+};
 
 use super::{Actor, AuditAction, AuditChange, AuditEntity, savepoint::AuditedTx};
 use crate::{
@@ -26,7 +33,10 @@ use crate::{
     identity::{Granted, Post},
     payments::{
         checkout::{CheckoutLink, CheckoutProvider},
-        collection::{CollectionDecision, CollectionState, CollectionTerms, review_payment},
+        collection::{
+            CollectionDecision, CollectionState, CollectionTerms, review_observation,
+            review_payment,
+        },
         stripe::{
             CollectionId, StripeAccountId, StripeEvent, StripeMode, StripePaymentIntentId,
             VerifiedStripeEvent,
@@ -77,6 +87,13 @@ const CLOSED_PERIOD_REVIEW: &str = "receipt date is in a closed period";
 pub enum CollectionOutcome {
     /// A receipt and its allocation were recorded.
     Applied(TransactionId),
+    /// An agent-reported payment and its allocation were recorded.
+    PaymentReported {
+        /// The local collection identity for reading payment provenance.
+        collection: CollectionId,
+        /// The created or previously known receipt.
+        transaction: TransactionId,
+    },
     /// The provider reported an asynchronous failure.
     Failed,
     /// An already applied payment was delivered again.
@@ -112,6 +129,11 @@ pub fn create_link(
         })
     })?;
     let terms = attempt.terms;
+    if state(db.read(), &terms.id)? == CollectionState::AppliedWithoutSession {
+        return Err(validation(
+            "a recorded Stripe payment cannot create a new Checkout link",
+        ));
+    }
     if let Some(checkout) = linked_checkout(db.read(), &terms.id)? {
         return Ok(CollectionLink {
             collection: terms.id,
@@ -373,64 +395,87 @@ pub fn ingest_checkout(
     company: &CompanySlug,
     event: &VerifiedStripeEvent,
 ) -> Result<CollectionOutcome, CliError> {
-    let (StripeEvent::CheckoutPaid { collection: id, .. }
-    | StripeEvent::CheckoutFailed { collection: id, .. }) = event.payload()
-    else {
-        return Granted::<Post>::with_db(db, actor, |grant| {
-            grant.mutate("sp_stripe_payout_ingest", |tx, actor| {
-                match event.payload() {
-                    StripeEvent::RefundSucceeded { .. } => {
-                        refund::ingest(tx, actor, company, event)
-                    }
-                    StripeEvent::DisputeFunds { .. } => dispute::ingest(tx, actor, company, event),
-                    _ => payout::ingest(tx, actor, company, event),
-                }
-            })
-        });
-    };
     Granted::<Post>::with_db(db, actor, |grant| {
         grant.mutate("sp_collection_ingest", |tx, actor| {
-            if let Some(outcome) = known_event(tx.read(), company, event)? {
-                return Ok(outcome);
-            }
-            let attempt = attempt(tx.read(), company, id)?;
-            let state = state(tx.read(), id)?;
-            if state == CollectionState::Requested {
-                return Err(validation(
-                    "checkout session must be attached before applying this delivery",
-                ));
-            }
-            let company = Company::bind(tx.read(), company.clone())?;
-            let date = event.created().date_naive();
-            let open = invoice_amount(&company, &attempt.terms.invoice, date)?;
-            let (outcome, payment) = match review_payment(&attempt.terms, &state, open, event) {
-                CollectionDecision::ApplyReceipt { payment, amount } => {
-                    apply_payment(tx, actor, &company, &attempt, date, (payment, amount))?
-                }
-                CollectionDecision::MarkFailed => (CollectionOutcome::Failed, None),
-                CollectionDecision::AlreadyApplied => (CollectionOutcome::Duplicate, None),
-                CollectionDecision::Review(reason) => {
-                    (CollectionOutcome::Review(reason.to_string()), None)
-                }
-                CollectionDecision::Unrelated => return Ok(CollectionOutcome::Unrelated),
-            };
-            store_event(
-                tx,
-                actor,
-                company.slug(),
-                id,
-                event,
-                EventRecord::original(&outcome, payment.as_ref()),
-            )?;
-            Ok(outcome)
+            ingest_signed(tx, actor, company, event)
         })
     })
 }
 
-fn state(reader: ReadConn<'_>, id: &CollectionId) -> Result<CollectionState, CliError> {
-    let Some(link) = linked_checkout(reader, id)? else {
-        return Ok(CollectionState::Requested);
+fn ingest_signed(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    event: &VerifiedStripeEvent,
+) -> Result<CollectionOutcome, CliError> {
+    if let StripeEvent::CheckoutPaid {
+        payment, amount, ..
+    }
+    | StripeEvent::PaymentSucceeded { payment, amount } = event.payload()
+        && let Some(outcome) =
+            compare_reported_payment(tx, actor, company, event, payment, *amount)?
+    {
+        return Ok(outcome);
+    }
+    match event.payload() {
+        StripeEvent::CheckoutPaid { collection, .. }
+        | StripeEvent::CheckoutFailed { collection, .. } => {
+            signed_checkout(tx, actor, company, event, collection)
+        }
+        StripeEvent::RefundSucceeded { .. } => refund::ingest(tx, actor, company, event),
+        StripeEvent::DisputeFunds { .. } => dispute::ingest(tx, actor, company, event),
+        StripeEvent::PayoutPaid { .. } => payout::ingest(tx, actor, company, event),
+        StripeEvent::PaymentSucceeded { .. } => Ok(CollectionOutcome::Unrelated),
+    }
+}
+
+fn signed_checkout(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &CompanySlug,
+    event: &VerifiedStripeEvent,
+    id: &CollectionId,
+) -> Result<CollectionOutcome, CliError> {
+    if let Some(outcome) = known_event(tx.read(), company, event)? {
+        return Ok(outcome);
+    }
+    let attempt = attempt(tx.read(), company, id)?;
+    let state = state(tx.read(), id)?;
+    if state == CollectionState::Requested {
+        return Err(validation(
+            "checkout session must be attached before applying this delivery",
+        ));
+    }
+    let company = Company::bind(tx.read(), company.clone())?;
+    let date = event.created().date_naive();
+    let open = invoice_amount(&company, &attempt.terms.invoice, date)?;
+    let (outcome, payment) = match review_payment(&attempt.terms, &state, open, event) {
+        CollectionDecision::ApplyReceipt { payment, amount } => apply_payment(
+            tx,
+            actor,
+            &company,
+            &attempt,
+            date,
+            (payment, amount, Source::Signed),
+        )?,
+        CollectionDecision::MarkFailed => (CollectionOutcome::Failed, None),
+        CollectionDecision::AlreadyApplied => (CollectionOutcome::Duplicate, None),
+        CollectionDecision::Review(reason) => (CollectionOutcome::Review(reason.to_string()), None),
+        CollectionDecision::Unrelated => return Ok(CollectionOutcome::Unrelated),
     };
+    store_event(
+        tx,
+        actor,
+        company.slug(),
+        id,
+        event.into(),
+        EventRecord::original(&outcome, payment.as_ref()),
+    )?;
+    Ok(outcome)
+}
+
+fn state(reader: ReadConn<'_>, id: &CollectionId) -> Result<CollectionState, CliError> {
+    let link = linked_checkout(reader, id)?;
     let payment = reader
         .query_row(
             "SELECT payment FROM collection_events WHERE collection=?1 AND status='applied'",
@@ -439,11 +484,16 @@ fn state(reader: ReadConn<'_>, id: &CollectionId) -> Result<CollectionState, Cli
         )
         .optional()?;
     if let Some(payment) = payment {
-        return Ok(CollectionState::Applied {
-            session: link.session,
-            payment: payment.parse().map_err(validation)?,
+        return link.map_or(Ok(CollectionState::AppliedWithoutSession), |link| {
+            Ok(CollectionState::Applied {
+                session: link.session,
+                payment: payment.parse().map_err(validation)?,
+            })
         });
     }
+    let Some(link) = link else {
+        return Ok(CollectionState::Requested);
+    };
     let failed: bool = reader.query_row(
         "SELECT EXISTS(SELECT 1 FROM collection_events WHERE collection=?1 AND status='failed')",
         [id.to_string()],
@@ -462,7 +512,7 @@ fn apply_payment(
     company: &Company<'_>,
     attempt: &Attempt,
     date: chrono::NaiveDate,
-    (payment, amount): (StripePaymentIntentId, PositiveMoney),
+    (payment, amount, source): (StripePaymentIntentId, PositiveMoney, Source),
 ) -> Result<(CollectionOutcome, Option<StripePaymentIntentId>), CliError> {
     if let Err(error) = db::periods::ensure_open(tx.read(), company.slug(), date) {
         return if matches!(error, CliError::Validation(_)) {
@@ -488,10 +538,11 @@ fn apply_payment(
         entry(&issued.control_account, DebitOrCredit::Credit),
     ];
     let reference = format!("stripe-payment:{payment}");
+    let metadata = source.metadata();
     let posting = PostTransactionParams {
         company_slug: company.slug(),
         description: "Stripe invoice payment",
-        metadata: None,
+        metadata: Some(&metadata),
         currency: amount.money().currency(),
         date,
         entries: &entries,
@@ -558,6 +609,14 @@ fn known_event(
         .transpose()
 }
 
+struct ReceiptDelivery<'a> {
+    id: String,
+    account: &'a StripeAccountId,
+    digest: &'a str,
+    date: chrono::NaiveDate,
+    source: Source,
+}
+
 struct EventRecord<'a> {
     outcome: &'a CollectionOutcome,
     payment: Option<&'a StripePaymentIntentId>,
@@ -582,7 +641,7 @@ fn store_event(
     actor: &Actor,
     company: &CompanySlug,
     id: &CollectionId,
-    event: &VerifiedStripeEvent,
+    delivery: ReceiptDelivery<'_>,
     EventRecord {
         outcome,
         payment,
@@ -595,6 +654,7 @@ fn store_event(
         CollectionOutcome::Duplicate => ("duplicate", None, None),
         CollectionOutcome::Review(reason) => ("review", Some(reason.as_str()), None),
         CollectionOutcome::Unrelated
+        | CollectionOutcome::PaymentReported { .. }
         | CollectionOutcome::PayoutRecorded(_)
         | CollectionOutcome::RefundRecorded(_)
         | CollectionOutcome::DisputeRecorded(_) => {
@@ -603,12 +663,12 @@ fn store_event(
             ));
         }
     };
-    let account = event.account().to_string();
-    let event_id = event.id().to_string();
+    let account = delivery.account.to_string();
+    let event_id = delivery.id;
     let collection = id.to_string();
     let payment = payment.map(ToString::to_string);
-    let body_sha256 = event.body_sha256();
-    let occurred_on = event.created().date_naive();
+    let body_sha256 = delivery.digest;
+    let occurred_on = delivery.date;
     let resolved = booked_on.is_some();
     record(
         tx,
@@ -620,13 +680,13 @@ fn store_event(
             "account": account, "collection": collection, "status": status,
             "reason": reason, "payment": payment, "posting": posting,
             "body_sha256": body_sha256, "occurred_on": occurred_on,
-            "resolved": resolved, "booked_on": booked_on,
+            "resolved": resolved, "booked_on": booked_on, "source":delivery.source,
         }),
     )?;
     tx.insert(
         "INSERT INTO collection_events(account,event,collection,status,reason,payment,posting,
-                                        body_sha256,occurred_on,resolved,booked_on)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                                        body_sha256,occurred_on,resolved,booked_on,source)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             account,
             event_id,
@@ -638,7 +698,8 @@ fn store_event(
             body_sha256,
             occurred_on,
             resolved,
-            booked_on
+            booked_on,
+            delivery.source.code()
         ],
     )?;
     Ok(())
@@ -684,12 +745,18 @@ pub(crate) struct CollectionView {
     amount_minor: i128,
     status: &'static str,
     session: Option<String>,
+    payment: Option<reported::PaymentView>,
     exceptions: Vec<CollectionException>,
 }
 
 #[derive(serde::Serialize)]
 pub(crate) struct CollectionException {
-    collection: CollectionId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collection: Option<CollectionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payout: Option<crate::payments::stripe::StripePayoutId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence_key: Option<String>,
     event: String,
     reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -709,6 +776,7 @@ pub(crate) fn show(
         CollectionState::Open(session) => ("open", Some(session.to_string())),
         CollectionState::Failed(session) => ("closed_unpaid", Some(session.to_string())),
         CollectionState::Applied { session, .. } => ("applied", Some(session.to_string())),
+        CollectionState::AppliedWithoutSession => ("applied", None),
     };
     let amount = attempt.terms.expected.money();
     Ok(CollectionView {
@@ -720,6 +788,7 @@ pub(crate) fn show(
         amount_minor: amount.amount().minor_units(),
         status,
         session,
+        payment: payment_status(reader, company, id)?,
         exceptions: read_exceptions(reader, company, Some(id))?,
     })
 }
@@ -728,7 +797,41 @@ pub(crate) fn exceptions(
     reader: ReadConn<'_>,
     company: &CompanySlug,
 ) -> Result<Vec<CollectionException>, CliError> {
-    read_exceptions(reader, company, None)
+    let mut exceptions = read_exceptions(reader, company, None)?;
+    exceptions.extend(payout::unconfirmed(reader, company)?);
+    let mut query = reader.prepare_cached(
+        "SELECT evidence_key,delivery FROM stripe_evidence_reviews WHERE company_slug=?1 AND agrees=0
+         ORDER BY rowid DESC LIMIT 100",
+    )?;
+    let rows = query.query_map([company], |row| {
+        Ok(CollectionException {
+            collection: None,
+            payout: None,
+            evidence_key: Some(row.get(0)?),
+            event: row.get(1)?,
+            reason: "signed Stripe delivery conflicts with agent-reported evidence".into(),
+            resolved_posting: None,
+            booked_on: None,
+        })
+    })?;
+    for row in rows {
+        exceptions.push(row?);
+    }
+    Ok(exceptions)
+}
+
+impl CollectionException {
+    fn unconfirmed_payout(payout: crate::payments::stripe::StripePayoutId) -> Self {
+        Self {
+            collection: None,
+            event: payout.to_string(),
+            payout: Some(payout),
+            evidence_key: None,
+            reason: "agent-reported Stripe payout has not been matched to bank evidence".into(),
+            resolved_posting: None,
+            booked_on: None,
+        }
+    }
 }
 
 fn read_exceptions(
@@ -755,7 +858,9 @@ fn read_exceptions(
     rows.map(|row| {
         let (collection, event, reason, resolved_posting, booked_on) = row?;
         Ok(CollectionException {
-            collection: collection.parse().map_err(validation)?,
+            collection: Some(collection.parse().map_err(validation)?),
+            payout: None,
+            evidence_key: None,
             event,
             reason,
             resolved_posting,
@@ -811,4 +916,16 @@ pub(crate) fn verify(reader: ReadConn<'_>) -> Result<(), CliError> {
 
 fn validation(error: impl std::fmt::Display) -> CliError {
     CliError::Validation(error.to_string())
+}
+
+pub(crate) fn verify_stripe_evidence(reader: ReadConn<'_>) -> Result<(), CliError> {
+    let broken: bool = reader.query_row(include_str!("stripe_evidence_verify.sql"), [], |row| {
+        row.get(0)
+    })?;
+    if broken {
+        return Err(CliError::Database(
+            "Stripe evidence provenance differs from the retained audit evidence".into(),
+        ));
+    }
+    Ok(())
 }
