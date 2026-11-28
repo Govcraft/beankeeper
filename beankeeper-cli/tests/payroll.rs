@@ -122,7 +122,7 @@ fn payroll_preview_reconciles_both_sides_to_the_provider_total() -> Result<(), B
     fs::write(&source, serde_json::to_vec(&export)?)?;
     let failure = preview(&db)?.output()?;
     assert!(!failure.status.success());
-    let failure: Value = serde_json::from_slice(&failure.stdout)?;
+    let failure: Value = serde_json::from_slice(&failure.stderr)?;
     assert_eq!(failure["error"]["code"], "VALIDATION");
     assert!(
         failure["error"]["message"]
