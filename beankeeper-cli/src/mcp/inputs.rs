@@ -49,12 +49,12 @@ pub(crate) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as 
 
 use crate::error::CliError;
 
-pub(crate) use crate::commands::payroll::wire::{
-    PayrollFund, PayrollImport, PayrollPreview, PayrollShow,
-};
 pub(crate) use crate::commands::collection::wire::{
     CollectionCheckout, CollectionDelivery, CollectionPayout, CollectionReceiptResolution,
     CollectionRefund, CollectionShow,
+};
+pub(crate) use crate::commands::payroll::wire::{
+    PayrollFund, PayrollImport, PayrollPreview, PayrollShow,
 };
 
 type Company = Text<CompanySlug>;
