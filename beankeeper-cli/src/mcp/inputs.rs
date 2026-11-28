@@ -49,6 +49,10 @@ pub(crate) use crate::db::audit::{AuditAction as AuditActionArg, AuditEntity as 
 
 use crate::error::CliError;
 
+pub(crate) use crate::commands::payroll::wire::{
+    PayrollFund, PayrollImport, PayrollPreview, PayrollShow,
+};
+
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
 type Date = Text<CalendarDate>;
@@ -1676,6 +1680,17 @@ use crate::db::bank_feed::{
     FeedConnectionId, FeedItemId, LinkArgs as FeedLinkArgs, PageArgs as FeedPageArgs,
     PostArgs as FeedPostArgs,
 };
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BankFeedConnect {
+    pub company: Company,
+    pub account: Account,
+    pub provider_account: crate::db::bank_feed::ProviderAccountKey,
+    pub currency: Text<Currency>,
+    #[serde(default)]
+    pub environment: crate::db::bank_feed::PlaidEnvironment,
+}
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

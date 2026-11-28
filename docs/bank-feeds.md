@@ -54,11 +54,19 @@ marks a resolved row as requiring correction and preserves the original
 posting. A proposal for an outdated revision cannot be approved. Reject it and
 review the current provider row before proposing a replacement.
 
-In MCP, use `bank_feed_show`, `bank_feed_list`, `bank_feed_review`,
-`bank_feed_post` and `bank_feed_link` with the company slug. Admin grants
-control connection configuration and sync locally. Reads require read access
-when ledger enforcement applies. Use a direct bookkeeper to link an existing
-posting. A propose-only bookkeeper can request a posting for approval.
+In MCP, use `bank_feed_connect`, `bank_feed_sync` and
+`bank_feed_disconnect` to administer a connection. Send the company slug
+with each request. Connect takes the ledger account, Plaid account ID,
+currency and optional environment. Sync and disconnect take the feed ID.
+Signed callers need `ledger/admin`. The MCP host supplies Plaid credentials
+through its own environment. Tool arguments and results carry no API keys
+or access tokens.
+
+Use `bank_feed_show`, `bank_feed_list`, `bank_feed_review`,
+`bank_feed_post` and `bank_feed_link` to work with staged transactions.
+Reads require read access when ledger enforcement applies. A direct
+bookkeeper can link an existing posting. A propose-only bookkeeper can
+request a posting for approval.
 
 Backups preserve the mapping, cursor and staged rows on the restored accounting
 timeline. Credentials stay with the host. After restore, the next authorized

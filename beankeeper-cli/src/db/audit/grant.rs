@@ -59,6 +59,14 @@ impl sealed::GrantKind for RestoreAdmin {
     const SIGNED: bool = true;
 }
 
+/// Authority to administer host-backed bank feed connections.
+pub(super) enum BankFeedAdmin {}
+
+impl sealed::GrantKind for BankFeedAdmin {
+    const REQUIRED: Capability = Capability::Admin;
+    const SIGNED: bool = true;
+}
+
 /// Authority to attach source documents and post ledger entries.
 pub enum Post {}
 

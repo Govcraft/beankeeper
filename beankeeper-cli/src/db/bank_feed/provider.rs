@@ -72,7 +72,18 @@ fn fetch_window(
 }
 
 /// The set of HTTPS endpoints allowed to receive Plaid credentials.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaidEnvironment {
     #[default]

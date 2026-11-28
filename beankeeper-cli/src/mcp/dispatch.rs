@@ -51,6 +51,11 @@ macro_rules! try_convert {
 }
 
 convert! {
+    bank_feed_connect(BankFeedConnect) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Connect(crate::db::bank_feed::ConnectArgs {
+        account: input.account.into_inner(), provider_account: input.provider_account, currency: input.currency.into_inner(), environment: input.environment,
+    }))),
+    bank_feed_sync(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Sync(input.feed))),
+    bank_feed_disconnect(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Disconnect(input.feed))),
     bank_feed_link(BankFeedLink) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Link(input.args))),
     bank_feed_post(BankFeedPost) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Post(input.args))),
     bank_feed_review(BankFeedReview) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Review(input.feed, input.item))),
@@ -170,6 +175,8 @@ convert! {
     bookkeeping_policy_set(BookkeepingPolicySet) => Standing(input => StandingRequest::SetBookkeeping(input.company.into_inner(), input.policy)),
     inform_preference_show(CompanyScope) => Standing(input => StandingRequest::ShowInform(input.company.into_inner())),
     inform_preference_set(InformPreferenceSet) => Standing(input => StandingRequest::SetInform(input.company.into_inner(), input.preference)),
+    payroll_fund(PayrollFund) => Payroll(input => input.into()),
+    payroll_show(PayrollShow) => Payroll(input => input.into()),
     period_close(PeriodClose) => Period(input => input.into()),
     reconcile_list(ReconcileList) => Reconcile(input => input.into()),
     period_list(CompanyScope) => Period(input => PeriodRequest::List(input.company.into_inner())),
@@ -182,6 +189,8 @@ convert! {
 try_convert! {
     fixed_asset_register(FixedAssetRegister) => FixedAsset(input => input.try_into()?),
     expense_claim_receipt_intake(ExpenseIntakeInput) => Expense(input => input.try_into()?),
+    payroll_preview(PayrollPreview) => Payroll(input => input.try_into()?),
+    payroll_import(PayrollImport) => Payroll(input => input.try_into()?),
     txn_link(TxnLink) => Transaction(input => input.try_into()?),
     reconcile_statement(ReconcileStatement) => Reconcile(input => input.try_into()?),
     txn_recategorize(TxnRecategorize) => Transaction(input => input.try_into()?),
@@ -282,6 +291,7 @@ pub(super) fn response(
         LedgerResponse::Tax(_, _, response) => (encode(response)?, None),
         LedgerResponse::Document(_, _, response) => (encode(response)?, None),
         LedgerResponse::Investment(_, _, response) => (encode(response)?, None),
+        LedgerResponse::Payroll(response) => (encode(response)?, None),
         LedgerResponse::Period(_, _, response) => (encode(response)?, None),
         LedgerResponse::Reconcile(_, _, response) => (encode(response)?, None),
         LedgerResponse::Report(response) => (response.data()?, None),

@@ -11,13 +11,13 @@ use super::posting_output::PostingLineJson;
 use crate::{
     cli::{Cli, OutputFormat, PayrollCommand, require_company, resolve_format},
     db::{
-        PostEntryParams,
+        Actor, Db, PostEntryParams,
         accounts::get_active_account,
         audit::payroll::{
             self as store, PayrollRunId, PlannedRun,
             funding::{self, FundingRequest},
         },
-        companies::Company,
+        companies::{Company, CompanySlug},
         fx,
     },
     error::CliError,
@@ -63,12 +63,16 @@ impl Export {
         File::open(path)?
             .take(MAX_EXPORT_BYTES + 1)
             .read_to_end(&mut contents)?;
+        Self::parse(&contents)
+    }
+
+    fn parse(contents: &[u8]) -> Result<Self, CliError> {
         if contents.len() as u64 > MAX_EXPORT_BYTES {
             return Err(CliError::Validation(
                 "aggregate payroll export exceeds 64 KiB".into(),
             ));
         }
-        let source: ExportSource = serde_json::from_slice(&contents).map_err(|error| {
+        let source: ExportSource = serde_json::from_slice(contents).map_err(|error| {
             // Error locations help repair the export without exposing a malformed field.
             CliError::Validation(format!(
                 "invalid aggregate payroll export at line {}, column {}",
@@ -214,15 +218,25 @@ fn import(cli: &Cli, file: &Path, digest: &Sha256Hex) -> Result<(), CliError> {
     let db = cli.command_db()?;
     let actor = cli.principal();
     let export = Export::load(file)?;
-    let result = store::apply(&db, &actor, company, digest, |reader| {
+    let result = apply_export(&db, &actor, company, export, digest)?;
+    render_data(cli, Operation::PayrollImport, company.as_str(), &result)
+}
+
+fn apply_export(
+    db: &Db,
+    actor: &Actor,
+    company: &CompanySlug,
+    export: Export,
+    digest: &Sha256Hex,
+) -> Result<store::ImportResult, CliError> {
+    store::apply(db, actor, company, digest, |reader| {
         let scope = Company::bind(reader, company.clone())?;
         let entries = export.plan(&scope, fx::functional_currency(reader, company)?)?;
         Ok(PlannedRun {
             source: export.run,
             entries,
         })
-    })?;
-    render_data(cli, Operation::PayrollImport, company.as_str(), &result)
+    })
 }
 
 fn preview(cli: &Cli, file: &Path) -> Result<(), CliError> {
@@ -230,17 +244,9 @@ fn preview(cli: &Cli, file: &Path) -> Result<(), CliError> {
     let db = cli.command_db()?;
     let actor = cli.principal();
     let export = Export::load(file)?;
-    let entries = db.read_snapshot(|reader| {
-        authorize_read(reader, &actor, Operation::PayrollPreview)?;
-        let company = Company::bind(reader, company.clone())?;
-        export.plan(&company, fx::functional_currency(reader, company.slug())?)
-    })?;
-
-    let planned = PlannedRun {
-        source: export.run,
-        entries,
-    };
-    let digest = planned.digest(company)?;
+    let data = preview_export(&db, &actor, company, export)?;
+    let digest = data.digest;
+    let planned = data.planned;
     let entries = planned.entries;
     match resolve_format(None, cli) {
         OutputFormat::Json => {
@@ -272,6 +278,122 @@ fn preview(cli: &Cli, file: &Path) -> Result<(), CliError> {
         OutputFormat::Table => {}
     }
     Ok(())
+}
+
+fn preview_export(
+    db: &Db,
+    actor: &Actor,
+    company: &CompanySlug,
+    export: Export,
+) -> Result<ReviewedPayroll, CliError> {
+    let entries = db.read_snapshot(|reader| {
+        authorize_read(reader, actor, Operation::PayrollPreview)?;
+        let scope = Company::bind(reader, company.clone())?;
+        export.plan(&scope, fx::functional_currency(reader, company)?)
+    })?;
+    let planned = PlannedRun {
+        source: export.run,
+        entries,
+    };
+    let digest = planned.digest(company)?;
+    Ok(ReviewedPayroll { digest, planned })
+}
+
+struct ReviewedPayroll {
+    digest: Sha256Hex,
+    planned: PlannedRun,
+}
+
+impl Serialize for ReviewedPayroll {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Preview {
+            digest: self.digest.as_str(),
+            run: &self.planned.source,
+            entries: PostingLineJson::for_entries(
+                &self.planned.entries,
+                Some(self.planned.source.currency),
+            ),
+        }
+        .serialize(serializer)
+    }
+}
+
+pub(crate) mod wire;
+
+/// A validated payroll request for a single company.
+pub struct PayrollRequest {
+    company: CompanySlug,
+    action: PayrollAction,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum PayrollData {
+    Preview(ReviewedPayroll),
+    Import(store::ImportResult),
+    Fund(funding::Allocation),
+    Show(funding::RunFunding),
+}
+
+enum PayrollAction {
+    Preview(Export),
+    Import(Export, Sha256Hex),
+    Fund(wire::PayrollFund),
+    Show(PayrollRunId),
+}
+
+/// An aggregate payroll result.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct PayrollResponse {
+    #[serde(skip)]
+    company: CompanySlug,
+    #[serde(skip)]
+    operation: Operation,
+    data: PayrollData,
+}
+
+impl PayrollRequest {
+    pub(crate) const fn operation(&self) -> Operation {
+        match self.action {
+            PayrollAction::Preview(_) => Operation::PayrollPreview,
+            PayrollAction::Import(..) => Operation::PayrollImport,
+            PayrollAction::Fund(_) => Operation::PayrollFund,
+            PayrollAction::Show(_) => Operation::PayrollShow,
+        }
+    }
+
+    pub(crate) fn execute(self, db: &Db, actor: &Actor) -> Result<PayrollResponse, CliError> {
+        let operation = self.operation();
+        let data = match self.action {
+            PayrollAction::Preview(export) => {
+                PayrollData::Preview(preview_export(db, actor, &self.company, export)?)
+            }
+            PayrollAction::Import(export, digest) => {
+                PayrollData::Import(apply_export(db, actor, &self.company, export, &digest)?)
+            }
+            PayrollAction::Fund(input) => PayrollData::Fund(funding::allocate(
+                db,
+                actor,
+                &self.company,
+                &input.request(),
+            )?),
+            PayrollAction::Show(id) => PayrollData::Show(
+                db.read_snapshot(|reader| funding::show(reader, &self.company, &id))?,
+            ),
+        };
+        Ok(PayrollResponse {
+            company: self.company,
+            operation,
+            data,
+        })
+    }
+}
+
+impl PayrollResponse {
+    pub(crate) fn render(&self, cli: &Cli) -> Result<(), CliError> {
+        render_data(cli, self.operation, self.company.as_str(), &self.data)
+    }
 }
 
 fn print_csv(entries: &[PostEntryParams], currency: Currency) -> Result<(), CliError> {

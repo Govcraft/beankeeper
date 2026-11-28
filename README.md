@@ -563,6 +563,7 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
 | `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
+| `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect` | Administer host-authorized bank and card feeds through the audited workflow |
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
@@ -580,6 +581,10 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `txn_propose`, `txn_proposals`, `txn_approve`, `txn_reject` | Submit, inspect and resolve pending proposals |
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
 | `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
+| `payroll_preview` | Preview aggregate payroll and return a reviewed import digest |
+| `payroll_import` | Post or propose the exact reviewed aggregate payroll journal |
+| `payroll_show` | Read the payroll liabilities and their reconciled withdrawals |
+| `payroll_fund` | Match a posted withdrawal to a payroll liability |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
 | `fixed_asset_show` | Show a fixed asset and movements as of a date |

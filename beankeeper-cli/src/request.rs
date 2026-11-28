@@ -28,6 +28,7 @@ use crate::{
         fixed_asset::{FixedAssetRequest, FixedAssetResponse},
         fx::{FxRequest, FxResponse},
         investment::{InvestmentRequest, InvestmentResponse},
+        payroll::{PayrollRequest, PayrollResponse},
         period::{PeriodRequest, PeriodResponse},
         reconcile::{ReconcileRequest, ReconcileResponse},
         report::{ReportRequest, ReportResponse},
@@ -67,6 +68,7 @@ pub enum LedgerRequest {
     Tax(TaxRequest),
     Expense(ExpenseRequest),
     Investment(InvestmentRequest),
+    Payroll(PayrollRequest),
     Period(PeriodRequest),
     Reconcile(ReconcileRequest),
     Report(ReportRequest),
@@ -96,6 +98,7 @@ pub enum LedgerResponse {
     Tax(Operation, CompanySlug, TaxResponse),
     Expense(ExpenseResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
+    Payroll(PayrollResponse),
     Period(Operation, CompanySlug, PeriodResponse),
     Reconcile(Operation, CompanySlug, ReconcileResponse),
     Report(ReportResponse),
@@ -106,6 +109,20 @@ pub enum LedgerResponse {
     Summary(SummaryResponse),
     Transaction(TxnResponse),
     Verify(VerifiedLedger),
+}
+
+fn authorize_actor<'snapshot>(
+    reader: ReadConn<'snapshot>,
+    operation: Operation,
+    resolve_actor: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
+) -> Result<Actor, CliError> {
+    let actor = resolve_actor(reader)?;
+    if let Some(identity) = actor.identity() {
+        crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
+    } else {
+        crate::identity::authorize_known_operation(reader, None, operation)?;
+    }
+    Ok(actor)
 }
 
 impl LedgerRequest {
@@ -127,6 +144,7 @@ impl LedgerRequest {
             Self::Tax(request) => request.operation(),
             Self::Expense(request) => request.operation(),
             Self::Investment(request) => request.operation(),
+            Self::Payroll(request) => request.operation(),
             Self::Period(request) => request.operation(),
             Self::Reconcile(request) => request.operation(),
             Self::Report(request) => request.operation(),
@@ -155,6 +173,15 @@ impl LedgerRequest {
         resolve_actor: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
         let operation = self.operation();
+        if operation == Operation::BankFeedSync {
+            // Release the authorization snapshot before the provider call.
+            // The audited commit checks the actor and the feed revision again.
+            let actor =
+                db.read_snapshot(|reader| authorize_actor(reader, operation, resolve_actor))?;
+            return self
+                .execute_authorized(db, &actor, operation)
+                .map(|response| (response, actor));
+        }
         if operation.writes_ledger() {
             db.in_write_batch_for(operation.into(), || {
                 self.execute_in_snapshot(db, db.read(), resolve_actor)
@@ -171,12 +198,7 @@ impl LedgerRequest {
         resolve_actor: impl FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
         let operation = self.operation();
-        let actor = resolve_actor(reader)?;
-        if let Some(identity) = actor.identity() {
-            crate::identity::authorize_verified_operation(reader, identity.clone(), operation)?;
-        } else {
-            crate::identity::authorize_known_operation(reader, None, operation)?;
-        }
+        let actor = authorize_actor(reader, operation, resolve_actor)?;
         let response = self.execute_authorized(db, &actor, operation)?;
         Ok((response, actor))
     }
@@ -223,6 +245,7 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Investment(operation, company, response))
             }
+            Self::Payroll(request) => request.execute(db, actor).map(LedgerResponse::Payroll),
             Self::Period(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -289,6 +312,7 @@ impl LedgerResponse {
             Self::Investment(operation, company, response) => {
                 response.render(cli, *operation, company.as_str())
             }
+            Self::Payroll(response) => response.render(cli),
             Self::Period(operation, company, response) => {
                 response.render(cli, *operation, company.as_str())
             }
