@@ -3,36 +3,7 @@
 use rusqlite::Connection;
 
 pub fn before_restore(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "DROP TABLE expense_claim_journals;
-         DROP TABLE expense_claim_revisions;
-         DROP TABLE expense_claims;
-         DROP TABLE receipt_intakes;
-         DROP TABLE vat_evidence; DROP TABLE vat_rate_revisions; DROP TABLE vat_codes;
-         DROP TABLE fixed_asset_movements; DROP TABLE fixed_assets;
-         DROP TABLE payroll_funding; DROP TABLE payroll_runs;
-         DROP TRIGGER bank_feed_proposal_requires_current_revision;
-         DROP TABLE bank_feed_items;
-         DROP TABLE bank_feed_connections;
-         DROP TABLE contractor_w9_details;
-         DROP TABLE contractor_tax_profiles;
-         DROP TABLE contractor_reviews;
-         DROP TABLE project_invoice_sources;
-         DROP TABLE project_invoice_drafts;
-         DROP TABLE project_expense_budgets;
-         DROP TABLE project_splits;
-         DROP TABLE project_distributions;
-         DROP TABLE project_time_entries;
-         DROP TABLE projects;
-         DROP INDEX idx_entry_company_id;
-         DROP TABLE document_review_requests;
-         DROP TABLE document_allocations;
-         DROP TABLE book_documents;
-         DROP TABLE transaction_counterparties;
-         DROP TABLE counterparties;
-         DROP TRIGGER protect_cash_class_update;
-         ALTER TABLE accounts DROP COLUMN cash_class;",
-    )?;
+    conn.execute_batch(include_str!("rewind_subledgers.sql"))?;
     let dependents = conn
         .prepare(
             "SELECT type, name, sql FROM sqlite_schema
