@@ -12,6 +12,7 @@ pub mod companies;
 pub mod connection;
 pub mod contractor_tax;
 pub mod counterparties;
+pub(crate) mod disbursements;
 pub mod documents;
 pub(crate) mod expense_claims;
 pub(crate) mod fixed_assets;

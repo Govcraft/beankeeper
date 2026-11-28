@@ -593,7 +593,9 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
 `inform_preference_set`, `reconcile_statement`, `audit_undo`, `restore`, `restore_undo`, `fixed_asset_register`, `fixed_asset_depreciate`, `fixed_asset_dispose`,
 `expense_claim_receipt_intake`, `expense_claim_create`, `expense_claim_amend`, `expense_claim_submit`, `expense_claim_approve`, `expense_claim_reject`, `expense_claim_record_payment`, `expense_claim_void`,
-`inventory_register`, `inventory_move`, and `inventory_match_document` from the router.
+`inventory_register`, `inventory_move`, `inventory_match_document`,
+`disbursement_draft`, `disbursement_preview`, `disbursement_approve`, `disbursement_revoke`,
+`disbursement_reject`, `disbursement_dispatch`, and `disbursement_reconcile` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

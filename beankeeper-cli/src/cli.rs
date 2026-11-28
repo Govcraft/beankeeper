@@ -749,6 +749,8 @@ EXAMPLES:\n  \
 
     /// Record physical goods and report inventory valuation.
     Inventory(crate::commands::inventory::InventoryArgs),
+    /// Draft, review, and reconcile vendor payments.
+    Disbursement(crate::commands::disbursement::DisbursementArgs),
 
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
@@ -3235,6 +3237,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::ExpenseClaim(args) => args.company.as_ref(),
         Command::Project(args) => args.company.as_ref(),
         Command::Inventory(args) => args.company.as_ref(),
+        Command::Disbursement(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
         Command::FixedAsset(args) => args.company.as_ref(),

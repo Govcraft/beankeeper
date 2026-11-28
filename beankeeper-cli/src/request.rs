@@ -25,6 +25,7 @@ use crate::{
         company::{CompanyRequest, CompanyResponse},
         contractor_tax::{ContractorTaxRequest, ContractorTaxResponse},
         counterparty::{CounterpartyRequest, CounterpartyResponse},
+        disbursement::{DisbursementRequest, Response as DisbursementResponse},
         document::{DocumentRequest, DocumentResponse},
         fixed_asset::{FixedAssetRequest, FixedAssetResponse},
         fx::{FxRequest, FxResponse},
@@ -71,6 +72,7 @@ pub enum LedgerRequest {
     Expense(ExpenseRequest),
     Project(ProjectRequest),
     Inventory(InventoryRequest),
+    Disbursement(DisbursementRequest),
     Investment(InvestmentRequest),
     Payroll(PayrollRequest),
     Period(PeriodRequest),
@@ -103,6 +105,7 @@ pub enum LedgerResponse {
     Expense(ExpenseResponse),
     Project(Operation, CompanySlug, ProjectResponse),
     Inventory(InventoryResponse),
+    Disbursement(Operation, CompanySlug, DisbursementResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Payroll(PayrollResponse),
     Period(Operation, CompanySlug, PeriodResponse),
@@ -151,6 +154,7 @@ impl LedgerRequest {
             Self::Expense(request) => request.operation(),
             Self::Project(request) => request.operation(),
             Self::Inventory(request) => request.operation(),
+            Self::Disbursement(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Payroll(request) => request.operation(),
             Self::Period(request) => request.operation(),
@@ -249,6 +253,11 @@ impl LedgerRequest {
                 Ok(LedgerResponse::Project(operation, company, response))
             }
             Self::Inventory(request) => request.execute(db, actor).map(LedgerResponse::Inventory),
+            Self::Disbursement(request) => {
+                let company = request.company.clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Disbursement(operation, company, response))
+            }
             Self::Document(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -320,6 +329,9 @@ impl LedgerResponse {
                 response.render(cli, *operation, company)
             }
             Self::Inventory(response) => response.render(cli),
+            Self::Disbursement(operation, company, response) => {
+                response.render(cli, *operation, company)
+            }
             Self::Document(operation, company, response) => {
                 response.render(cli, *operation, company)
             }

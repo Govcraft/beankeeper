@@ -147,6 +147,7 @@ impl TransactionSelector {
             .ok_or(RecategorizeBlock::TransactionMissing)?;
         super::documents::guard_linked_posting(company, id)?;
         crate::db::inventory::protect_posting(company, id)?;
+        super::disbursements::guard_posting(company.read(), id)?;
         Ok(row)
     }
 }

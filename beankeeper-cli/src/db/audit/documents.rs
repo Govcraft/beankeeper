@@ -28,6 +28,7 @@ use super::{
 };
 
 pub use settlement::{AllocateItem, AllocationResult, CreditInput};
+pub(super) use settlement::{apply_payment, return_disbursement_allocation};
 pub(crate) use verification::verify;
 
 /// A document write routed through the normal posting or proposal authority.

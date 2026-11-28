@@ -89,6 +89,11 @@ pub fn recover(cli: &Cli, input: &Path) -> Result<(), CliError> {
     let verification = VerifiedLedger::read(&snapshot)?;
     let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
+    crate::db::audit::disbursements::guard_recovered_file(
+        staged.path(),
+        cli.resolve_passphrase()?,
+        verification.schema_version(),
+    )?;
     publish(staged, input, destination, overwrite)?;
     report(
         cli,

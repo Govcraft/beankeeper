@@ -3,14 +3,47 @@
 use std::{fmt, str::FromStr};
 
 use beankeeper::types::{PositiveMoney, Sha256Hex};
-use mti::prelude::{MagicTypeId, MagicTypeIdExt};
-use serde::Serialize;
+use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::db::documents::DocumentId;
 
 /// One logical transfer, generated before any provider request.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema)]
+#[serde(try_from = "String")]
+#[schemars(with = "String")]
 pub struct DisbursementId(MagicTypeId);
+
+impl DisbursementId {
+    pub(crate) fn generate() -> Self {
+        Self("disburse".create_type_id::<V7>())
+    }
+}
+
+impl TryFrom<String> for DisbursementId {
+    type Error = DisbursementError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl ToSql for DisbursementId {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.to_string().into())
+    }
+}
+
+impl FromSql for DisbursementId {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|err| FromSqlError::Other(Box::new(err)))
+    }
+}
 
 impl FromStr for DisbursementId {
     type Err = DisbursementError;
@@ -39,16 +72,48 @@ impl Serialize for DisbursementId {
 }
 
 /// Hash of the approved payee destination and its provider revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+#[schemars(with = "String")]
 pub struct DestinationFingerprint(pub Sha256Hex);
 
+impl FromStr for DestinationFingerprint {
+    type Err = beankeeper::types::Sha256HexError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Sha256Hex::new(value.to_owned()).map(Self)
+    }
+}
+
+impl fmt::Display for DestinationFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// Hash over the frozen payment terms and document allocations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ApprovalFingerprint(pub Sha256Hex);
 
 /// Opaque reference to an authenticated provider payment order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct ProviderTransferId(Box<str>);
+
+impl TryFrom<String> for ProviderTransferId {
+    type Error = DisbursementError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<ProviderTransferId> for String {
+    fn from(value: ProviderTransferId) -> Self {
+        value.0.into()
+    }
+}
 
 impl FromStr for ProviderTransferId {
     type Err = DisbursementError;
@@ -82,7 +147,8 @@ pub struct BillPayment {
 }
 
 /// What the host and ledger know about an approved transfer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "evidence", rename_all = "snake_case")]
 pub enum TransferState {
     /// Details are editable and have no external side effect.
     Draft,
@@ -96,6 +162,8 @@ pub enum TransferState {
     Settled(ProviderTransferId),
     /// The provider confirmed failure before settlement.
     Failed(ProviderTransferId),
+    /// The reviewer declined the instruction before dispatch.
+    Rejected,
     /// A settled transfer was returned.
     Returned(ProviderTransferId),
 }
@@ -107,6 +175,8 @@ pub enum TransferEvent {
     Approve(ApprovalFingerprint),
     /// Owner revoked an approval before dispatch.
     RevokeApproval,
+    /// Independent reviewer declined the instruction.
+    Reject,
     /// Dispatcher atomically reserved the approved attempt before network I/O.
     ReserveSubmission(ApprovalFingerprint),
     /// Verified provider evidence matches the reserved attempt.
@@ -181,6 +251,7 @@ pub fn transition(
 
     let (state, journal) = match (current, event) {
         (State::Draft, Event::Approve(approved)) => (State::Approved(approved), None),
+        (State::Draft | State::Approved(_), Event::Reject) => (State::Rejected, None),
         (State::Approved(_), Event::RevokeApproval) => (State::Draft, None),
         (State::Approved(approved), Event::ReserveSubmission(fingerprint)) => {
             if approved != &fingerprint {

@@ -9,6 +9,12 @@ pub enum Capability {
     Approve,
     Reverse,
     Reconcile,
+    /// Create vendor payment instructions for independent review.
+    DisbursementDraft,
+    /// Review or reject a vendor payment instruction.
+    DisbursementApprove,
+    /// Submit approved instructions and reconcile authenticated evidence.
+    DisbursementDispatch,
     Budget,
     Admin,
     /// Signed access to restricted 1099 identity details.
@@ -30,6 +36,9 @@ impl Capability {
             Self::Approve,
             Self::Reverse,
             Self::Reconcile,
+            Self::DisbursementDraft,
+            Self::DisbursementApprove,
+            Self::DisbursementDispatch,
             Self::Budget,
             Self::Admin,
             Self::TaxDetails,
@@ -40,6 +49,13 @@ impl Capability {
         .into_iter()
         .find(|capability| capability.path() == path)
     }
+    pub(crate) const fn is_disbursement_write(self) -> bool {
+        matches!(
+            self,
+            Self::DisbursementDraft | Self::DisbursementApprove | Self::DisbursementDispatch
+        )
+    }
+
     /// The leaf path required by an operation.
     #[must_use]
     pub const fn path(self) -> &'static str {
@@ -50,6 +66,9 @@ impl Capability {
             Self::Post => "ledger/post",
             Self::Reverse => "ledger/reverse",
             Self::Reconcile => "ledger/reconcile",
+            Self::DisbursementDraft => "ledger/disbursement-draft",
+            Self::DisbursementApprove => "ledger/disbursement-approve",
+            Self::DisbursementDispatch => "ledger/disbursement-dispatch",
             Self::Budget => "ledger/budget",
             Self::Admin => "ledger/admin",
             Self::TaxDetails => "ledger/tax-details",

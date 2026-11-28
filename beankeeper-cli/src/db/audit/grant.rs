@@ -152,6 +152,31 @@ impl sealed::GrantKind for Budget {
     const REQUIRED: Capability = Capability::Budget;
 }
 
+/// Signed authority to create independent vendor payment instructions.
+pub(crate) enum DisbursementDraft {}
+
+impl sealed::GrantKind for DisbursementDraft {
+    const REQUIRED: Capability = Capability::DisbursementDraft;
+    const EXPLICIT: bool = true;
+}
+
+/// Signed authority to approve a frozen vendor payment instruction.
+pub(crate) enum DisbursementApprove {}
+
+impl sealed::GrantKind for DisbursementApprove {
+    const REQUIRED: Capability = Capability::DisbursementApprove;
+    const EXPLICIT: bool = true;
+}
+
+/// Signed authority to send an approved payment instruction to the host.
+pub(crate) enum DisbursementDispatch {}
+
+impl sealed::GrantKind for DisbursementDispatch {
+    const REQUIRED: Capability = Capability::DisbursementDispatch;
+    const EXPLICIT: bool = true;
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
 /// Authority to change the clearing and reconciliation state of entries.
 pub enum Reconcile {}
 

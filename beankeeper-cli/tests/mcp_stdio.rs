@@ -14,6 +14,8 @@ mod contractor_tax;
 mod corrections;
 #[path = "mcp_stdio/counterparties.rs"]
 mod counterparties;
+#[path = "mcp_stdio/disbursements.rs"]
+mod disbursements;
 #[path = "mcp_stdio/documents.rs"]
 mod documents;
 #[path = "mcp_stdio/forecast_links.rs"]
@@ -820,6 +822,15 @@ const LEDGER_TOOLS: &[&str] = &[
     "contractor_tax_preview",
     "contractor_tax_w9",
     "contractor_tax_export",
+    "disbursement_draft",
+    "disbursement_preview",
+    "disbursement_approve",
+    "disbursement_revoke",
+    "disbursement_reject",
+    "disbursement_dispatch",
+    "disbursement_reconcile",
+    "disbursement_show",
+    "disbursement_list",
     "document_show",
     "document_print",
     "document_list",
@@ -3364,7 +3375,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 59);
+    assert_eq!(names.len(), 61);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3534,7 +3545,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 59);
+    assert_eq!(names.len(), 61);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

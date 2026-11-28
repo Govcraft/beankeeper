@@ -57,6 +57,7 @@ pub use account_rename::DuplicateAccountName;
 pub(super) mod catalog;
 pub(crate) mod contractor_tax;
 pub(crate) mod counterparties;
+pub(crate) mod disbursements;
 pub(crate) mod documents;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
@@ -204,6 +205,7 @@ audit_labels! {
         ProjectDistribution => "project_distribution",
         ProjectBudget => "project_budget",
         ProjectInvoice => "project_invoice",
+        Disbursement => "disbursement",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -259,6 +261,7 @@ impl AuditEntity {
             | Self::ProjectDistribution
             | Self::ProjectBudget
             | Self::ProjectInvoice
+            | Self::Disbursement
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -2228,6 +2231,7 @@ fn check_subledger_reversal(scope: &Company<'_>, id: TransactionId) -> Result<()
             "expense claim journals require a claim correction".into(),
         ));
     }
+    disbursements::guard_posting(reader, id)?;
     super::inventory::protect_posting(scope, id)
 }
 

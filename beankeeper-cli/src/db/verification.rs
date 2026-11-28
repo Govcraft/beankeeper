@@ -79,6 +79,7 @@ enum Check {
     Vat,
     ContractorTax,
     Projects,
+    Disbursements,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -111,6 +112,7 @@ impl Check {
             Self::Vat => "vat",
             Self::ContractorTax => "contractor_tax",
             Self::Projects => "projects",
+            Self::Disbursements => "disbursements",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
@@ -212,6 +214,11 @@ fn verify_commercial_subledgers(
     Check::Inventory.when(version >= schema::INVENTORY_SCHEMA_VERSION, checks, || {
         audit::inventory::verify(reader)
     })?;
+    Check::Disbursements.when(
+        version >= schema::DISBURSEMENT_SCHEMA_VERSION,
+        checks,
+        || audit::disbursements::verify(reader),
+    )?;
     Ok(())
 }
 
