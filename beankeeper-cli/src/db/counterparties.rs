@@ -465,7 +465,7 @@ pub(super) fn read_counterparty(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cou
     })
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ContactField<T> {
     #[default]
@@ -484,7 +484,7 @@ impl<T> ContactField<T> {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContactPatch {
     pub name: Option<CounterpartyName>,

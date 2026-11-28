@@ -830,6 +830,136 @@ fn http_agent_bookkeeping_proposals_need_approval_before_changes_apply() -> Test
     server.finish(&[propose_token, approve_token])
 }
 
+fn assert_maintenance_discovery(server: &mut Server, direct: &str, read: &str) -> TestResult {
+    let writable = server.tools(Some(direct))?;
+    let readonly = server.tools(Some(read))?;
+    for name in [
+        "counterparty_amend",
+        "counterparty_archive",
+        "project_archive",
+        "project_budget",
+        "account_classify",
+    ] {
+        assert!(writable.iter().any(|tool| tool == name), "{name}");
+        assert!(!readonly.iter().any(|tool| tool == name), "{name}");
+    }
+    for guarded in [
+        "company_delete",
+        "budget_set",
+        "disbursement_dispatch",
+        "period_close",
+    ] {
+        assert!(!writable.iter().any(|tool| tool == guarded), "{guarded}");
+    }
+    Ok(())
+}
+
+#[test]
+fn http_agent_maintains_parties_budgets_and_cash_classification() -> TestResult {
+    use beankeeper_cli::identity::WriteMode;
+    use secrecy::ExposeSecret as _;
+
+    let ledger = Ledger::new()?;
+    let db = ledger.db()?;
+    let issue = |name: &str, cap: &str, mode| {
+        Granted::<Admin>::with_db(&db, &ledger.owner, |grant| {
+            identity::issue_credential_with_mode(
+                grant,
+                &IssueRequest {
+                    name,
+                    capabilities: &["ledger/read".into(), cap.into()],
+                    ttl: Duration::from_hours(1),
+                    public_key: None,
+                    generate_key: true,
+                },
+                mode,
+            )
+        })
+    };
+    let proposer = issue(
+        "maintenance_proposer",
+        "ledger/propose",
+        WriteMode::ProposeOnly,
+    )?;
+    let reviewer = issue("maintenance_reviewer", "ledger/approve", WriteMode::Direct)?;
+    let budgeter = issue("maintenance_budget", "ledger/budget", WriteMode::Direct)?;
+    let direct = token(&ledger.writer)?;
+    let read = token(&ledger.reader)?;
+    ledger.enforce()?;
+    let mut server = Server::start(&ledger, false, None)?;
+    server.initialize(Some(direct), "Managed agent")?;
+    assert_maintenance_discovery(&mut server, direct, read)?;
+    let mut call = |tool: &str, args: Value, bearer: &str| -> TestResult<Value> {
+        let result = server.call(tool, args, Some(bearer))?;
+        assert_ne!(result["result"]["isError"], true, "{tool}: {result}");
+        payload(&result)
+    };
+    let party = call(
+        "counterparty_create",
+        json!({"company":"acme","name":"Hosting","role":"both"}),
+        direct,
+    )?;
+    let party_id = &party["party"]["id"];
+    let contact = call(
+        "counterparty_amend",
+        json!({"company":"acme","id":party_id,"patch":{"payment_terms":{"set":30}}}),
+        direct,
+    )?;
+    assert_eq!(contact["party"]["payment_terms"], 30);
+    assert!(contact["receipt_id"].is_number());
+    let project = call(
+        "project_create",
+        json!({"company":"acme","terms":{"code":"support","name":"Support","customer":party_id,"currency":"USD"}}),
+        direct,
+    )?;
+    let project_id = &project["project"]["id"];
+    let budget_args = json!({"company":"acme","budget":{"project":project_id,"month":"2026-11","amount_minor":18000}});
+    let budget = call("project_budget", budget_args.clone(), direct)?;
+    assert_eq!(budget["budget"]["amount_minor"], 18000);
+    assert!(budget["receipt_id"].is_number());
+    call(
+        "project_budget",
+        budget_args,
+        budgeter.token().expose_secret(),
+    )?;
+
+    let cash_class = || -> TestResult<String> {
+        Ok(db.read().query_row(
+            "SELECT cash_class FROM accounts WHERE company_slug='acme' AND code='1000'",
+            [],
+            |row| row.get(0),
+        )?)
+    };
+    let before = cash_class()?;
+    let pending = call(
+        "account_classify",
+        json!({"company":"acme","code":"1000","cash_class":"cash_equivalent"}),
+        proposer.token().expose_secret(),
+    )?;
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(cash_class()?, before);
+    let decided = call(
+        "txn_approve",
+        json!({"company":"acme","id":pending["proposal_id"]}),
+        reviewer.token().expose_secret(),
+    )?;
+    assert_eq!(decided["status"], "approved");
+    assert_eq!(cash_class()?, "cash_equivalent");
+    let archived = call(
+        "project_archive",
+        json!({"company":"acme","id":project_id}),
+        direct,
+    )?;
+    assert_eq!(archived["project"]["archived"], true);
+    let archived = call(
+        "counterparty_archive",
+        json!({"company":"acme","id":party_id}),
+        direct,
+    )?;
+    assert_eq!(archived["party"]["archived"], true);
+    server.finish(&[direct, read])
+}
+
 #[test]
 fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult {
     let ledger = Ledger::new()?;

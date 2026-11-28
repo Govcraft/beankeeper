@@ -53,33 +53,40 @@ pub(crate) fn submit(
     class: CashClass,
 ) -> Result<ClassificationSubmission, CliError> {
     Granted::<Admin>::with_db(db, actor, |grant| {
-        grant.mutate("sp_account_classify", |tx, actor| {
+        grant.mutate("sp_classify_generated_account", |tx, actor| {
             let scope = Company::bind(tx.read(), company.clone())?;
-            let account = accounts::get_account(&scope, code.as_str())?;
-            let classification = AccountClassification::try_from((account.account_type, class))
-                .map_err(|error| CliError::Validation(error.to_string()))?;
-            let before = ClassificationSnapshot {
-                cash_class: account.cash_class,
-            };
-            let after = ClassificationSnapshot {
-                cash_class: classification.cash_class(),
-            };
-            let receipt_id = store(
-                tx,
-                actor,
-                &scope,
-                &code,
-                (&before, classification),
-                AuditLinks::None,
-            )?;
-            Ok(ClassificationSubmission {
-                code,
-                previous: before.cash_class,
-                cash_class: after.cash_class,
-                receipt_id,
-                desktop_path: super::receipts::desktop_receipt_path(company, receipt_id),
-            })
+            apply(tx, actor, &scope, code, class)
         })
+    })
+}
+
+pub(super) fn apply(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    scope: &Company<'_>,
+    code: AccountCode,
+    class: CashClass,
+) -> Result<ClassificationSubmission, CliError> {
+    let account = accounts::get_account(scope, code.as_str())?;
+    let classification = AccountClassification::try_from((account.account_type, class))
+        .map_err(|error| CliError::Validation(error.to_string()))?;
+    let before = ClassificationSnapshot {
+        cash_class: account.cash_class,
+    };
+    let receipt_id = store(
+        tx,
+        actor,
+        scope,
+        &code,
+        (&before, classification),
+        AuditLinks::None,
+    )?;
+    Ok(ClassificationSubmission {
+        code,
+        previous: before.cash_class,
+        cash_class: classification.cash_class(),
+        receipt_id,
+        desktop_path: super::receipts::desktop_receipt_path(scope.slug(), receipt_id),
     })
 }
 

@@ -8,7 +8,6 @@ use super::{
 };
 use crate::{
     db::{
-        Db,
         companies::{Company, CompanySlug},
         connection::ReadConn,
         counterparties::{
@@ -18,7 +17,6 @@ use crate::{
         ids::{ReceiptId, TransactionId},
     },
     error::CliError,
-    identity::{Admin, Granted},
 };
 
 pub(crate) enum PartyEdit {
@@ -40,31 +38,26 @@ pub(crate) enum PartyMutationResult {
     },
 }
 
-pub(crate) fn mutate(
-    db: &Db,
+pub(super) fn update(
+    tx: &super::savepoint::AuditedTx<'_>,
     actor: &Actor,
-    slug: &CompanySlug,
+    company: &Company<'_>,
     edit: PartyEdit,
 ) -> Result<PartyMutationResult, CliError> {
-    Granted::<Admin>::with_db(db, actor, |grant| {
-        grant.mutate("sp_counterparty", |tx, actor| {
-            let company = Company::bind(tx.read(), slug.clone())?;
-            let (before, party, action) = prepare(&company, edit)?;
-            let receipt_id = if before == party {
-                None
-            } else {
-                Some(save(
-                    tx.connection(),
-                    actor,
-                    slug,
-                    Some(&before),
-                    &party,
-                    action,
-                )?)
-            };
-            Ok(PartyMutationResult::Record { party, receipt_id })
-        })
-    })
+    let (before, party, action) = prepare(company, edit)?;
+    let receipt_id = if before == party {
+        None
+    } else {
+        Some(save(
+            tx.connection(),
+            actor,
+            company.slug(),
+            Some(&before),
+            &party,
+            action,
+        )?)
+    };
+    Ok(PartyMutationResult::Record { party, receipt_id })
 }
 
 pub(super) fn create(

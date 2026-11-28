@@ -1,5 +1,6 @@
 //! Routine agent changes submitted in the signed bookkeeping mode.
 
+use beankeeper::types::{AccountCode, CashClass};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
@@ -7,11 +8,11 @@ use super::{Applied, Correction, PendingCorrection, reserve};
 use crate::{
     db::{
         Actor, Db,
-        audit::{counterparties, grant, projects, savepoint::AuditedTx},
+        audit::{cash_classification, counterparties, grant, projects, savepoint::AuditedTx},
         companies::{Company, CompanySlug},
-        counterparties::{ContactDetails, CounterpartyId},
+        counterparties::{ContactDetails, ContactPatch, CounterpartyId},
         ids::{EntryId, ReceiptId, TransactionId},
-        projects::{ProjectTerms, SplitInput},
+        projects::{ProjectBudgetInput, ProjectId, ProjectTerms, SplitInput},
     },
     error::CliError,
     identity::{Granted, VerifiedAgent, WriteMode},
@@ -22,6 +23,7 @@ use crate::{
 pub(super) enum Bookkeeping {
     Counterparty(Party),
     Project(Project),
+    Classify(Classification),
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +31,13 @@ pub(super) enum Bookkeeping {
 pub(crate) enum Party {
     Create {
         details: ContactDetails,
+    },
+    Amend {
+        id: CounterpartyId,
+        patch: ContactPatch,
+    },
+    Archive {
+        id: CounterpartyId,
     },
     Associate {
         id: CounterpartyId,
@@ -42,11 +51,40 @@ pub(crate) enum Project {
     Create {
         terms: ProjectTerms,
     },
+    Archive {
+        id: ProjectId,
+    },
+    Budget {
+        budget: ProjectBudgetInput,
+    },
     Split {
         entry: EntryId,
         date: NaiveDate,
         splits: Vec<SplitInput>,
     },
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Classification {
+    pub(crate) code: AccountCode,
+    pub(crate) class: CashClass,
+}
+
+impl Classification {
+    pub(crate) fn submit(
+        self,
+        db: &Db,
+        actor: &Actor,
+        company: &CompanySlug,
+    ) -> Result<Submission<cash_classification::ClassificationSubmission>, CliError> {
+        submit::<grant::Bookkeeping, _>(
+            db,
+            actor,
+            company,
+            Bookkeeping::Classify(self.clone()),
+            |tx, actor, scope| cash_classification::apply(tx, actor, scope, self.code, self.class),
+        )
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -56,7 +94,7 @@ pub(crate) enum Submission<T> {
     Pending(PendingCorrection),
 }
 
-fn submit<T>(
+fn submit<C: grant::sealed::GrantKind, T>(
     db: &Db,
     actor: &Actor,
     company: &CompanySlug,
@@ -80,7 +118,7 @@ fn submit<T>(
             })
         });
     }
-    Granted::<grant::Bookkeeping>::with_db(db, actor, |grant| {
+    Granted::<C>::with_db(db, actor, |grant| {
         grant.mutate("sp_bookkeeping_apply", |tx, actor| {
             let scope = Company::bind(tx.read(), company.clone())?;
             apply(tx, actor, &scope).map(Submission::Applied)
@@ -95,7 +133,7 @@ impl Party {
         actor: &Actor,
         company: &CompanySlug,
     ) -> Result<Submission<counterparties::PartyMutationResult>, CliError> {
-        submit(
+        submit::<grant::Bookkeeping, _>(
             db,
             actor,
             company,
@@ -112,6 +150,15 @@ impl Party {
     ) -> Result<counterparties::PartyMutationResult, CliError> {
         match self {
             Self::Create { details } => counterparties::create(tx, actor, scope, details),
+            Self::Amend { id, patch } => counterparties::update(
+                tx,
+                actor,
+                scope,
+                counterparties::PartyEdit::Amend(id, patch),
+            ),
+            Self::Archive { id } => {
+                counterparties::update(tx, actor, scope, counterparties::PartyEdit::Archive(id))
+            }
             Self::Associate { id, transaction } => {
                 counterparties::associate(tx.connection(), actor, scope, id, transaction)
             }
@@ -126,13 +173,14 @@ impl Project {
         actor: &Actor,
         company: &CompanySlug,
     ) -> Result<Submission<projects::ProjectChange>, CliError> {
-        submit(
-            db,
-            actor,
-            company,
-            Bookkeeping::Project(self.clone()),
-            |tx, actor, scope| self.apply(tx, actor, scope),
-        )
+        let change = Bookkeeping::Project(self.clone());
+        let apply =
+            |tx: &AuditedTx<'_>, actor: &Actor, scope: &Company<'_>| self.apply(tx, actor, scope);
+        if matches!(&change, Bookkeeping::Project(Self::Budget { .. })) {
+            submit::<grant::BookkeepingBudget, _>(db, actor, company, change, apply)
+        } else {
+            submit::<grant::Bookkeeping, _>(db, actor, company, change, apply)
+        }
     }
 
     fn apply(
@@ -143,6 +191,8 @@ impl Project {
     ) -> Result<projects::ProjectChange, CliError> {
         match self {
             Self::Create { terms } => projects::create(tx, actor, scope, terms),
+            Self::Archive { id } => projects::archive(tx, actor, scope, &id),
+            Self::Budget { budget } => projects::set_budget(tx, actor, scope, budget),
             Self::Split {
                 entry,
                 date,
@@ -175,6 +225,12 @@ impl Bookkeeping {
                 let value = change.apply(tx, actor, scope)?;
                 let (Association { receipt_id, .. } | Record { receipt_id, .. }) = &value;
                 result(&value, *receipt_id)
+            }
+            Self::Classify(change) => {
+                let value =
+                    cash_classification::apply(tx, actor, scope, change.code, change.class)?;
+                let receipt = Some(value.receipt_id);
+                result(value, receipt)
             }
             Self::Project(change) => {
                 use projects::ProjectChange::{Budget, Project, Split, Work};

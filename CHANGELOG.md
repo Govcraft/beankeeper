@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Let agents update and archive counterparties, archive projects, set project budgets, and classify accounts for cash reports. Proposal-only access queues reviewed changes.
+
 ## [0.42.0] - 2026-11-28
 
 This release advances the ledger schema from v51 to v52 for bookkeeping
