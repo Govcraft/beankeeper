@@ -9,7 +9,7 @@ fn issue_proposer(path: &Path, passphrase: &Path) -> Result<Value, Box<dyn Error
             "agent",
             "issue",
             "--name",
-            "document-proposer",
+            "document_proposer",
             "--generate-key",
             "--caps",
             "ledger/read,ledger/propose,ledger/post",
@@ -35,7 +35,7 @@ fn document_approval_freezes_terms_and_retry_reuses_the_posting() -> TestResult 
     let db = beankeeper_cli::db::Db::open_existing(&path, Some(&"mcp-test-passphrase".into()))?;
     let owner = proposal_identity(
         &db,
-        "doc-owner",
+        "doc_owner",
         &[
             "ledger/read",
             "ledger/post",
