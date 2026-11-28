@@ -318,9 +318,18 @@ fn summary_can_match_open_items_within_each_party() -> TestResult {
 
     let standard = books.acme(&["summary", "--to", "2026-04-01"])?;
     let grouped = books.acme(&["summary", "--to", "2026-04-01", "--group-by-counterparty"])?;
-    assert_eq!(standard["attention"]["aged_receivables"]["count"], 0);
-    assert_eq!(grouped["attention"]["aged_receivables"]["count"], 1);
-    assert_eq!(grouped["attention"]["aged_receivables"]["total"], 10_000);
+    assert_eq!(
+        standard["needs_attention"]["items"]["aged_receivables"]["count"],
+        0
+    );
+    assert_eq!(
+        grouped["needs_attention"]["items"]["aged_receivables"]["count"],
+        1
+    );
+    assert_eq!(
+        grouped["needs_attention"]["items"]["aged_receivables"]["total"],
+        10_000
+    );
     assert_eq!(standard["standing"], grouped["standing"]);
     Ok(())
 }

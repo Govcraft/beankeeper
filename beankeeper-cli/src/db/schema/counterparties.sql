@@ -13,7 +13,6 @@ CREATE TABLE counterparties (
 ) STRICT;
 CREATE INDEX idx_counterparties_name ON counterparties(company_slug, name COLLATE NOCASE, id);
 
-CREATE UNIQUE INDEX idx_transactions_company_id ON transactions(company_slug, id);
 CREATE TABLE transaction_counterparties (
     company_slug TEXT NOT NULL,
     transaction_id INTEGER NOT NULL,

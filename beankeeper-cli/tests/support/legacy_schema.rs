@@ -6,7 +6,6 @@ pub fn before_restore(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "DROP TABLE transaction_counterparties;
          DROP TABLE counterparties;
-         DROP INDEX idx_transactions_company_id;
          DROP TRIGGER protect_cash_class_update;
          ALTER TABLE accounts DROP COLUMN cash_class;",
     )?;

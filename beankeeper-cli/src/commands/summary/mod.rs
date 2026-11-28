@@ -657,8 +657,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
     let attention = compute_attention(
         reader,
         &scope,
-        currency,
-        periods.current.to,
+        (currency, periods.current.to),
         stale_hold_age,
         &selected,
         request.group_by_counterparty,
@@ -704,8 +703,7 @@ fn compute(reader: ReadConn<'_>, request: SummaryRequest) -> Result<SummaryRepor
 fn compute_attention<'a>(
     reader: ReadConn<'a>,
     scope: &Company<'a>,
-    currency: Currency,
-    as_of: NaiveDate,
+    (currency, as_of): (Currency, NaiveDate),
     stale_hold_age: StaleHoldAge,
     accounts: &model::SelectedAccounts<'_>,
     group_by_counterparty: bool,
