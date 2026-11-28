@@ -342,13 +342,6 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
 
     apply_subledger_migrations(conn, version)?;
 
-    if version < EXPENSE_CLAIMS_SCHEMA_VERSION {
-        migrate_with_writer(
-            conn,
-            EXPENSE_CLAIMS_SCHEMA_VERSION,
-            apply_expense_claim_schema,
-        )?;
-    }
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -398,6 +391,14 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
 
     if version < VAT_SCHEMA_VERSION {
         migrate_with_writer(conn, VAT_SCHEMA_VERSION, apply_vat_schema)?;
+    }
+
+    if version < EXPENSE_CLAIMS_SCHEMA_VERSION {
+        migrate_with_writer(
+            conn,
+            EXPENSE_CLAIMS_SCHEMA_VERSION,
+            apply_expense_claim_schema,
+        )?;
     }
 
     if version < CONTRACTOR_TAX_SCHEMA_VERSION {

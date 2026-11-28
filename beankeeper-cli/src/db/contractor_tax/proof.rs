@@ -60,16 +60,10 @@ pub(super) fn posted(
     ).optional()?)
 }
 
-pub(super) struct At {
-    pub(super) through: NaiveDate,
-    pub(super) reversal: Option<(TransactionId, NaiveDate)>,
-}
-
 pub(super) fn check(
     company: &Company<'_>,
     review: &PaymentReview,
     posting: &Posting,
-    at: At,
 ) -> Result<bool, CliError> {
     if !posting.usd
         || posting.document
@@ -82,15 +76,15 @@ pub(super) fn check(
         return Ok(false);
     }
 
-    let historical = at.reversal.map(|(_, date)| date);
+    let historical = posting.reversal.map(|(_, date)| date);
     let allocations: (i64, bool, bool) = company.read().query_row(
         "SELECT COALESCE(SUM(a.amount_minor),0), COUNT(*)>0,
             COUNT(*)>0 AND COALESCE(MIN(d.counterparty_id=?3 AND json_extract(d.issued,'$.kind')='bill'),0)
          FROM document_allocations a
          JOIN book_documents d ON d.company_slug=a.company_slug AND d.id=a.document_id
-         WHERE a.company_slug=?1 AND a.source_id=?2 AND a.kind='payment' AND a.effective_on<=?4
-           AND (a.reversed_on IS NULL OR a.reversed_on>?4 OR a.reversed_on>=?5)",
-        params![company.slug(), review.posting_id, &review.party, at.through, historical],
+         WHERE a.company_slug=?1 AND a.source_id=?2 AND a.kind='payment' AND (?4 IS NULL OR a.effective_on<=?4)
+           AND (a.reversed_on IS NULL OR a.reversed_on>=?4)",
+        params![company.slug(), review.posting_id, &review.party, historical],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     match &review.source {
@@ -148,16 +142,7 @@ pub(in crate::db) fn validate_review(
         return Err(ContractorTaxError::AmbiguousEvidence.into());
     }
     let source = posted(company, review.posting_id)?.ok_or(ContractorTaxError::InvalidEvidence)?;
-    let through = NaiveDate::from_ymd_opt(9999, 12, 31).ok_or(ContractorTaxError::InvalidYear)?;
-    if !check(
-        company,
-        review,
-        &source,
-        At {
-            through,
-            reversal: source.reversal,
-        },
-    )? {
+    if !check(company, review, &source)? {
         return Err(ContractorTaxError::InvalidEvidence.into());
     }
     if let EvidenceSource::Refund {
@@ -229,7 +214,7 @@ pub(super) fn candidates(
          JOIN book_documents d ON d.company_slug=a.company_slug AND d.id=a.document_id
          WHERE t.company_slug=?1 AND t.currency='USD' AND t.date BETWEEN ?2 AND ?3
            AND a.kind='payment' AND json_extract(d.issued,'$.kind')='bill'
-           AND a.effective_on<=?3 AND (a.reversed_on IS NULL OR a.reversed_on>?3)
+           AND a.reversed_on IS NULL
          GROUP BY t.id,t.date",
     )?;
     let rows = query.query_map(params![company.slug(), from, to], |row| {

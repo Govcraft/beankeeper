@@ -135,16 +135,22 @@ impl Books {
             .clone())
     }
 
-    fn settle(&self, bill: &Value, party: &str, date: &str, cents: u32) -> TestResult<Value> {
+    fn settle(
+        &self,
+        bill: &Value,
+        party: &str,
+        dates: (&str, &str),
+        cents: u32,
+    ) -> TestResult<Value> {
         let money = format!("{}.{:02}", cents / 100, cents % 100);
-        let posting = self.post(date, &format!("2100:{money}"), &format!("1000:{money}"))?;
+        let posting = self.post(dates.0, &format!("2100:{money}"), &format!("1000:{money}"))?;
         let allocations = json!([{"document_id":bill["id"],"amount_minor":cents}]).to_string();
         self.data(&[
             "document",
             "allocate",
             &posting.to_string(),
             "--date",
-            date,
+            dates.1,
             "--allocations",
             &allocations,
         ])?;
@@ -209,8 +215,8 @@ fn direct(account: &str) -> Value {
 fn record_source_evidence(books: &Books, parties: (&str, &str), owner: &str) -> TestResult<Value> {
     let (first, second) = parties;
     let bill = books.bill(first)?;
-    let initial = books.settle(&bill, first, "2025-06-15", 40_000)?;
-    books.settle(&bill, first, "2025-10-05", 35_000)?;
+    let initial = books.settle(&bill, first, ("2025-06-15", "2025-06-15"), 40_000)?;
+    books.settle(&bill, first, ("2025-12-31", "2026-01-02"), 35_000)?;
 
     let card = books.post("2025-10-06", "5000:200", "2200:200")?;
     books.review(&payment(

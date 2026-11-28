@@ -123,7 +123,7 @@ fn append_reviewed_evidence(
     let posting = proof::posted(company, review.posting_id)?
         .ok_or_else(|| CliError::Database("reviewed contractor posting is absent".into()))?;
     let reversal = posting.reversal.filter(|(_, date)| *date <= through);
-    let valid = proof::check(company, &review, &posting, proof::At { through, reversal })?;
+    let valid = proof::check(company, &review, &posting)?;
     let amount_minor = review.amount_minor.minor_units();
     let is_refund = matches!(review.source, EvidenceSource::Refund { .. });
     let kind = if valid {
