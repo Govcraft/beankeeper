@@ -551,7 +551,7 @@ file or `-` for stdin in the CLI. Supply bounded content directly to MCP.
 
 `report.kind` accepts `trial-balance`, `balance`,
 `income-statement`, `balance-sheet`, `tax-summary`, `schedule-c`, `1099`, `ledger`, `budget-variance`,
-`cash-flow`, `aging`, `reconciliation`, or `trend`, including their period/comparison and
+`cash-flow`, `cash-forecast`, `aging`, `reconciliation`, or `trend`, including their period/comparison and
 metadata options. These are the 13 canonical CLI report kinds; `1099-nec` is an
 alias for `1099`. Trial balance, account balance, balance sheet, and
 reconciliation take `as_of` as an alias for `to` (CLI: `--as-of` for `--to`).
