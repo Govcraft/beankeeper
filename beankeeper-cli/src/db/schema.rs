@@ -336,6 +336,18 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
         migrate_with_writer(conn, CASH_CLASS_SCHEMA_VERSION, apply_cash_class_schema)?;
     }
 
+    apply_subledger_migrations(conn, version)?;
+
+    debug_assert_eq!(
+        stored_schema(ReadConn::physical(conn)).ok(),
+        Some(CURRENT_VERSION),
+        "schema version mismatch after migrations"
+    );
+
+    Ok(())
+}
+
+fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Result<(), CliError> {
     if version < COUNTERPARTY_SCHEMA_VERSION {
         migrate_with_writer(conn, COUNTERPARTY_SCHEMA_VERSION, apply_counterparty_schema)?;
     }
@@ -351,13 +363,6 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
     if version < DOCUMENT_SCHEMA_VERSION {
         migrate_with_writer(conn, DOCUMENT_SCHEMA_VERSION, apply_document_schema)?;
     }
-
-    debug_assert_eq!(
-        stored_schema(ReadConn::physical(conn)).ok(),
-        Some(CURRENT_VERSION),
-        "schema version mismatch after migrations"
-    );
-
     Ok(())
 }
 

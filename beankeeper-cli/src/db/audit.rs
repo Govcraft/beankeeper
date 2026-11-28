@@ -2089,8 +2089,7 @@ fn reverse_in_scope(
     let date = undo_of.map_or(p.date, |_| {
         receipts::UndoPostingDate::from((p.date, original.date)).into()
     });
-    documents::guard_linked_reversal(&company, p.id, date)?;
-    recategorize::MoveHistory::load(&company, p.id, None)?.check_reversal(p.id, date)?;
+    check_reversal_history(&company, p.id, date)?;
     super::holds::check_reversal(tx, &original, date)?;
     validate_reversal(conn, p.id, date, original.date)?;
     if super::fx::evidence(tx.read(), p.company_slug, p.id)?.is_some() {
@@ -2211,6 +2210,15 @@ fn existing_reversal(
         transaction: p.id,
         reversal,
     }))
+}
+
+fn check_reversal_history(
+    company: &Company<'_>,
+    transaction: TransactionId,
+    date: chrono::NaiveDate,
+) -> Result<(), CliError> {
+    documents::guard_linked_reversal(company, transaction, date)?;
+    recategorize::MoveHistory::load(company, transaction, None)?.check_reversal(transaction, date)
 }
 
 /// Check dates and individual clearings, including partial reconciliations.
