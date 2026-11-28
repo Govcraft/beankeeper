@@ -1958,3 +1958,7 @@ pub(crate) struct ProjectReportInput {
     #[serde(default)]
     pub detail: bool,
 }
+pub(crate) use crate::commands::disbursement::{
+    DisbursementApproveInput, DisbursementDraftInput, DisbursementReconcileInput,
+    DisbursementRejectInput, DisbursementSelector,
+};

@@ -63,7 +63,7 @@ pub struct CreditInput {
     pub date: NaiveDate,
 }
 
-pub(super) fn apply_payment(
+pub(in crate::db::audit) fn apply_payment(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,
@@ -261,7 +261,8 @@ fn ensure_item_capacity(
     if on < issued.issue_date {
         return Err(DocumentError::AllocationBeforeSource.into());
     }
-    let applied = peak_applied(company, CapacityFor::Document(&issued.id), on)?;
+    let applied = peak_applied(company, CapacityFor::Document(&issued.id), on)?
+        + crate::db::disbursements::reserved(company, &issued.id, None)?;
     Ok(validate_capacity(
         i128::from(issued.total_minor),
         applied,
@@ -488,6 +489,41 @@ pub(super) fn revoke(
     id: &AllocationId,
     date: NaiveDate,
 ) -> Result<DocumentOutcome, CliError> {
+    revoke_payment(tx, actor, company, id, date, AllocationRevocation::Manual)
+}
+
+pub(in crate::db::audit) fn return_disbursement_allocation(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &Company<'_>,
+    id: &AllocationId,
+    date: NaiveDate,
+) -> Result<(), CliError> {
+    revoke_payment(
+        tx,
+        actor,
+        company,
+        id,
+        date,
+        AllocationRevocation::ProviderReturn,
+    )?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum AllocationRevocation {
+    Manual,
+    ProviderReturn,
+}
+
+fn revoke_payment(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &Company<'_>,
+    id: &AllocationId,
+    date: NaiveDate,
+    reason: AllocationRevocation,
+) -> Result<DocumentOutcome, CliError> {
     let before = read_allocation(company, id)?;
     if before.reversed_on == Some(date) {
         return Ok(DocumentOutcome::Revoked {
@@ -504,13 +540,16 @@ pub(super) fn revoke(
         return Err(DocumentError::AllocationBeforeSource.into());
     }
     periods::ensure_open(company.read(), company.slug(), date)?;
-    let document = issued_document(company, &before.allocation.document_id)?;
-    if has_reconciled_entries(tx.connection(), before.allocation.source_id)?
-        || has_reconciled_entries(tx.connection(), document.posting_id)?
-    {
-        return Err(CliError::Validation(
-            "a reconciled invoice, bill, or payment cannot be reallocated".into(),
-        ));
+    if matches!(reason, AllocationRevocation::Manual) {
+        super::super::disbursements::guard_posting(tx.read(), before.allocation.source_id)?;
+        let document = issued_document(company, &before.allocation.document_id)?;
+        if has_reconciled_entries(tx.connection(), before.allocation.source_id)?
+            || has_reconciled_entries(tx.connection(), document.posting_id)?
+        {
+            return Err(CliError::Validation(
+                "a reconciled invoice, bill, or payment cannot be reallocated".into(),
+            ));
+        }
     }
     let mut after = before.clone();
     after.reversed_on = Some(date);

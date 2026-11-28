@@ -76,6 +76,8 @@ impl WriteMode {
                 capability,
                 Capability::Post
                     | Capability::Approve
+                    | Capability::DisbursementApprove
+                    | Capability::DisbursementDispatch
                     | Capability::Reverse
                     | Capability::Admin
                     | Capability::TaxDetails

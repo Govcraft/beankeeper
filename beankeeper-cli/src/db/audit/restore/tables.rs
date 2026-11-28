@@ -81,6 +81,8 @@ table_set!(RestorableTable {
     StockLots => "stock_lots",
     StockPartitions => "stock_partitions",
     StockDocumentLinks => "stock_document_links",
+    Disbursements => "disbursements",
+    DisbursementBills => "disbursement_bills",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are
@@ -96,6 +98,7 @@ table_set!(PreservedTable {
     LedgerPolicy => "ledger_policy",
     AgentSpendLimits => "agent_spend_limits",
     SetupSessions => "setup_sessions",
+    DisbursementAttempts => "disbursement_attempts",
 });
 
 pub(super) fn replace(tx: &AuditedTx<'_>, backup: &CompatibleBackup) -> Result<(), CliError> {
@@ -104,6 +107,7 @@ pub(super) fn replace(tx: &AuditedTx<'_>, backup: &CompatibleBackup) -> Result<(
     // Company-scoped limits remain live. Defer their foreign keys while the
     // company rows are replaced, then validate the completed ledger.
     live.pragma_update(None, "defer_foreign_keys", true)?;
+    super::super::disbursements::guard_restore(live, source)?;
     let triggers = SuspendedTriggers::new(live)?;
     for table in RestorableTable::ALL.iter().rev() {
         live.execute(&format!("DELETE FROM {}", table.name()), [])?;

@@ -157,6 +157,7 @@ impl VerifiedAgent {
 
     pub(crate) fn requires_explicit_capability(&self, capability: Capability) -> bool {
         capability == Capability::TaxDetails
+            || capability.is_disbursement_write()
             || (capability == Capability::Admin && self.grants.is_bookkeeper())
     }
 

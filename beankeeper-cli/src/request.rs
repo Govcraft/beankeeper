@@ -25,6 +25,7 @@ use crate::{
         company::{CompanyRequest, CompanyResponse},
         contractor_tax::{ContractorTaxRequest, ContractorTaxResponse},
         counterparty::{CounterpartyRequest, CounterpartyResponse},
+        disbursement::{DisbursementRequest, Response as DisbursementResponse},
         document::{DocumentRequest, DocumentResponse},
         fixed_asset::{FixedAssetRequest, FixedAssetResponse},
         fx::{FxRequest, FxResponse},
@@ -71,6 +72,7 @@ pub enum LedgerRequest {
     Expense(ExpenseRequest),
     Project(ProjectRequest),
     Inventory(InventoryRequest),
+    Disbursement(DisbursementRequest),
     Investment(InvestmentRequest),
     Payroll(PayrollRequest),
     Period(PeriodRequest),
@@ -103,6 +105,7 @@ pub enum LedgerResponse {
     Expense(ExpenseResponse),
     Project(Operation, CompanySlug, ProjectResponse),
     Inventory(InventoryResponse),
+    Disbursement(Operation, CompanySlug, DisbursementResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Payroll(PayrollResponse),
     Period(Operation, CompanySlug, PeriodResponse),
@@ -151,6 +154,7 @@ impl LedgerRequest {
             Self::Expense(request) => request.operation(),
             Self::Project(request) => request.operation(),
             Self::Inventory(request) => request.operation(),
+            Self::Disbursement(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Payroll(request) => request.operation(),
             Self::Period(request) => request.operation(),
@@ -181,9 +185,15 @@ impl LedgerRequest {
         resolve_actor: impl for<'snapshot> FnOnce(ReadConn<'snapshot>) -> Result<Actor, CliError>,
     ) -> Result<(LedgerResponse, Actor), CliError> {
         let operation = self.operation();
-        if operation == Operation::BankFeedSync {
-            // Release the authorization snapshot before the provider call.
-            // The audited commit checks the actor and the feed revision again.
+        if matches!(
+            operation,
+            Operation::BankFeedSync
+                | Operation::DisbursementPreview
+                | Operation::DisbursementApprove
+                | Operation::DisbursementDispatch
+        ) {
+            // Release the authorization snapshot before provider I/O. Each
+            // workflow rechecks the actor in its own audited write stages.
             let actor =
                 db.read_snapshot(|reader| authorize_actor(reader, operation, resolve_actor))?;
             return self
@@ -249,6 +259,11 @@ impl LedgerRequest {
                 Ok(LedgerResponse::Project(operation, company, response))
             }
             Self::Inventory(request) => request.execute(db, actor).map(LedgerResponse::Inventory),
+            Self::Disbursement(request) => {
+                let company = request.company.clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Disbursement(operation, company, response))
+            }
             Self::Document(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -320,6 +335,9 @@ impl LedgerResponse {
                 response.render(cli, *operation, company)
             }
             Self::Inventory(response) => response.render(cli),
+            Self::Disbursement(operation, company, response) => {
+                response.render(cli, *operation, company)
+            }
             Self::Document(operation, company, response) => {
                 response.render(cli, *operation, company)
             }

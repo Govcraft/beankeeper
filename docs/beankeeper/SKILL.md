@@ -593,6 +593,15 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk tax configure` | Set an effective-dated UK invoice VAT code in a GBP book |
 | `bk tax list/report` | List rate revisions or export VAT evidence and control-account reconciliation |
 | `bk inventory register/list/show/move/movement/movements/match-document/valuation` | Run perpetual FIFO inventory and link issued documents |
+| `bk disbursement draft` | Work with reviewed vendor payment instructions |
+| `bk disbursement preview` | Work with reviewed vendor payment instructions |
+| `bk disbursement approve` | Work with reviewed vendor payment instructions |
+| `bk disbursement revoke` | Work with reviewed vendor payment instructions |
+| `bk disbursement reject` | Work with reviewed vendor payment instructions |
+| `bk disbursement dispatch` | Work with reviewed vendor payment instructions |
+| `bk disbursement reconcile` | Work with reviewed vendor payment instructions |
+| `bk disbursement show` | Work with reviewed vendor payment instructions |
+| `bk disbursement list` | Work with reviewed vendor payment instructions |
 | `bk document show` | Work with issued invoices, bills and payment allocations |
 | `bk document print` | Work with issued invoices, bills and payment allocations |
 | `bk document list` | Work with issued invoices, bills and payment allocations |

@@ -84,11 +84,17 @@ pub fn recover(cli: &Cli, input: &Path) -> Result<(), CliError> {
     let mut staged = NamedTempFile::new_in(directory.path())?;
     // Copy into the private staging file, retaining its owner-only permissions.
     std::io::copy(&mut File::open(input)?, staged.as_file_mut())?;
-    let snapshot = Db::open_snapshot(staged.path(), cli.resolve_passphrase()?)?;
+    let passphrase = cli.resolve_passphrase()?;
+    let snapshot = Db::open_snapshot(staged.path(), passphrase)?;
     cli.verify_agent(&snapshot)?;
     let verification = VerifiedLedger::read(&snapshot)?;
     let encrypted = snapshot.has_cipher_salt();
     drop(snapshot);
+    crate::db::audit::disbursements::guard_recovered_file(
+        staged.path(),
+        passphrase,
+        verification.schema_version(),
+    )?;
     publish(staged, input, destination, overwrite)?;
     report(
         cli,

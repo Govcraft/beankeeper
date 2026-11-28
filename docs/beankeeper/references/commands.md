@@ -278,6 +278,15 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
 | `tax_configure` | Configure a company VAT code and effective-dated revision |
 | `tax_list`, `tax_report` | Inspect historical VAT rates and reconcile a GBP VAT register against control accounts |
+| `disbursement_draft` | Draft an instruction against issued vendor bills |
+| `disbursement_preview` | Get the provider destination fingerprint for review |
+| `disbursement_approve` | Approve and reserve a frozen instruction |
+| `disbursement_revoke` | Revoke approval before dispatch |
+| `disbursement_reject` | Reject an instruction before dispatch |
+| `disbursement_dispatch` | Send once or query provider evidence for an earlier attempt |
+| `disbursement_reconcile` | Post authenticated settlement or return evidence |
+| `disbursement_show` | Show a payment instruction and provider evidence |
+| `disbursement_list` | List payment instructions |
 | `document_show`, `document_print`, `document_list`, `document_allocations`, `document_aging`, `document_proposals` | Inspect issued terms, allocations, due-date aging and document proposals |
 | `contractor_tax_review` | Record or revise a reviewed contractor payment against posted evidence |
 | `contractor_tax_worksheet`, `contractor_tax_preview` | Run the redacted 2025 worksheet or preview legacy candidates |
@@ -593,7 +602,9 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
 `inform_preference_set`, `reconcile_statement`, `audit_undo`, `restore`, `restore_undo`, `fixed_asset_register`, `fixed_asset_depreciate`, `fixed_asset_dispose`,
 `expense_claim_receipt_intake`, `expense_claim_create`, `expense_claim_amend`, `expense_claim_submit`, `expense_claim_approve`, `expense_claim_reject`, `expense_claim_record_payment`, `expense_claim_void`,
-`inventory_register`, `inventory_move`, and `inventory_match_document` from the router.
+`inventory_register`, `inventory_move`, `inventory_match_document`,
+`disbursement_draft`, `disbursement_preview`, `disbursement_approve`, `disbursement_revoke`,
+`disbursement_reject`, `disbursement_dispatch`, and `disbursement_reconcile` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement
