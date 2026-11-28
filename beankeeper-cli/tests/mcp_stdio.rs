@@ -1671,6 +1671,27 @@ fn settlement_report_schema_and_stdio_preserve_statement_charge_applications() -
     Ok(())
 }
 
+fn assert_collection_read_only_tools(names: &BTreeSet<&str>) {
+    for read in [
+        "collection_show",
+        "collection_exceptions",
+        "collection_refunds",
+        "collection_disputes",
+        "collection_payouts",
+    ] {
+        assert!(names.contains(read), "read-only catalog omits {read}");
+    }
+    for write in [
+        "collection_create_link",
+        "collection_apply",
+        "collection_resolve_receipt",
+        "collection_reconcile_refund",
+        "collection_reconcile_payout",
+    ] {
+        assert!(!names.contains(write), "read-only catalog exposes {write}");
+    }
+}
+
 #[test]
 fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult {
     let dir = tempdir()?;
@@ -1683,15 +1704,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
     assert_eq!(names.len(), 66);
-    assert!(names.contains("collection_show"));
-    assert!(names.contains("collection_exceptions"));
-    assert!(names.contains("collection_refunds"));
-    assert!(names.contains("collection_payouts"));
-    assert!(!names.contains("collection_create_link"));
-    assert!(!names.contains("collection_apply"));
-    assert!(!names.contains("collection_resolve_receipt"));
-    assert!(!names.contains("collection_reconcile_refund"));
-    assert!(!names.contains("collection_reconcile_payout"));
+    assert_collection_read_only_tools(&names);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
