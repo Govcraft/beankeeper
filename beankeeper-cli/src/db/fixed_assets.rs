@@ -221,23 +221,27 @@ fn movements(company: &Company<'_>, asset: &FixedAssetId) -> Result<Vec<Movement
          WHERE company_slug=?1 AND asset_id=?2 ORDER BY date,transaction_id",
     )?;
     let rows = query.query_map(params![company.slug(), asset.to_string()], |row| {
-        movement_from_row(row, asset.clone())
+        movement_from_row(row, asset.clone(), 0)
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-fn movement_from_row(row: &Row<'_>, asset_id: FixedAssetId) -> rusqlite::Result<Movement> {
-    let kind = match row.get_ref(1)?.as_str()? {
+fn movement_from_row(
+    row: &Row<'_>,
+    asset_id: FixedAssetId,
+    offset: usize,
+) -> rusqlite::Result<Movement> {
+    let kind = match row.get_ref(offset + 1)?.as_str()? {
         "depreciation" => MovementKind::Depreciation,
         "disposal" => MovementKind::Disposal,
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
     Ok(Movement {
         asset_id,
-        transaction_id: row.get(0)?,
+        transaction_id: row.get(offset)?,
         kind,
-        date: super::calendar_date::read(row, 2)?,
-        amount: row.get(3)?,
+        date: super::calendar_date::read(row, offset + 2)?,
+        amount: row.get(offset + 3)?,
     })
 }
 

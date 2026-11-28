@@ -21,8 +21,8 @@ pub(in crate::db) fn store_asset(
         .map_err(|error| CliError::Database(format!("fixed asset details: {error}")))?;
     let conn = tx.connection();
     conn.execute(
-        "INSERT INTO fixed_assets(id,company_slug,acquisition_id,acquired_on,details) VALUES (?1,?2,?3,?4,?5)",
-        params![asset.id.to_string(),company,asset.acquisition_id,asset.terms.acquired_on,details],
+        "INSERT INTO fixed_assets(id,company_slug,acquisition_id,acquired_on,cost_account,accumulated_account,expense_account,details) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![asset.id.to_string(),company,asset.acquisition_id,asset.terms.acquired_on,asset.terms.accounts.cost.as_str(),asset.terms.accounts.accumulated.as_str(),asset.terms.accounts.expense.as_str(),details],
     )?;
     record_insert(
         conn,

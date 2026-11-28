@@ -3,7 +3,17 @@ CREATE TABLE fixed_assets (
     company_slug TEXT NOT NULL REFERENCES companies(slug),
     acquisition_id INTEGER NOT NULL UNIQUE REFERENCES transactions(id),
     acquired_on TEXT NOT NULL,
-    details TEXT NOT NULL CHECK(json_valid(details)) CHECK(acquired_on IS json_extract(details,'$.acquired_on')),
+    cost_account TEXT NOT NULL,
+    accumulated_account TEXT NOT NULL,
+    expense_account TEXT NOT NULL,
+    details TEXT NOT NULL CHECK(json_valid(details))
+        CHECK(acquired_on IS json_extract(details,'$.acquired_on'))
+        CHECK(cost_account IS json_extract(details,'$.accounts.cost'))
+        CHECK(accumulated_account IS json_extract(details,'$.accounts.accumulated'))
+        CHECK(expense_account IS json_extract(details,'$.accounts.expense')),
+    FOREIGN KEY(company_slug,cost_account) REFERENCES accounts(company_slug,code),
+    FOREIGN KEY(company_slug,accumulated_account) REFERENCES accounts(company_slug,code),
+    FOREIGN KEY(company_slug,expense_account) REFERENCES accounts(company_slug,code),
     UNIQUE(company_slug,id)
 ) STRICT;
 

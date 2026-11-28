@@ -1,5 +1,7 @@
 use super::asset_from_row;
-use super::{Asset, AssetView, Depreciation, MovementKind, movements};
+use super::{
+    Asset, AssetView, Depreciation, Movement, MovementKind, decode_text, movement_from_row,
+};
 use crate::{db::companies::Company, error::CliError, output::amounts::MoneyField};
 use beankeeper::types::{AccountCode, Currency};
 use chrono::NaiveDate;
@@ -192,10 +194,36 @@ pub(super) fn read_assets(
         .collect::<rusqlite::Result<_>>()?)
 }
 
+fn movements_through(
+    company: &Company<'_>,
+    as_of: NaiveDate,
+) -> Result<BTreeMap<String, Vec<Movement>>, CliError> {
+    let mut query = company.read().prepare(
+        "SELECT asset_id,transaction_id,kind,date,amount FROM fixed_asset_movements
+          WHERE company_slug=?1 AND date<=?2 ORDER BY asset_id,date,transaction_id",
+    )?;
+    let rows = query.query_map(params![company.slug(), as_of], |row| {
+        movement_from_row(row, decode_text(row, 0)?, 1)
+    })?;
+    let mut by_asset = BTreeMap::<String, Vec<Movement>>::new();
+    for row in rows {
+        let movement = row?;
+        by_asset
+            .entry(movement.asset_id.to_string())
+            .or_default()
+            .push(movement);
+    }
+    Ok(by_asset)
+}
+
 pub(crate) fn list(company: &Company<'_>, as_of: NaiveDate) -> Result<RegisterView, CliError> {
+    let mut histories = movements_through(company, as_of)?;
     let assets: Vec<_> = read_assets(company, Some(as_of))?
         .into_iter()
-        .map(|asset| AssetView::with_history(&asset, &movements(company, &asset.id)?, as_of))
+        .map(|asset| {
+            let history = histories.remove(&asset.id.to_string()).unwrap_or_default();
+            AssetView::with_history(&asset, &history, as_of)
+        })
         .collect::<Result<_, _>>()?;
     let mut totals = BTreeMap::new();
     for asset in &assets {
