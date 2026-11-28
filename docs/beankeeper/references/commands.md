@@ -283,6 +283,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `contractor_tax_worksheet`, `contractor_tax_preview` | Run the redacted 2025 worksheet or preview legacy candidates |
 | `contractor_tax_w9`, `contractor_tax_export` | Import checked identity details and export a protected local artifact using a signed tax-details grant |
 | `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
+| `project_list`, `project_show`, `project_time`, `project_unbilled`, `project_report` | Read project history, budgets, profitability and unbilled work |
+| `project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice` | Set up projects, record and approve work, split journal entries, and prepare invoices |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
@@ -568,6 +570,7 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `company_create`, `company_delete`, `tax_configure`, `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect`,
 `bank_feed_post`, `bank_feed_link`, `payroll_import`, `payroll_fund`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
+`project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
@@ -2310,3 +2313,50 @@ MCP uses the same report request. Set `basis: "cash"` for
 For forecasts, use `kind: "cash-forecast"` with
 `as_of`, `through`, and optional `cadence`, `adjust`, and `link_sources` arrays.
 Each `link_sources` string uses the same syntax as `--link-source`.
+
+## Project accounting
+
+Projects belong to a company and an active customer. Report all amounts in
+integer minor units, and pass the same currency as the posting when allocating
+a line. The split amount belongs to one journal entry, so different lines on
+one transaction can have different allocations. Any remaining amount stays in
+the report's unallocated row.
+
+```bash
+bk --company acme project create --terms '{
+  "code":"oak","name":"Oak installation","customer":"party_…","currency":"USD"
+}'
+bk --company acme project split 42 --date 2026-01-14 --splits '[
+  {"project":"project_…","amount_minor":4200,"billable":"billable"}
+]'
+bk --company acme project record --work '{
+  "project":"project_…","date":"2026-01-14","description":"Installation",
+  "minutes":90,"rate_minor":12000
+}'
+bk --company acme project approve timeentry_… --date 2026-01-15
+bk --company acme project unbilled project_… --from 2026-01-01 --through 2026-01-31
+bk --company acme project budget --budget '{
+  "project":"project_…","month":"2026-01","amount_minor":15000
+}'
+bk --company acme --json project report --month 2026-01 --currency USD --detail
+```
+
+Enter the hourly rate in minor units. Each time line multiplies the rate by
+minutes, divides by 60 and rounds half up to one minor unit. Omit the rate to
+record internal work. For billing, pass the source
+objects returned by `project unbilled` in the `sources` array of the
+`project draft-invoice --invoice` JSON object, alongside `project`, `number`,
+`receivable_account`, `revenue_account`, `from` and `through`. Add an optional
+`tax` object with a VAT code and price mode for all draft lines. Issue the
+returned document ID with `bk document issue` on or after the end of that
+window. Issue claims the selected sources in the same database transaction as
+its journal. Before issue, `project cancel-invoice` leaves those sources
+available to other drafts. After issue, a full `document credit` of a line
+releases its source on the date of the final credit, including VAT when
+applicable. A partial credit leaves that source claimed.
+
+The report recognizes revenue and expenses from posted journal entries, applies
+the last distribution effective at month end, and shows approved unbilled
+sources separately. A journal reversal carries its latest project split into
+the reversing entry, with expense sources blocked while billed. Archiving
+retains the project's reports and prior work.

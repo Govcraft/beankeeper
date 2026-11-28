@@ -334,6 +334,7 @@ impl ReadyMove {
         }
         check_original(tx, company, &original)?;
         let source = SourceLine::load(company, original.id, request)?;
+        super::projects::guard_project_entry(company, source.id)?;
         let accounts = MoveAccounts::try_from((company, source, &request.to_account))?;
         let history = MoveHistory::load(company, original.id, Some(accounts.source.id))?;
         let date = EffectiveDate::try_from((request.date, original.date, history))?;

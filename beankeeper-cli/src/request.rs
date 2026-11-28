@@ -30,6 +30,7 @@ use crate::{
         investment::{InvestmentRequest, InvestmentResponse},
         payroll::{PayrollRequest, PayrollResponse},
         period::{PeriodRequest, PeriodResponse},
+        project::{ProjectRequest, ProjectResponse},
         reconcile::{ReconcileRequest, ReconcileResponse},
         report::{ReportRequest, ReportResponse},
         rule::{RuleRequest, RuleResponse},
@@ -67,6 +68,7 @@ pub enum LedgerRequest {
     Document(DocumentRequest),
     Tax(TaxRequest),
     Expense(ExpenseRequest),
+    Project(ProjectRequest),
     Investment(InvestmentRequest),
     Payroll(PayrollRequest),
     Period(PeriodRequest),
@@ -97,6 +99,7 @@ pub enum LedgerResponse {
     Document(Operation, CompanySlug, DocumentResponse),
     Tax(Operation, CompanySlug, TaxResponse),
     Expense(ExpenseResponse),
+    Project(Operation, CompanySlug, ProjectResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Payroll(PayrollResponse),
     Period(Operation, CompanySlug, PeriodResponse),
@@ -143,6 +146,7 @@ impl LedgerRequest {
             Self::Document(request) => request.operation(),
             Self::Tax(request) => request.operation(),
             Self::Expense(request) => request.operation(),
+            Self::Project(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Payroll(request) => request.operation(),
             Self::Period(request) => request.operation(),
@@ -235,6 +239,11 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::ContractorTax(operation, company, response))
             }
+            Self::Project(request) => {
+                let company = request.company().clone();
+                let response = request.execute(db, actor)?;
+                Ok(LedgerResponse::Project(operation, company, response))
+            }
             Self::Document(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -300,6 +309,9 @@ impl LedgerResponse {
             Self::Company(response) => response.render(cli),
             Self::Tax(operation, company, response) => response.render(cli, *operation, company),
             Self::ContractorTax(operation, company, response) => {
+                response.render(cli, *operation, company)
+            }
+            Self::Project(operation, company, response) => {
                 response.render(cli, *operation, company)
             }
             Self::Document(operation, company, response) => {

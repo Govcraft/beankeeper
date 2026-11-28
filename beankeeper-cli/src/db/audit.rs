@@ -66,6 +66,7 @@ pub(crate) mod grant;
 pub(crate) mod identity_write;
 pub(super) mod investment;
 pub mod payroll;
+pub(crate) mod projects;
 pub mod receipts;
 pub mod restore;
 pub(super) mod savepoint;
@@ -194,6 +195,11 @@ audit_labels! {
         DocumentReview => "document_review",
         VatRate => "vat_rate",
         VatEvidence => "vat_evidence",
+        Project => "project",
+        ProjectWork => "project_work",
+        ProjectDistribution => "project_distribution",
+        ProjectBudget => "project_budget",
+        ProjectInvoice => "project_invoice",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -241,6 +247,11 @@ impl AuditEntity {
             | Self::DocumentReview
             | Self::VatRate
             | Self::VatEvidence
+            | Self::Project
+            | Self::ProjectWork
+            | Self::ProjectDistribution
+            | Self::ProjectBudget
+            | Self::ProjectInvoice
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -303,6 +314,16 @@ audit_labels! {
         DocumentReject => "document_reject",
         VatRateConfigured => "vat_rate_configured",
         VatRecorded => "vat_recorded",
+        ProjectCreate => "project_create",
+        ProjectArchive => "project_archive",
+        ProjectWorkRecord => "project_work_record",
+        ProjectWorkApprove => "project_work_approve",
+        ProjectAllocate => "project_allocate",
+        ProjectBudgetSet => "project_budget_set",
+        ProjectInvoiceDraft => "project_invoice_draft",
+        ProjectInvoiceClaim => "project_invoice_claim",
+        ProjectInvoiceCancel => "project_invoice_cancel",
+        ProjectInvoiceRelease => "project_invoice_release",
         AccountRenamePropose => "account_rename_propose",
         AccountRenameResolve => "account_rename_resolve",
         CorrectionPropose => "correction_propose",
@@ -2100,14 +2121,6 @@ fn reverse_in_scope(
         })
     })?;
     check_subledger_reversal(tx.read(), p.company_slug, p.id)?;
-    let mut original_metadata: serde_json::Value = original
-        .metadata
-        .as_deref()
-        .and_then(metadata::normalize)
-        .map_or_else(
-            || serde_json::json!({}),
-            metadata::NormalizedMetadata::into_value,
-        );
     if let Some(result) = existing_reversal(&company, p)? {
         return Ok(result);
     }
@@ -2160,8 +2173,8 @@ fn reverse_in_scope(
             "reversal was unexpectedly skipped".into(),
         ));
     };
-    original_metadata["reversed_by"] = serde_json::json!(reversal_id);
-    let updated = original_metadata.to_string();
+    projects::mirror_reversal(tx, actor, &company, p.id, reversal_id, date)?;
+    let updated = reversed_metadata(original.metadata.as_deref(), reversal_id);
     conn.execute(
         "UPDATE transactions SET metadata = ?1 WHERE id = ?2 AND company_slug = ?3",
         params![updated, p.id, p.company_slug],
@@ -2211,6 +2224,15 @@ fn check_subledger_reversal(
         ));
     }
     Ok(())
+}
+
+fn reversed_metadata(raw: Option<&str>, reversal: TransactionId) -> String {
+    let mut metadata = raw.and_then(metadata::normalize).map_or_else(
+        || serde_json::json!({}),
+        metadata::NormalizedMetadata::into_value,
+    );
+    metadata["reversed_by"] = serde_json::json!(reversal);
+    metadata.to_string()
 }
 
 pub(super) fn is_reversal(

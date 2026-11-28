@@ -430,6 +430,14 @@ pub(super) fn credit(
         },
         Some(input.line),
     )?;
+    crate::db::audit::projects::apply_invoice_credit(
+        tx,
+        actor,
+        company,
+        &result.allocation.document_id,
+        (input.line, gross),
+        source,
+    )?;
     Ok(DocumentOutcome::Allocations {
         items: vec![result],
         unapplied_minor: None,

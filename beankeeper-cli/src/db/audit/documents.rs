@@ -1,6 +1,6 @@
 //! Audit-owned journal and settlement operations for open items.
 
-mod drafts;
+pub(super) mod drafts;
 mod review;
 mod settlement;
 mod verification;
@@ -111,6 +111,9 @@ fn mutate(
             let record = find_document(&company, &id)?;
             if let Some(issued) = &record.issued {
                 return drafts::repeat_issue(&record, issued, date);
+            }
+            if let Execution::Propose = execution {
+                super::projects::validate_invoice(&company, &record, date)?;
             }
             review::ReviewedMutation::Issue(drafts::prepare_issue(&company, &record, date)?)
         }

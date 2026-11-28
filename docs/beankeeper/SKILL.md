@@ -606,6 +606,19 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk document revoke` | Work with issued invoices, bills and payment allocations |
 | `bk document approve` | Work with issued invoices, bills and payment allocations |
 | `bk document reject` | Work with issued invoices, bills and payment allocations |
+| `bk project create` | Create a customer project with a unique code and accounting currency |
+| `bk project archive` | Archive a project, retaining its work and profitability history |
+| `bk project list` | List company projects, with optional archived projects |
+| `bk project show` | Read a project by ID |
+| `bk project record` | Record dated work with an optional exact hourly billing rate |
+| `bk project approve` | Approve dated work for billing |
+| `bk project time` | List work and approvals for a project |
+| `bk project split` | Attribute exact shares of one posted journal entry to projects |
+| `bk project budget` | Set the monthly project expense target in minor units |
+| `bk project unbilled` | List unclaimed approved time and billable expenses for a project and date window |
+| `bk project draft-invoice` | Draft an invoice from exact source IDs. Sources are claimed when the invoice is issued |
+| `bk project cancel-invoice` | Cancel an unissued project invoice draft |
+| `bk project report` | Report monthly project profit, budget variance and unallocated amounts in one currency |
 | `bk counterparty create` | Add a customer, vendor, or both to a company |
 | `bk counterparty list` | Search and page through company counterparties |
 | `bk counterparty show` | Inspect an active or archived counterparty by ID |
