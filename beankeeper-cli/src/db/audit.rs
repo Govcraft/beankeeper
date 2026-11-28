@@ -3283,8 +3283,11 @@ mod tests {
     use crate::db::test_support::fixture_actor;
 
     use super::*;
-    static TEST_COMPANY: std::sync::LazyLock<crate::db::companies::CompanySlug> =
-        std::sync::LazyLock::new(|| "acme".parse().expect("fixture company"));
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn test_company() -> Result<crate::db::companies::CompanySlug, CliError> {
+        "acme".parse()
+    }
 
     use crate::db::Db;
     use crate::identity::{Admin, Granted, Reconcile};
@@ -3336,12 +3339,13 @@ mod tests {
 
     #[test]
     fn receipt_snapshot_errors_and_hashes_cover_typed_links() -> Result<(), CliError> {
-        let db = seed();
+        let db = seed()?;
+        let acme = test_company()?;
         let conn = db.conn();
         conn.execute(
             "INSERT INTO transactions (company_slug, description, currency, date)
              VALUES (?1, 'Linked posting', 'USD', '2026-01-02')",
-            [&*TEST_COMPANY],
+            [&acme],
         )?;
         let linked: TransactionId = conn.last_insert_rowid().try_into()?;
         let actor = fixture_actor("bookkeeper");
@@ -3349,7 +3353,7 @@ mod tests {
             conn,
             &actor,
             AuditChange {
-                company_slug: Some(&TEST_COMPANY),
+                company_slug: Some(&acme),
                 entity: AuditEntity::Transaction,
                 entity_id: "1",
                 action: AuditAction::Reverse,
@@ -3360,7 +3364,7 @@ mod tests {
         verify_hash_chain(db.read())?;
         let receipts = receipts::list_receipts(
             &db,
-            &TEST_COMPANY,
+            &acme,
             receipts::AuditCursor::default(),
             receipts::ReceiptPageLimit::default(),
         );
@@ -3400,39 +3404,35 @@ mod tests {
         assert!(<AuditAction as FromStr>::from_str("other").is_err());
     }
 
-    fn seed() -> Db {
-        let db = Db::open_in_memory().expect("open in-memory db");
+    fn seed() -> Result<Db, CliError> {
+        let db = Db::open_in_memory()?;
         let conn = db.conn();
         conn.execute(
             "INSERT INTO companies (slug, name) VALUES ('acme', 'Acme')",
             [],
-        )
-        .expect("insert company");
+        )?;
         conn.execute(
             "INSERT INTO accounts (company_slug, code, name, type) \
              VALUES ('acme', '1000', 'Cash', 'asset')",
             [],
-        )
-        .expect("insert account");
+        )?;
         conn.execute(
             "INSERT INTO transactions (company_slug, description, currency, date) \
              VALUES ('acme', 'Opening', 'USD', '2026-01-01')",
             [],
-        )
-        .expect("insert txn");
+        )?;
         conn.execute(
             "INSERT INTO entries \
              (transaction_id, account_code, company_slug, direction, amount, status) \
              VALUES (1, '1000', 'acme', 'debit', 100, 'uncleared')",
             [],
-        )
-        .expect("insert entry");
-        db
+        )?;
+        Ok(db)
     }
 
     #[test]
-    fn creation_rolls_back_when_attribution_cannot_be_recorded() -> Result<(), CliError> {
-        let db = seed();
+    fn creation_rolls_back_when_attribution_cannot_be_recorded() -> TestResult {
+        let db = seed()?;
         let connection = db.conn();
         connection.execute_batch(
             "CREATE TRIGGER reject_creation_audit BEFORE INSERT ON audit_log
@@ -3451,7 +3451,8 @@ mod tests {
             Granted::<Admin>::with_db(&db, &actor, |grant| {
                 crate::db::create_company(grant, &"new".parse()?, &"New".parse()?, None)
             })
-            .expect_err("company creation must fail on audit error"),
+            .err()
+            .ok_or("company creation must fail on audit error")?,
         );
         rejected(
             Granted::<Admin>::with_db(&db, &actor, |grant| {
@@ -3466,7 +3467,8 @@ mod tests {
                     },
                 )
             })
-            .expect_err("account creation must fail on audit error"),
+            .err()
+            .ok_or("account creation must fail on audit error")?,
         );
         let transaction_id = crate::db::ids::TransactionId::try_from(1)?;
         let attachment = crate::db::StoreAttachmentParams {
@@ -3478,13 +3480,11 @@ mod tests {
             hash: None,
             original_filename: None,
         };
-        crate::identity::Granted::<crate::identity::Post>::with_db(&db, &actor, |grant| {
-            rejected(
-                crate::db::store_attachment(grant, &attachment)
-                    .expect_err("attachment creation must fail on audit error"),
-            );
-            Ok(())
-        })?;
+        let attached =
+            crate::identity::Granted::<crate::identity::Post>::with_db(&db, &actor, |grant| {
+                Ok(crate::db::store_attachment(grant, &attachment).err())
+            })?;
+        rejected(attached.ok_or("attachment creation must fail on audit error")?);
         assert!(!crate::db::company_exists(
             ReadConn::physical(connection),
             &"new".parse()?
@@ -3534,52 +3534,51 @@ mod tests {
     }
 
     #[test]
-    fn set_entry_status_records_transition() {
-        let db = seed();
+    fn set_entry_status_records_transition() -> TestResult {
+        let db = seed()?;
         let actor = fixture_actor("tester");
         let prev = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             set_entry_status(
                 grant,
-                &"acme".parse().expect("fixture company"),
-                fixture_txn(1),
-                fixture_entry(1),
+                &"acme".parse()?,
+                fixture_txn(1)?,
+                fixture_entry(1)?,
                 EntryStatus::Cleared,
             )
-        })
-        .expect("clear entry");
+        })?;
         assert_eq!(prev, EntryStatus::Uncleared);
 
-        let status: String = db
-            .conn()
-            .query_row("SELECT status FROM entries WHERE id = 1", [], |r| r.get(0))
-            .expect("read status");
+        let status: String =
+            db.conn()
+                .query_row("SELECT status FROM entries WHERE id = 1", [], |r| r.get(0))?;
         assert_eq!(status, "cleared");
 
         let (actor_col, action, before, after): (String, String, Option<String>, Option<String>) =
-            db.conn()
-                .query_row(
-                    "SELECT actor, action, before, after FROM audit_log \
+            db.conn().query_row(
+                "SELECT actor, action, before, after FROM audit_log \
                  WHERE entity = 'entry' AND entity_id = '1'",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .expect("read audit row");
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
         assert_eq!(actor_col, "tester");
         assert_eq!(action, "status_change");
         assert!(before.unwrap_or_default().contains("uncleared"));
         assert!(after.unwrap_or_default().contains("cleared"));
+        Ok(())
     }
 
     #[test]
-    fn set_entry_status_unknown_entry_errors_and_records_nothing() {
-        let db = seed();
+    fn set_entry_status_unknown_entry_errors_and_records_nothing() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
+        let (transaction, missing_entry) = (fixture_txn(1)?, fixture_entry(999)?);
         let result = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             set_entry_status(
                 grant,
-                &"acme".parse().expect("fixture company"),
-                fixture_txn(1),
-                fixture_entry(999),
+                &acme,
+                transaction,
+                missing_entry,
                 EntryStatus::Cleared,
             )
         });
@@ -3587,40 +3586,36 @@ mod tests {
 
         let count: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
-            .expect("count audit");
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))?;
         assert_eq!(count, 0, "failed mutation must leave no audit row");
+        Ok(())
     }
 
     #[test]
-    fn delete_account_snapshots_before_removal() {
-        let db = seed();
+    fn delete_account_snapshots_before_removal() -> TestResult {
+        let db = seed()?;
         let actor = fixture_actor("tester");
         // Delete an unused account without touching posted entries.
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             super::super::create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &"acme".parse()?,
                     code: "1100",
                     name: "Unused Cash",
                     account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
             )
-        })
-        .expect("create unused account");
+        })?;
         Granted::<Admin>::with_db(&db, &actor, |grant| {
             delete_account(
                 grant,
                 &"acme".parse()?,
                 "1100",
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                crate::confirmation::Confirmed::forced(true)?,
             )
-        })
-        .expect("delete account");
+        })?;
 
         let (action, before): (String, Option<String>) = db
             .conn()
@@ -3628,82 +3623,90 @@ mod tests {
                 "SELECT action, before FROM audit_log WHERE entity = 'account' ORDER BY id DESC LIMIT 1",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .expect("read audit");
+            )?;
         assert_eq!(action, "account_delete");
         assert!(before.unwrap_or_default().contains("Cash"));
+        Ok(())
     }
 
-    fn fixture_txn(id: i64) -> TransactionId {
-        id.try_into().expect("positive fixture transaction ID")
+    fn fixture_txn(id: i64) -> Result<TransactionId, CliError> {
+        id.try_into()
     }
 
-    fn fixture_entry(id: i64) -> EntryId {
-        id.try_into().expect("positive fixture entry ID")
+    fn fixture_entry(id: i64) -> Result<EntryId, CliError> {
+        id.try_into()
     }
 
-    fn req<'a>(amount: Option<i64>, date: &str, stmt: Option<&'a str>) -> ClearRequest<'a> {
-        ClearRequest {
-            company_slug: &TEST_COMPANY,
-            transaction_id: fixture_txn(1),
-            entry_id: fixture_entry(1),
-            amount: amount.map(|minor| minor.try_into().expect("positive test clearing amount")),
-            date: date.parse().expect("test clearing date"),
+    fn req<'a>(
+        company: &'a crate::db::companies::CompanySlug,
+        amount: Option<i64>,
+        date: &str,
+        stmt: Option<&'a str>,
+    ) -> TestResult<ClearRequest<'a>> {
+        Ok(ClearRequest {
+            company_slug: company,
+            transaction_id: fixture_txn(1)?,
+            entry_id: fixture_entry(1)?,
+            amount: amount.map(TryInto::try_into).transpose()?,
+            date: date.parse()?,
             statement: stmt,
             status: ClearingStatus::Cleared,
-        }
+        })
     }
 
-    fn entry_status(db: &Db) -> String {
-        db.conn()
-            .query_row("SELECT status FROM entries WHERE id = 1", [], |r| r.get(0))
-            .expect("read status")
+    fn entry_status(db: &Db) -> Result<String, CliError> {
+        Ok(db
+            .conn()
+            .query_row("SELECT status FROM entries WHERE id = 1", [], |r| r.get(0))?)
     }
 
-    fn audit_count(db: &Db) -> i64 {
-        db.conn()
-            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
-            .expect("count audit")
+    fn audit_count(db: &Db) -> Result<i64, CliError> {
+        Ok(db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))?)
     }
 
     #[test]
-    fn partial_clears_keep_status_in_sync_and_audit() {
-        let db = seed();
+    fn partial_clears_keep_status_in_sync_and_audit() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
 
-        let o = clear_entry_fixture(&db, &actor, &req(Some(30), "2026-01-31", Some("S1")))
-            .expect("partial clear");
+        let o = clear_entry_fixture(
+            &db,
+            &actor,
+            &req(&acme, Some(30), "2026-01-31", Some("S1"))?,
+        )?;
         assert_eq!(o.action, ClearAction::Cleared);
         assert_eq!(
             (o.amount, o.cleared_amount, o.remaining_amount),
             (30, 30, 70)
         );
         assert_eq!(o.entry_status, EntryStatus::Uncleared);
-        assert_eq!(entry_status(&db), "uncleared");
+        assert_eq!(entry_status(&db)?, "uncleared");
 
-        let o = clear_entry_fixture(&db, &actor, &req(None, "2026-02-28", Some("S2")))
-            .expect("clear remainder");
+        let o = clear_entry_fixture(&db, &actor, &req(&acme, None, "2026-02-28", Some("S2"))?)?;
         assert_eq!(
             (o.amount, o.cleared_amount, o.remaining_amount),
             (70, 100, 0)
         );
-        assert_eq!(entry_status(&db), "cleared");
+        assert_eq!(entry_status(&db)?, "cleared");
 
         // Re-running S1 is a skip and leaves no audit row.
-        let o = clear_entry_fixture(&db, &actor, &req(Some(30), "2026-01-31", Some("S1")))
-            .expect("rerun");
+        let o = clear_entry_fixture(
+            &db,
+            &actor,
+            &req(&acme, Some(30), "2026-01-31", Some("S1"))?,
+        )?;
         assert_eq!(o.action, ClearAction::Skipped);
-        assert_eq!(audit_count(&db), 2);
+        assert_eq!(audit_count(&db)?, 2);
 
-        let after: String = db
-            .conn()
-            .query_row(
-                "SELECT after FROM audit_log ORDER BY id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .expect("read audit");
-        let v: serde_json::Value = serde_json::from_str(&after).expect("json");
+        let after: String = db.conn().query_row(
+            "SELECT after FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )?;
+        let v: serde_json::Value = serde_json::from_str(&after)?;
         assert_eq!(v["status"], "cleared");
         assert_eq!(v["cleared_amount"], 100);
         assert_eq!(v["op"], "clear");
@@ -3711,73 +3714,80 @@ mod tests {
         assert_eq!(v["clearings"][0]["amount"], 70);
 
         // Reconcile in full promotes both clearings.
-        let mut r = req(None, "2026-03-01", None);
+        let mut r = req(&acme, None, "2026-03-01", None)?;
         r.status = ClearingStatus::Reconciled;
-        let o = clear_entry_fixture(&db, &actor, &r).expect("reconcile");
+        let o = clear_entry_fixture(&db, &actor, &r)?;
         assert_eq!(o.action, ClearAction::Reconciled);
-        assert_eq!(entry_status(&db), "reconciled");
+        assert_eq!(entry_status(&db)?, "reconciled");
 
         // Unclear one statement drops back to uncleared.
         let o = Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             unclear_entry(
                 grant,
-                &"acme".parse().expect("fixture company"),
-                fixture_txn(1),
-                fixture_entry(1),
+                &"acme".parse()?,
+                fixture_txn(1)?,
+                fixture_entry(1)?,
                 Some("S2"),
             )
-        })
-        .expect("unclear");
+        })?;
         assert_eq!((o.amount, o.cleared_amount), (70, 30));
-        assert_eq!(entry_status(&db), "uncleared");
+        assert_eq!(entry_status(&db)?, "uncleared");
+        Ok(())
     }
 
     #[test]
-    fn over_clear_fails_without_side_effects() {
-        let db = seed();
+    fn over_clear_fails_without_side_effects() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
-        clear_entry_fixture(&db, &actor, &req(Some(60), "2026-01-31", None)).expect("clear 60");
-        let err = clear_entry_fixture(&db, &actor, &req(Some(41), "2026-01-31", None));
+        clear_entry_fixture(&db, &actor, &req(&acme, Some(60), "2026-01-31", None)?)?;
+        let err = clear_entry_fixture(&db, &actor, &req(&acme, Some(41), "2026-01-31", None)?);
         assert!(matches!(err, Err(CliError::Validation(_))));
-        assert_eq!(audit_count(&db), 1);
+        assert_eq!(audit_count(&db)?, 1);
+        Ok(())
     }
 
     #[test]
-    fn atomically_rolls_back_the_whole_batch() {
-        let db = seed();
+    fn atomically_rolls_back_the_whole_batch() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
+        let first = req(&acme, Some(50), "2026-01-31", Some("S1"))?;
+        let second = req(&acme, Some(51), "2026-01-31", Some("S2"))?;
         Granted::<Reconcile>::with_db(&db, &actor, |grant| {
             let result = with_reconciliation(grant, |writer| {
-                writer.clear_entry(&req(Some(50), "2026-01-31", Some("S1")))?;
-                writer.clear_entry(&req(Some(51), "2026-01-31", Some("S2")))
+                writer.clear_entry(&first)?;
+                writer.clear_entry(&second)
             });
             assert!(result.is_err());
             Ok(())
-        })
-        .expect("commit after the failed clearance batch was rolled back");
+        })?;
         let n: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM entry_clearings", [], |r| r.get(0))
-            .expect("count");
+            .query_row("SELECT COUNT(*) FROM entry_clearings", [], |r| r.get(0))?;
         assert_eq!(n, 0);
-        assert_eq!(audit_count(&db), 0);
+        assert_eq!(audit_count(&db)?, 0);
+        Ok(())
     }
 
     #[test]
-    fn reconciled_dates_are_stored_and_audited() {
-        let db = seed();
+    fn reconciled_dates_are_stored_and_audited() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
-        clear_entry_fixture(&db, &actor, &req(Some(40), "2026-01-31", Some("S1")))
-            .expect("clear S1");
+        clear_entry_fixture(
+            &db,
+            &actor,
+            &req(&acme, Some(40), "2026-01-31", Some("S1"))?,
+        )?;
 
         // Promote S1 in February: cleared_date stays, reconciled_date is set.
-        let mut r = req(None, "2026-02-10", Some("S1"));
+        let mut r = req(&acme, None, "2026-02-10", Some("S1"))?;
         r.status = ClearingStatus::Reconciled;
-        let o = clear_entry_fixture(&db, &actor, &r).expect("promote S1");
+        let o = clear_entry_fixture(&db, &actor, &r)?;
         assert_eq!(o.action, ClearAction::Reconciled);
-        let company = Company::bind(db.read(), "acme".parse().expect("fixture company"))
-            .expect("bind clearing company");
-        let rows = list_clearings(&company, fixture_entry(1)).expect("list");
+        let company = Company::bind(db.read(), "acme".parse()?)?;
+        let rows = list_clearings(&company, fixture_entry(1)?)?;
         assert_eq!(rows[0].cleared_on().to_string(), "2026-01-31");
         assert_eq!(
             rows[0]
@@ -3788,23 +3798,20 @@ mod tests {
             Some("2026-02-10")
         );
 
-        let after: String = db
-            .conn()
-            .query_row(
-                "SELECT after FROM audit_log ORDER BY id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .expect("read audit");
-        let v: serde_json::Value = serde_json::from_str(&after).expect("json");
+        let after: String = db.conn().query_row(
+            "SELECT after FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )?;
+        let v: serde_json::Value = serde_json::from_str(&after)?;
         assert_eq!(v["op"], "reconcile");
         assert_eq!(v["clearings"][0]["reconciled_date"], "2026-02-10");
 
         // A clearing created directly as reconciled gets both dates.
-        let mut r = req(Some(60), "2026-03-01", Some("S2"));
+        let mut r = req(&acme, Some(60), "2026-03-01", Some("S2"))?;
         r.status = ClearingStatus::Reconciled;
-        clear_entry_fixture(&db, &actor, &r).expect("reconcile S2");
-        let rows = list_clearings(&company, fixture_entry(1)).expect("list");
+        clear_entry_fixture(&db, &actor, &r)?;
+        let rows = list_clearings(&company, fixture_entry(1)?)?;
         assert_eq!(rows[1].cleared_on().to_string(), "2026-03-01");
         assert_eq!(
             rows[1]
@@ -3814,67 +3821,56 @@ mod tests {
                 .as_deref(),
             Some("2026-03-01")
         );
-        assert_eq!(entry_status(&db), "reconciled");
+        assert_eq!(entry_status(&db)?, "reconciled");
 
         // Locked: a cleared request on the reconciled entry fails, no audit.
-        let n = audit_count(&db);
-        let err = clear_entry_fixture(&db, &actor, &req(None, "2026-03-02", None));
+        let n = audit_count(&db)?;
+        let err = clear_entry_fixture(&db, &actor, &req(&acme, None, "2026-03-02", None)?);
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
-        assert_eq!(audit_count(&db), n);
+        assert_eq!(audit_count(&db)?, n);
+        Ok(())
     }
 
     #[test]
-    fn clearings_are_visible_only_in_the_entry_company() {
-        let db = seed();
+    fn clearings_are_visible_only_in_the_entry_company() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
-        clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
+        clear_entry_fixture(&db, &actor, &req(&acme, None, "2026-01-31", Some("S1"))?)?;
         Granted::<Admin>::with_db(&db, &actor, |grant| {
-            crate::db::create_company(
-                grant,
-                &"other".parse().expect("valid company"),
-                &"Other".parse()?,
-                None,
-            )
-        })
-        .expect("create company");
+            crate::db::create_company(grant, &"other".parse()?, &"Other".parse()?, None)
+        })?;
 
-        let company = Company::bind(db.read(), "acme".parse().expect("fixture company"))
-            .expect("bind clearing company");
-        assert_eq!(
-            list_clearings(&company, fixture_entry(1))
-                .expect("list own clearings")
-                .len(),
-            1
-        );
+        let company = Company::bind(db.read(), "acme".parse()?)?;
+        assert_eq!(list_clearings(&company, fixture_entry(1)?)?.len(), 1);
 
-        let other = Company::bind(db.read(), "other".parse().expect("fixture company"))
-            .expect("bind other company");
-        assert_eq!(
-            list_clearings(&other, fixture_entry(1)).expect("list foreign clearings"),
-            []
-        );
+        let other = Company::bind(db.read(), "other".parse()?)?;
+        assert_eq!(list_clearings(&other, fixture_entry(1)?)?, []);
+        Ok(())
     }
 
     #[test]
-    fn invalid_dates_fail_without_side_effects() {
-        let db = seed();
+    fn invalid_dates_fail_without_side_effects() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
         // Transaction is dated 2026-01-01.
-        let err = clear_entry_fixture(&db, &actor, &req(None, "2025-12-31", None));
+        let err = clear_entry_fixture(&db, &actor, &req(&acme, None, "2025-12-31", None)?);
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
 
-        clear_entry_fixture(&db, &actor, &req(None, "2026-01-31", Some("S1"))).expect("clear");
-        let mut r = req(None, "2026-01-30", Some("S1"));
+        clear_entry_fixture(&db, &actor, &req(&acme, None, "2026-01-31", Some("S1"))?)?;
+        let mut r = req(&acme, None, "2026-01-30", Some("S1"))?;
         r.status = ClearingStatus::Reconciled;
         let err = clear_entry_fixture(&db, &actor, &r);
         assert!(matches!(err, Err(CliError::Validation(_))), "{err:?}");
-        assert_eq!(audit_count(&db), 1);
-        assert_eq!(entry_status(&db), "cleared");
+        assert_eq!(audit_count(&db)?, 1);
+        assert_eq!(entry_status(&db)?, "cleared");
+        Ok(())
     }
 
     #[test]
-    fn schema_rejects_inconsistent_reconciled_dates() {
-        let db = seed();
+    fn schema_rejects_inconsistent_reconciled_dates() -> TestResult {
+        let db = seed()?;
         let insert = |status: &str, cleared: &str, reconciled: Option<&str>| {
             db.conn().execute(
                 "INSERT INTO entry_clearings \
@@ -3888,45 +3884,42 @@ mod tests {
         assert!(insert("cleared", "2026-01-31", Some("2026-02-01")).is_err());
         assert!(insert("reconciled", "2026-01-31", Some("2026-01-31")).is_ok());
         assert!(insert("cleared", "2026-01-31", None).is_ok());
+        Ok(())
     }
 
     #[test]
-    fn correlate_partner_ignores_word_correlate_in_memo() {
-        let db = seed();
+    fn correlate_partner_ignores_word_correlate_in_memo() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let conn = db.conn();
         conn.execute(
             "INSERT INTO companies (slug, name) VALUES ('beta', 'Beta')",
             [],
-        )
-        .expect("insert company");
+        )?;
         // Legacy free-text metadata that mentions the word "correlate".
         conn.execute(
             "INSERT INTO transactions (company_slug, description, currency, date, metadata) \
              VALUES ('beta', 'Partner', 'USD', '2026-01-01', 'please \"correlate\" later')",
             [],
-        )
-        .expect("insert partner");
+        )?;
         let partner_id = conn.last_insert_rowid();
         let actor = fixture_actor("tester");
         savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| {
             correlate_partner(
                 tx,
                 &actor,
-                &TEST_COMPANY,
-                fixture_txn(1),
+                &acme,
+                fixture_txn(1)?,
                 crate::db::ids::fixture_id(partner_id),
             )
-        })
-        .expect("correlate");
+        })?;
 
-        let meta: String = conn
-            .query_row(
-                "SELECT metadata FROM transactions WHERE id = ?1",
-                params![partner_id],
-                |r| r.get(0),
-            )
-            .expect("read metadata");
-        let value: serde_json::Value = serde_json::from_str(&meta).expect("metadata is JSON");
+        let meta: String = conn.query_row(
+            "SELECT metadata FROM transactions WHERE id = ?1",
+            params![partner_id],
+            |r| r.get(0),
+        )?;
+        let value: serde_json::Value = serde_json::from_str(&meta)?;
         assert_eq!(value["correlate"], serde_json::json!(1));
         assert_eq!(
             value["memo"],
@@ -3938,28 +3931,27 @@ mod tests {
             savepoint::with_audited_tx(conn, "sp_correlate_fixture", |tx| correlate_partner(
                 tx,
                 &actor,
-                &TEST_COMPANY,
-                fixture_txn(1),
+                &acme,
+                fixture_txn(1)?,
                 crate::db::ids::fixture_id(partner_id)
             ))
             .is_err()
         );
+        Ok(())
     }
 
     #[test]
-    fn delete_account_missing_errors() {
-        let db = seed();
+    fn delete_account_missing_errors() -> TestResult {
+        let db = seed()?;
+        let acme = test_company()?;
         let actor = fixture_actor("tester");
+        let confirmed = crate::confirmation::Confirmed::forced(true)?;
         assert!(
             Granted::<Admin>::with_db(&db, &actor, |grant| {
-                delete_account(
-                    grant,
-                    &"acme".parse()?,
-                    "9999",
-                    crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
-                )
+                delete_account(grant, &acme, "9999", confirmed)
             })
             .is_err()
         );
+        Ok(())
     }
 }
