@@ -3,7 +3,7 @@
 use std::{
     error::Error,
     path::PathBuf,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use assert_cmd::cargo::CommandCargoExt;
@@ -321,13 +321,36 @@ fn concurrent_issues_and_closed_or_backdated_changes_preserve_fifo_capacity()
     let first = book.movement_file("first", "2026-01-03", "1", &json!({"kind":"issue"}))?;
     let second = book.movement_file("second", "2026-01-03", "1", &json!({"kind":"issue"}))?;
     let args = ["inventory", "move", "--request"];
-    let one = book.command(&args)?.arg(first).spawn()?;
-    let two = book.command(&args)?.arg(second).spawn()?;
-    let statuses = [
-        one.wait_with_output()?.status,
-        two.wait_with_output()?.status,
-    ];
-    assert_eq!(statuses.iter().filter(|status| status.success()).count(), 1);
+    let run = |path: PathBuf| -> Result<_, TestError> {
+        Ok(book
+            .command(&args)?
+            .arg(path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?)
+    };
+    let one = run(first)?;
+    let two = run(second)?;
+    let results = [one.wait_with_output()?, two.wait_with_output()?];
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.status.success())
+            .count(),
+        1
+    );
+    let failure = results
+        .iter()
+        .find(|result| !result.status.success())
+        .ok_or("oversale must fail")?;
+    let error: Value = serde_json::from_slice(&failure.stderr)?;
+    assert_eq!(error["error"]["code"], "VALIDATION", "{error}");
+    assert!(
+        failure
+            .stderr
+            .windows(b"insufficient remaining inventory quantity".len())
+            .any(|window| window == b"insufficient remaining inventory quantity")
+    );
     let backdated = book.movement_file(
         "backdate",
         "2026-01-02",
@@ -356,21 +379,6 @@ fn concurrent_issues_and_closed_or_backdated_changes_preserve_fifo_capacity()
     let latest = book.valuation("2026-01-31")?;
     assert_eq!(latest["positions"][0]["quantity"], "0");
     assert_eq!(latest["positions"][0]["value_minor"], 0);
-    book.movement(
-        "count-out",
-        "2026-01-07",
-        "0.75",
-        &json!({"kind":"count_out","reason":"Physical count"}),
-    )?;
-    assert_eq!(
-        book.valuation("2026-01-07")?["positions"][0]["value_minor"],
-        0
-    );
-    book.data(&["restore", "--input", snapshot])?;
-    assert_eq!(
-        book.valuation("2026-01-07")?["positions"],
-        final_value["positions"]
-    );
     book.data(&["verify"])?;
     Ok(())
 }

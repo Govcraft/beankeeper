@@ -36,7 +36,7 @@ Save this document as `receipt.json` and run `bk --company acme inventory move -
 | Movement kind | Fields besides `kind` | Accounting |
 |---|---|---|
 | `receipt` | `vendor`, `total_minor` | Debit inventory and credit GRNI at receipt cost. |
-| `issue` | Optional `customer` | Debit COGS and credit inventory using the oldest available lots. Supply a customer to match an invoice. |
+| `issue` | Optional `customer` | Debit COGS and credit inventory using the oldest available lots. Supply the customer to check it against an invoice match. |
 | `customer_return` | `shipment` | Debit inventory and credit COGS at the original shipment's carrying cost. |
 | `supplier_return` | `receipt` | Debit GRNI and credit inventory using the source receipt lot's remaining cost. |
 | `count_in` | `reason`, `total_minor` | Debit inventory and credit the adjustment account at the recorded cost. |
