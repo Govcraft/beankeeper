@@ -81,6 +81,7 @@ enum Check {
     StatementBatches,
     StatementReconciliations,
     FixedAssets,
+    ExpenseClaims,
     ForeignKeys,
     SqliteIntegrity,
     RowCounts,
@@ -109,6 +110,7 @@ impl Check {
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
             Self::StatementReconciliations => "statement_reconciliations",
+            Self::ExpenseClaims => "expense_claims",
             Self::ForeignKeys => "foreign_keys",
             Self::SqliteIntegrity => "sqlite_integrity",
             Self::RowCounts => "row_counts",
@@ -283,6 +285,9 @@ impl VerifiedLedger {
         }
         if version >= schema::FIXED_ASSETS_SCHEMA_VERSION {
             Check::FixedAssets.record(super::fixed_assets::verify(reader), &mut checks)?;
+        }
+        if version >= schema::EXPENSE_CLAIMS_SCHEMA_VERSION {
+            Check::ExpenseClaims.record(super::expense_claims::verify(reader), &mut checks)?;
         }
         Check::ForeignKeys.record(verify_foreign_keys(reader), &mut checks)?;
         Check::SqliteIntegrity.record(verify_integrity(reader), &mut checks)?;

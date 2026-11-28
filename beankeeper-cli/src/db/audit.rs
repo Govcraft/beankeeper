@@ -40,7 +40,7 @@ use crate::db::ids::{
 use crate::error::CliError;
 
 mod actor;
-mod attachment;
+pub(super) mod attachment;
 pub(crate) mod bank_feed;
 pub use actor::{Actor, ActorLabel, BlankActorLabel};
 mod client_hint;
@@ -59,6 +59,7 @@ pub(crate) mod counterparties;
 pub(crate) mod documents;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
+pub(super) mod expense_claims;
 pub(super) mod fixed_assets;
 pub(crate) mod grant;
 pub(crate) mod identity_write;
@@ -180,6 +181,8 @@ audit_labels! {
         Entry => "entry",
         Transaction => "transaction",
         TransactionLink => "transaction_link",
+        ReceiptIntake => "receipt_intake",
+        ExpenseClaimRevision => "expense_claim_revision",
         Counterparty => "counterparty",
         TransactionCounterparty => "transaction_counterparty",
         BankFeed => "bank_feed",
@@ -223,6 +226,8 @@ impl AuditEntity {
             | Self::Entry
             | Self::Transaction
             | Self::TransactionLink
+            | Self::ReceiptIntake
+            | Self::ExpenseClaimRevision
             | Self::Counterparty
             | Self::TransactionCounterparty
             | Self::BankFeed
@@ -313,6 +318,8 @@ audit_labels! {
 pub(crate) enum Creation {
     FixedAsset,
     FixedAssetMovement,
+    ReceiptIntake,
+    ExpenseClaimRevision,
     Security,
     Lot,
     Price,
@@ -330,6 +337,8 @@ impl Creation {
         let entity = match self {
             Self::FixedAsset => AuditEntity::FixedAsset,
             Self::FixedAssetMovement => AuditEntity::FixedAssetMovement,
+            Self::ReceiptIntake => AuditEntity::ReceiptIntake,
+            Self::ExpenseClaimRevision => AuditEntity::ExpenseClaimRevision,
             Self::Security => AuditEntity::Security,
             Self::Lot => AuditEntity::Lot,
             Self::Price => AuditEntity::Price,
@@ -2187,6 +2196,11 @@ fn check_subledger_reversal(
     if super::fixed_assets::protects(reader, company, id)? {
         return Err(CliError::Validation(
             "fixed asset movements cannot be reversed as standalone transactions".into(),
+        ));
+    }
+    if super::expense_claims::protects(reader, company, id)? {
+        return Err(CliError::Validation(
+            "expense claim journals require a claim correction".into(),
         ));
     }
     Ok(())

@@ -15,6 +15,7 @@ pub use local_date::LocalDate;
 
 use crate::{
     cli::Cli,
+    commands::expense_claim::{ExpenseRequest, ExpenseResponse},
     commands::{
         account::{AccountRequest, AccountResponse},
         audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
@@ -62,6 +63,7 @@ pub enum LedgerRequest {
     Counterparty(CounterpartyRequest),
     Document(DocumentRequest),
     Tax(TaxRequest),
+    Expense(ExpenseRequest),
     Investment(InvestmentRequest),
     Period(PeriodRequest),
     Reconcile(ReconcileRequest),
@@ -89,6 +91,7 @@ pub enum LedgerResponse {
     Counterparty(Operation, CompanySlug, CounterpartyResponse),
     Document(Operation, CompanySlug, DocumentResponse),
     Tax(Operation, CompanySlug, TaxResponse),
+    Expense(ExpenseResponse),
     Investment(Operation, CompanySlug, InvestmentResponse),
     Period(Operation, CompanySlug, PeriodResponse),
     Reconcile(Operation, CompanySlug, ReconcileResponse),
@@ -118,6 +121,7 @@ impl LedgerRequest {
             Self::Counterparty(request) => request.operation(),
             Self::Document(request) => request.operation(),
             Self::Tax(request) => request.operation(),
+            Self::Expense(request) => request.operation(),
             Self::Investment(request) => request.operation(),
             Self::Period(request) => request.operation(),
             Self::Reconcile(request) => request.operation(),
@@ -189,6 +193,7 @@ impl LedgerRequest {
                 .map(LedgerResponse::AuditReceipts),
             Self::Budget(request) => request.execute(db, actor).map(LedgerResponse::Budget),
             Self::Company(request) => request.execute(db, actor).map(LedgerResponse::Company),
+            Self::Expense(request) => request.execute(db, actor).map(LedgerResponse::Expense),
             Self::Counterparty(request) => {
                 let company = request.company().clone();
                 let response = request.execute(db, actor)?;
@@ -265,6 +270,7 @@ impl LedgerResponse {
             Self::Document(operation, company, response) => {
                 response.render(cli, *operation, company)
             }
+            Self::Expense(response) => response.render(cli),
             Self::Counterparty(operation, company, response) => {
                 response.render(cli, *operation, company)
             }

@@ -141,17 +141,23 @@ pub fn hash_and_store_file(
     source: &Path,
     db_path: &Path,
 ) -> Result<(Sha256Hex, PathBuf), CliError> {
+    hash_and_store(fs::File::open(source)?, db_path)
+}
+
+pub(in crate::db) fn hash_and_store(
+    mut input: impl Read,
+    db_path: &Path,
+) -> Result<(Sha256Hex, PathBuf), CliError> {
     let store_dir = attachment_store_dir(db_path);
     fs::create_dir_all(&store_dir)?;
 
     // Hash the staged bytes so a changing source cannot make the stored file
     // disagree with its content address.
-    let mut file = fs::File::open(source)?;
     let mut staged = tempfile::NamedTempFile::new_in(&store_dir)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = input.read(&mut buf)?;
         if n == 0 {
             break;
         }

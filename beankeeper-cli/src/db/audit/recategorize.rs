@@ -327,6 +327,11 @@ impl ReadyMove {
                 "fixed asset movements cannot be recategorized as standalone transactions".into(),
             ));
         }
+        if crate::db::expense_claims::protects(tx.read(), company.slug(), original.id)? {
+            return Err(CliError::Validation(
+                "expense claim journals require a claim correction".into(),
+            ));
+        }
         check_original(tx, company, &original)?;
         let source = SourceLine::load(company, original.id, request)?;
         let accounts = MoveAccounts::try_from((company, source, &request.to_account))?;

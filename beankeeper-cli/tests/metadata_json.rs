@@ -348,7 +348,11 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
 
 fn revert_to_v8_fixture(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "DROP TABLE vat_evidence; DROP TABLE vat_rate_revisions; DROP TABLE vat_codes;
+        "DROP TABLE expense_claim_journals;
+         DROP TABLE expense_claim_revisions;
+         DROP TABLE expense_claims;
+         DROP TABLE receipt_intakes;
+         DROP TABLE vat_evidence; DROP TABLE vat_rate_revisions; DROP TABLE vat_codes;
          DROP TABLE fixed_asset_movements; DROP TABLE fixed_assets;
          DROP TABLE payroll_funding; DROP TABLE payroll_runs;
          DROP TRIGGER bank_feed_proposal_requires_current_revision;

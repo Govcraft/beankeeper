@@ -8,6 +8,7 @@ pub mod budget;
 pub mod company;
 pub mod counterparty;
 pub mod document;
+pub mod expense_claim;
 pub mod export;
 pub mod fixed_asset;
 pub mod fx;
@@ -82,6 +83,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Counterparty(args) => args.command.operation(),
         Command::Document(args) => args.command.operation(),
         Command::Tax(command) => command.operation(),
+        Command::ExpenseClaim(args) => args.command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -324,6 +326,9 @@ fn dispatch_ledger(
                 Ok(request.map(LedgerRequest::Rule))
             });
         }
+        Command::ExpenseClaim(args) => Some(LedgerRequest::Expense(
+            (require_company(cli)?, &args.command).try_into()?,
+        )),
         Command::Counterparty(args) => Some(LedgerRequest::Counterparty(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
@@ -512,6 +517,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Counterparty(_)
         | Command::Document(_)
         | Command::Tax(_)
+        | Command::ExpenseClaim(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)

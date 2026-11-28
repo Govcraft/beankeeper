@@ -226,6 +226,11 @@ If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent
 Register acquisitions, preview and post straight-line book depreciation, and
 record disposals with gains or losses. See the [fixed asset guide](docs/fixed-assets.md).
 
+## Expense claims
+
+Stage receipts, confirm expense details, and review reimbursements and company
+card expenses. See the [expense claim guide](docs/expense-claims.md).
+
 ## Loan amortization
 
 Calculate a monthly fixed-rate schedule without a database or company:
@@ -578,6 +583,17 @@ For VAT on GBP invoices and bills, see [configured UK invoice VAT](docs/document
 | `fixed_asset_preview` | Preview unposted depreciation charges through a date |
 | `fixed_asset_depreciate` | Post pending full-month depreciation charges |
 | `fixed_asset_dispose` | Dispose of an asset and record the gain or loss |
+| `expense_claim_receipt_intake` | Stage a local receipt and optional supplied OCR findings |
+| `expense_claim_receipt_show` | Read receipt evidence and unconfirmed OCR findings |
+| `expense_claim_create` | Create a draft from confirmed facts and staged evidence |
+| `expense_claim_amend` | Amend a draft or rejected claim |
+| `expense_claim_submit` | Freeze a draft for review |
+| `expense_claim_approve` | Post an approved liability or match a posted card expense |
+| `expense_claim_reject` | Reject a submitted claim with a reason |
+| `expense_claim_record_payment` | Match an existing payment to a reimbursement |
+| `expense_claim_void` | Cancel an approved and unpaid claim |
+| `expense_claim_show` | Show the latest immutable claim revision |
+| `expense_claim_list` | List a book’s most recently created claims |
 | `fx_post` | Record native minor units and their functional value with a rate and unique reference |
 | `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
