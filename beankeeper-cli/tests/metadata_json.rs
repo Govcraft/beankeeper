@@ -323,7 +323,9 @@ fn opening_a_v8_database_migrates_free_text_metadata() {
     {
         let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| panic!("open: {e}"));
         conn.execute_batch(
-            "DROP TRIGGER protect_cash_class_update;
+            "DROP TABLE transaction_counterparties;
+             DROP TABLE counterparties;
+             DROP TRIGGER protect_cash_class_update;
              ALTER TABLE accounts DROP COLUMN cash_class;
              DROP TABLE fx_postings;
              DROP TABLE fx_accounts;

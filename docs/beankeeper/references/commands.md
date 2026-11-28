@@ -271,6 +271,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `company_list`, `company_show` | List companies; show accepts `slug` |
 | `company_create` | `slug`, `name`, optional `description`. Uses the same audited insert as CLI creation and setup book creation |
 | `company_delete` | `slug`. This call confirms deletion, records the prior company in the audit log, and returns `{"deleted":"slug"}`. Returns `VALIDATION` for retained data. Requires `ledger/admin` under enforcement |
+| `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
+| `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
@@ -531,7 +533,9 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 ### Read-only tools
 
-Read-only mode removes `company_create`, `company_delete`, `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
+Read-only mode removes `company_create`, `company_delete`,
+`counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
+`account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
 `txn_meta_set`, `txn_meta_unset`, `txn_clear`,
 `txn_reconcile`, `security_create`, `security_price`, `investment_buy`,

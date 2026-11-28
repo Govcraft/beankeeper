@@ -549,6 +549,8 @@ mutation tools are absent and cannot be called.
 | `company_list`, `company_show` | Inspect companies |
 | `company_create` | Create and audit a company by slug and name, with an optional description |
 | `company_delete` | Confirm and audit deletion of a company with no retained data |
+| `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate` | Manage company customer/vendor records and their audited associations to postings |
+| `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
 | `account_list`, `account_show`, `account_create`, `account_rename`, `account_classify` | Inspect, create, rename, and classify accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
 | `txn_link` | Record an undoable relationship between two transactions in the same book |
