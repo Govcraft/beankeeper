@@ -17,6 +17,7 @@ spool private. Tool callers give only the delivery name.
 | --- | --- | --- |
 | `collection create-link` | `collection_create_link` | Reserve part of an issued invoice and request a hosted URL. Repeat the exact request after a timeout. |
 | `collection apply NAME` | `collection_apply` | Verify one raw delivery and post a matching paid checkout. Retain payout and refund evidence for reconciliation. |
+| `collection resolve-receipt NAME --booked-on DATE` | `collection_resolve_receipt` | Post the same verified paid delivery on an open date after a period lock blocked it. |
 | `collection show ID` | `collection_show` | Show the current checkout state and its known exceptions. |
 | `collection exceptions` | `collection_exceptions` | Review the most recent collection mismatches and blocked receipts. |
 | `collection reconcile-refund --terms JSON` | `collection_reconcile_refund` | Reopen the invoice by the verified refund amount on the reviewed open accounting date. |
@@ -32,6 +33,15 @@ leaves the invoice open until the verified paid event posts. Retry uncertain
 checkout creation with the same key and terms within 20 hours. After that,
 review the provider outcome before attempting a new checkout. Local posting
 and the network call use separate transactions.
+
+When a paid delivery was stored for review solely because its original
+period was closed, ask Stripe to resend the same event with a fresh signature.
+Run `collection resolve-receipt NAME --booked-on YYYY-MM-DD` with an open
+date on or after the original event date. MCP accepts `delivery` and
+`booked_on`. The original exception remains visible with its resolution
+posting, and retrying the same date returns that posting. Account, mode,
+session, amount, currency and outstanding balance are validated again.
+Other exception reasons require manual accounting review.
 
 For a partial refund, use the verified refund ID and a `booked_on` date on or
 after the receipt and refund. The debit to receivables and credit to processor

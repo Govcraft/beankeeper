@@ -2590,21 +2590,28 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
         }
     }
     if table >= AuditTable::Collection {
-        for value in [
-            AuditEntity::InvoiceCollection,
-            AuditEntity::CollectionLink,
-            AuditEntity::CollectionEvent,
-            AuditEntity::StripeDispute,
-            AuditEntity::StripeRefund,
-            AuditEntity::StripeRefundPosting,
-            AuditEntity::StripePayout,
-            AuditEntity::StripePayoutPosting,
-        ] {
-            let _ = write!(entity, ",'{value}'");
-        }
+        append_collection_audit_extensions(entity);
     }
     if table >= AuditTable::Disbursements {
         let _ = write!(entity, ",'{}'", AuditEntity::Disbursement);
+    }
+}
+
+fn append_collection_audit_extensions(entity: &mut String) {
+    use super::audit::AuditEntity;
+    use std::fmt::Write as _;
+
+    for value in [
+        AuditEntity::InvoiceCollection,
+        AuditEntity::CollectionLink,
+        AuditEntity::CollectionEvent,
+        AuditEntity::StripeDispute,
+        AuditEntity::StripeRefund,
+        AuditEntity::StripeRefundPosting,
+        AuditEntity::StripePayout,
+        AuditEntity::StripePayoutPosting,
+    ] {
+        let _ = write!(entity, ",'{value}'");
     }
 }
 

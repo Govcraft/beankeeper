@@ -606,6 +606,7 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `payroll_fund` | Match a posted withdrawal to a payroll liability |
 | `collection_create_link` | Create or recover a Stripe-hosted link for an issued invoice |
 | `collection_apply` | Authenticate and apply a signed Stripe delivery from the trusted host spool |
+| `collection_resolve_receipt` | Post a freshly authenticated receipt blocked solely by a closed period on an explicit open date |
 | `collection_show`, `collection_exceptions` | Inspect collection status and review exceptions |
 | `collection_reconcile_payout`, `collection_payouts` | Reconcile signed net deposits and list payout evidence |
 | `collection_reconcile_refund`, `collection_refunds` | Post approved verified refunds and list their evidence |

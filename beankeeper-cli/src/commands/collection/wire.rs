@@ -5,6 +5,8 @@ use serde::Deserialize;
 
 use crate::{db::companies::CompanySlug, mcp::input_values::Text, payments::stripe::CollectionId};
 
+use crate::request::CalendarDateArg;
+
 use super::{CheckoutArgs, CollectionCommand, DeliveryName, PaymentCollectionRequest};
 
 #[derive(Deserialize, JsonSchema)]
@@ -43,6 +45,26 @@ impl From<CollectionDelivery> for PaymentCollectionRequest {
             company: input.company.into_inner(),
             command: CollectionCommand::Apply {
                 delivery: input.delivery,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CollectionReceiptResolution {
+    company: Text<CompanySlug>,
+    delivery: DeliveryName,
+    booked_on: CalendarDateArg,
+}
+
+impl From<CollectionReceiptResolution> for PaymentCollectionRequest {
+    fn from(input: CollectionReceiptResolution) -> Self {
+        Self {
+            company: input.company.into_inner(),
+            command: CollectionCommand::ResolveReceipt {
+                delivery: input.delivery,
+                booked_on: input.booked_on,
             },
         }
     }

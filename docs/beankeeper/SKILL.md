@@ -564,6 +564,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk collection create-link/apply/show/exceptions/reconcile-payout/payouts/reconcile-refund/refunds/disputes` | Reconcile hosted Stripe collections against invoices and verified processor evidence |
+| `bk collection resolve-receipt` | Post a freshly authenticated receipt deferred by a period lock |
 | `bk account create/list/show/rename/classify/delete` | Manage chart of accounts |
 | `bk fixed-asset register/show/list/preview/depreciate/dispose` | Manage a fixed asset register and book depreciation |
 | `bk expense-claim receipt-intake/receipt-show/create/amend/submit/approve/reject/record-payment/void/show/list` | Process receipt evidence and reviewed expense claims |

@@ -35,6 +35,13 @@ pub enum CollectionCommand {
     CreateLink(CheckoutArgs),
     /// Authenticate and apply one delivery from the private Stripe spool.
     Apply { delivery: DeliveryName },
+    /// Post a freshly authenticated receipt blocked solely by its original accounting date.
+    ResolveReceipt {
+        delivery: DeliveryName,
+        /// Open accounting date on or after the provider event.
+        #[arg(long)]
+        booked_on: CalendarDateArg,
+    },
     /// Inspect a checkout and recorded delivery outcomes.
     Show { collection: CollectionId },
     /// List recent collection exceptions requiring review.
@@ -120,6 +127,7 @@ impl CollectionCommand {
         match self {
             Self::CreateLink(_) => Operation::CollectionCreateLink,
             Self::Apply { .. } => Operation::CollectionApply,
+            Self::ResolveReceipt { .. } => Operation::CollectionResolveReceipt,
             Self::Show { .. } => Operation::CollectionShow,
             Self::Exceptions => Operation::CollectionExceptions,
             Self::ReconcilePayout { .. } => Operation::CollectionReconcilePayout,
@@ -161,6 +169,24 @@ impl PaymentCollectionRequest {
                     None => CollectionOutcome::Unrelated,
                 };
                 CollectionData::Apply(outcome)
+            }
+            CollectionCommand::ResolveReceipt {
+                delivery,
+                booked_on,
+            } => {
+                let host = StripeHost::for_company(&self.company)?;
+                let event = host.delivery(&delivery)?.ok_or_else(|| {
+                    CliError::Validation(
+                        "receipt resolution requires a paid Checkout delivery".into(),
+                    )
+                })?;
+                CollectionData::Apply(store::resolution::resolve(
+                    db,
+                    actor,
+                    &self.company,
+                    &event,
+                    booked_on.into(),
+                )?)
             }
             CollectionCommand::Show { collection } => {
                 CollectionData::Show(store::show(db.read(), &self.company, &collection)?)

@@ -453,7 +453,7 @@ fn execute_confirmable(
     Ok(true)
 }
 
-fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+fn prepare_local_dispatch(cli: &Cli) -> Result<(), CliError> {
     if !matches!(
         cli.command,
         Command::Init { .. }
@@ -475,6 +475,11 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     } else if cli.agent_token.is_some() && matches!(cli.command, Command::Init { .. }) {
         return Err(CliError::Unauthorized("initialization creates a new trust boundary; omit --agent-token and initialize its key afterward".into()));
     }
+    Ok(())
+}
+
+fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+    prepare_local_dispatch(cli)?;
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
         Command::ContractorTax(command) => contractor_tax::run_local(cli, command),

@@ -1,6 +1,12 @@
 //! Exercise a Stripe collection with mock Checkout and signed webhook receipts.
 
-use std::{cell::Cell, error::Error, fs, path::Path};
+use std::{
+    cell::Cell,
+    error::Error,
+    fs,
+    path::Path,
+    process::{Command, Output, Stdio},
+};
 
 use beankeeper::types::{Currency, Money, PositiveMoney};
 use beankeeper_cli::{
@@ -75,15 +81,14 @@ fn collection(
     Ok((invoice, link.collection))
 }
 
-fn send(
-    books: &Books,
+fn stage_delivery(
     spool: &Path,
     key: &str,
     body: &Value,
     authentic: bool,
-) -> Result<Value, Box<dyn Error>> {
+    stamp: i64,
+) -> TestResult {
     let bytes = serde_json::to_vec(body)?;
-    let stamp = Utc::now().timestamp();
     let mut message = format!("{stamp}.").into_bytes();
     message.extend_from_slice(&bytes);
     let secret = if authentic { SECRET } else { "untrusted" };
@@ -94,8 +99,12 @@ fn send(
         spool.join(format!("{key}.sig")),
         format!("t={stamp},v1={}", hex::encode(signature.as_ref())),
     )?;
-    let result = books
-        .command()?
+    Ok(())
+}
+
+fn delivery_command(books: &Books, spool: &Path) -> Result<Command, Box<dyn Error>> {
+    let mut command = books.command()?;
+    command
         .envs([
             ("BK_STRIPE_COMPANY", "acme"),
             ("BK_STRIPE_ACCOUNT", "acct_example"),
@@ -103,24 +112,53 @@ fn send(
             ("BK_STRIPE_CONNECT", "false"),
             ("BK_STRIPE_SIGNING_SECRET", SECRET),
         ])
-        .env("BK_STRIPE_SPOOL", spool)
+        .env("BK_STRIPE_SPOOL", spool);
+    Ok(command)
+}
+
+fn delivery_result(output: &Output) -> Result<Value, Box<dyn Error>> {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    Ok(envelope["data"].clone())
+}
+
+fn send(
+    books: &Books,
+    spool: &Path,
+    key: &str,
+    body: &Value,
+    authentic: bool,
+) -> Result<Value, Box<dyn Error>> {
+    stage_delivery(spool, key, body, authentic, Utc::now().timestamp())?;
+    let result = delivery_command(books, spool)?
         .args(["collection", "apply", key])
         .output()?;
-    if !authentic {
+    if authentic {
+        delivery_result(&result)
+    } else {
         assert!(!result.status.success());
-        return Ok(Value::Null);
+        Ok(Value::Null)
     }
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let output: Value = serde_json::from_slice(&result.stdout)?;
-    Ok(output["data"].clone())
 }
 
 fn event(id: &str, kind: &str, object: &Value) -> Value {
     json!({"id":id,"type":kind,"created":1_767_657_600_i64,"livemode":false,"data":{"object":object}})
+}
+
+fn checkout_receipt(index: usize, link: &CollectionId) -> Value {
+    event(
+        &format!("evt_receipt{index}"),
+        "checkout.session.completed",
+        &json!({
+            "id":format!("cs_test_{index}"), "client_reference_id":link,
+            "mode":"payment", "payment_status":"paid", "amount_total":6000,"currency":"usd",
+            "payment_intent":format!("pi_receipt{index}")
+        }),
+    )
 }
 
 fn pay(
@@ -130,15 +168,7 @@ fn pay(
     link: &CollectionId,
 ) -> Result<Value, Box<dyn Error>> {
     let delivery = format!("receipt{index}");
-    let event = event(
-        &format!("evt_receipt{index}"),
-        "checkout.session.completed",
-        &json!({
-            "id":format!("cs_test_{index}"), "client_reference_id":link,
-            "mode":"payment", "payment_status":"paid", "amount_total":6000,"currency":"usd",
-            "payment_intent":format!("pi_receipt{index}")
-        }),
-    );
+    let event = checkout_receipt(index, link);
     send(books, spool, &delivery, &event, false)?;
     let applied = send(books, spool, &delivery, &event, true)?;
     assert_eq!(applied["status"], "applied");
@@ -240,4 +270,116 @@ fn restored_collection_keeps_audited_receipt_and_reuses_its_posting() -> TestRes
     assert_eq!(receipt["posting"], payment["detail"]);
     assert_eq!(books.data(&["verify"])?["status"], "healthy");
     Ok(())
+}
+
+#[test]
+fn closed_period_receipt_requires_matching_fresh_evidence_and_posts_once() -> TestResult {
+    let books = Books::new()?;
+    books.data(&["account", "create", "1150", "Processor", "--type", "asset"])?;
+    let spool = tempfile::tempdir()?;
+    let provider = CheckoutFixture {
+        timeout: Cell::new(false),
+        sequence: Cell::new(0),
+    };
+    let (_, id) = collection(&books, "STRIPE-REVIEW", 6000, &provider)?;
+    books.data(&["period", "close", "--through", "2026-01-06"])?;
+    let receipt = checkout_receipt(1, &id);
+    let pending = send(&books, spool.path(), "closed", &receipt, true)?;
+    assert_eq!(pending["status"], "review");
+    assert!(
+        pending["detail"]
+            .as_str()
+            .ok_or("missing reason")?
+            .contains("closed period")
+    );
+    assert_eq!(
+        super::row(&books.aging("2026-01-15")?, "STRIPE-REVIEW")?["open_minor"],
+        10_000
+    );
+
+    let mut mismatch = receipt.clone();
+    mismatch["id"] = json!("evt_amount_mismatch");
+    mismatch["data"]["object"]["amount_total"] = json!(5999);
+    assert_eq!(
+        send(&books, spool.path(), "unmatched", &mismatch, true)?["status"],
+        "review"
+    );
+    assert_resolution_rejected(&books, spool.path(), "unmatched", "2026-01-08")?;
+    mismatch["id"] = receipt["id"].clone();
+    stage_delivery(
+        spool.path(),
+        "altered",
+        &mismatch,
+        true,
+        Utc::now().timestamp(),
+    )?;
+    assert_resolution_rejected(&books, spool.path(), "altered", "2026-01-08")?;
+    stage_delivery(
+        spool.path(),
+        "expired",
+        &receipt,
+        true,
+        Utc::now().timestamp() - 301,
+    )?;
+    assert_resolution_rejected(&books, spool.path(), "expired", "2026-01-08")?;
+    assert_resolution_rejected(&books, spool.path(), "closed", "2026-01-05")?;
+    assert_resolution_rejected(&books, spool.path(), "closed", "2026-01-06")?;
+
+    stage_delivery(
+        spool.path(),
+        "fresh",
+        &receipt,
+        true,
+        Utc::now().timestamp(),
+    )?;
+    let result = resolve_concurrently(&books, spool.path())?;
+    assert_eq!(result["status"], "applied");
+    assert_eq!(send(&books, spool.path(), "fresh", &receipt, true)?, result);
+    assert_resolution_rejected(&books, spool.path(), "fresh", "2026-01-09")?;
+    assert_eq!(
+        super::row(&books.aging("2026-01-15")?, "STRIPE-REVIEW")?["open_minor"],
+        4000
+    );
+    let exceptions = books.data(&["collection", "exceptions"])?;
+    let original = exceptions
+        .as_array()
+        .ok_or("no exception list")?
+        .iter()
+        .find(|exception| exception["event"] == "evt_receipt1")
+        .ok_or("missing original review")?;
+    assert_eq!(original["reason"], pending["detail"]);
+    assert_eq!(original["resolved_posting"], result["detail"]);
+    assert_eq!(original["booked_on"], "2026-01-08");
+    assert_eq!(books.data(&["verify"])?["status"], "healthy");
+    Ok(())
+}
+
+fn assert_resolution_rejected(books: &Books, spool: &Path, name: &str, date: &str) -> TestResult {
+    let rejected = delivery_command(books, spool)?
+        .args(["collection", "resolve-receipt", name, "--booked-on", date])
+        .output()?;
+    assert_eq!(rejected.status.code(), Some(3), "{rejected:?}");
+    Ok(())
+}
+
+fn resolve_concurrently(books: &Books, spool: &Path) -> Result<Value, Box<dyn Error>> {
+    let start = || -> Result<_, Box<dyn Error>> {
+        Ok(delivery_command(books, spool)?
+            .args([
+                "collection",
+                "resolve-receipt",
+                "fresh",
+                "--booked-on",
+                "2026-01-08",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?)
+    };
+    let first = start()?;
+    let second = start()?;
+    let first = delivery_result(&first.wait_with_output()?)?;
+    let second = delivery_result(&second.wait_with_output()?)?;
+    assert_eq!(first, second);
+    Ok(first)
 }

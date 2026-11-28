@@ -28,11 +28,26 @@ CREATE TABLE collection_events (
     reason TEXT,
     payment TEXT UNIQUE,
     posting INTEGER UNIQUE REFERENCES transactions(id),
-    PRIMARY KEY (account, event),
+    body_sha256 TEXT NOT NULL CHECK(length(body_sha256)=64),
+    occurred_on TEXT NOT NULL,
+    resolved INTEGER NOT NULL CHECK(resolved IN (0,1)),
+    booked_on TEXT,
+    PRIMARY KEY (account, event, resolved),
+    CHECK((resolved=1) = (booked_on IS NOT NULL)),
+    CHECK(resolved=0 OR (status='applied' AND booked_on>=occurred_on)),
     CHECK((status = 'applied') = (payment IS NOT NULL AND posting IS NOT NULL)),
     CHECK((status = 'review') = (reason IS NOT NULL))
 ) STRICT;
 CREATE INDEX idx_collection_events_collection ON collection_events(collection, status);
+
+CREATE TRIGGER protect_collection_resolution_insert BEFORE INSERT ON collection_events
+WHEN NEW.resolved=1 AND NOT EXISTS (
+    SELECT 1 FROM collection_events old WHERE old.account=NEW.account AND old.event=NEW.event
+      AND old.resolved=0 AND old.collection=NEW.collection AND old.status='review'
+      AND old.reason='receipt date is in a closed period' AND old.body_sha256=NEW.body_sha256
+      AND old.occurred_on=NEW.occurred_on
+)
+BEGIN SELECT RAISE(ABORT, 'receipt resolution requires matching closed-period evidence'); END;
 
 CREATE INDEX idx_invoice_collections_invoice ON invoice_collections(company_slug, invoice);
 

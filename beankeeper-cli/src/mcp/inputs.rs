@@ -53,7 +53,8 @@ pub(crate) use crate::commands::payroll::wire::{
     PayrollFund, PayrollImport, PayrollPreview, PayrollShow,
 };
 pub(crate) use crate::commands::collection::wire::{
-    CollectionCheckout, CollectionDelivery, CollectionPayout, CollectionRefund, CollectionShow,
+    CollectionCheckout, CollectionDelivery, CollectionPayout, CollectionReceiptResolution,
+    CollectionRefund, CollectionShow,
 };
 
 type Company = Text<CompanySlug>;

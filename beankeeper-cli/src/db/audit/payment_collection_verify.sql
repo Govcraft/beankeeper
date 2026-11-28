@@ -29,12 +29,24 @@ SELECT EXISTS(
           AND json_extract(a.after, '$.reason') IS e.reason
           AND json_extract(a.after, '$.payment') IS e.payment
           AND json_extract(a.after, '$.posting') IS e.posting
+          AND json_extract(a.after, '$.body_sha256') IS e.body_sha256
+          AND json_extract(a.after, '$.occurred_on') IS e.occurred_on
+          AND json_extract(a.after, '$.resolved') IS e.resolved
+          AND json_extract(a.after, '$.booked_on') IS e.booked_on
     ) OR (e.status = 'applied' AND NOT EXISTS (
         SELECT 1 FROM document_allocations d JOIN transactions t ON t.id=d.source_id
         WHERE d.company_slug=c.company_slug AND d.document_id=c.invoice
           AND d.source_id=e.posting AND d.amount_minor=c.amount AND d.kind='payment'
-          AND t.currency=c.currency AND t.reference='stripe-payment:' || e.payment
+          AND t.currency=c.currency AND t.reference='stripe-payment:' || e.payment AND t.date=COALESCE(e.booked_on,e.occurred_on)
     ))
+    UNION ALL
+    SELECT 1 FROM collection_events resolution WHERE resolution.resolved=1 AND NOT EXISTS (
+        SELECT 1 FROM collection_events review
+        WHERE review.account=resolution.account AND review.event=resolution.event AND review.resolved=0
+          AND review.collection=resolution.collection AND review.status='review'
+          AND review.reason='receipt date is in a closed period'
+          AND review.body_sha256=resolution.body_sha256 AND review.occurred_on=resolution.occurred_on
+    )
     UNION ALL
     SELECT 1 FROM stripe_payouts p WHERE NOT EXISTS (
         SELECT 1 FROM bookkeeping_audit a WHERE a.entity='stripe_payout' AND a.company_slug=p.company_slug AND a.entity_id=p.payout
@@ -92,5 +104,5 @@ SELECT EXISTS(
         OR (a.entity='stripe_refund_posting' AND NOT EXISTS (SELECT 1 FROM stripe_refund_postings r WHERE r.refund=a.entity_id AND r.company_slug=a.company_slug))
         OR (a.entity='stripe_payout' AND NOT EXISTS (SELECT 1 FROM stripe_payouts p WHERE p.payout=a.entity_id AND p.company_slug=a.company_slug))
         OR (a.entity='stripe_payout_posting' AND NOT EXISTS (SELECT 1 FROM stripe_payout_postings r WHERE r.payout=a.entity_id AND r.company_slug=a.company_slug))
-        OR (a.entity='collection_event' AND NOT EXISTS (SELECT 1 FROM collection_events e WHERE e.event=a.entity_id AND e.account=json_extract(a.after,'$.account')))
+        OR (a.entity='collection_event' AND NOT EXISTS (SELECT 1 FROM collection_events e WHERE e.event=a.entity_id AND e.account=json_extract(a.after,'$.account') AND e.resolved=json_extract(a.after,'$.resolved')))
 )

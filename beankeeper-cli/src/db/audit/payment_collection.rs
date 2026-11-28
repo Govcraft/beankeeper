@@ -3,6 +3,7 @@
 pub(crate) mod dispute;
 pub(crate) mod payout;
 pub(crate) mod refund;
+pub(crate) mod resolution;
 
 use beankeeper::types::{AccountCode, AccountType, Currency, DebitOrCredit, Money, PositiveMoney};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -68,6 +69,7 @@ struct Attempt {
 }
 
 const PROVIDER_RETRY_WINDOW: TimeDelta = TimeDelta::hours(20);
+const CLOSED_PERIOD_REVIEW: &str = "receipt date is in a closed period";
 
 /// Result of applying one authenticated delivery.
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
@@ -418,7 +420,7 @@ pub fn ingest_checkout(
                 company.slug(),
                 id,
                 event,
-                (&outcome, payment.as_ref()),
+                EventRecord::original(&outcome, payment.as_ref()),
             )?;
             Ok(outcome)
         })
@@ -464,10 +466,7 @@ fn apply_payment(
 ) -> Result<(CollectionOutcome, Option<StripePaymentIntentId>), CliError> {
     if let Err(error) = db::periods::ensure_open(tx.read(), company.slug(), date) {
         return if matches!(error, CliError::Validation(_)) {
-            Ok((
-                CollectionOutcome::Review("receipt date is in a closed period".into()),
-                None,
-            ))
+            Ok((CollectionOutcome::Review(CLOSED_PERIOD_REVIEW.into()), None))
         } else {
             Err(error)
         };
@@ -528,31 +527,54 @@ fn known_event(
 ) -> Result<Option<CollectionOutcome>, CliError> {
     reader
         .query_row(
-            "SELECT e.status, e.reason, e.posting FROM collection_events e
+            "SELECT e.status, e.reason, e.posting, e.body_sha256 FROM collection_events e
              JOIN invoice_collections c ON c.id=e.collection
-             WHERE e.account=?1 AND e.event=?2 AND c.company_slug=?3",
+             WHERE e.account=?1 AND e.event=?2 AND c.company_slug=?3 ORDER BY e.resolved DESC LIMIT 1",
             params![event.account().to_string(), event.id().to_string(), company],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<TransactionId>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         )
         .optional()?
         .map(
-            |(state, reason, posting)| match (state.as_str(), reason, posting) {
-                ("applied", None, Some(id)) => Ok(CollectionOutcome::Applied(id)),
-                ("failed", None, None) => Ok(CollectionOutcome::Failed),
-                ("duplicate", None, None) => Ok(CollectionOutcome::Duplicate),
-                ("review", Some(reason), None) => Ok(CollectionOutcome::Review(reason)),
-                _ => Err(CliError::Database(
-                    "invalid recorded collection event".into(),
-                )),
+            |(state, reason, posting, digest)| {
+                if digest != event.body_sha256() {
+                    return Err(validation("authenticated delivery differs from the recorded Stripe event"));
+                }
+                match (state.as_str(), reason, posting) {
+                    ("applied", None, Some(id)) => Ok(CollectionOutcome::Applied(id)),
+                    ("failed", None, None) => Ok(CollectionOutcome::Failed),
+                    ("duplicate", None, None) => Ok(CollectionOutcome::Duplicate),
+                    ("review", Some(reason), None) => Ok(CollectionOutcome::Review(reason)),
+                    _ => Err(CliError::Database("invalid recorded collection event".into())),
+                }
             },
         )
         .transpose()
+}
+
+struct EventRecord<'a> {
+    outcome: &'a CollectionOutcome,
+    payment: Option<&'a StripePaymentIntentId>,
+    booked_on: Option<chrono::NaiveDate>,
+}
+
+impl<'a> EventRecord<'a> {
+    const fn original(
+        outcome: &'a CollectionOutcome,
+        payment: Option<&'a StripePaymentIntentId>,
+    ) -> Self {
+        Self {
+            outcome,
+            payment,
+            booked_on: None,
+        }
+    }
 }
 
 fn store_event(
@@ -561,7 +583,11 @@ fn store_event(
     company: &CompanySlug,
     id: &CollectionId,
     event: &VerifiedStripeEvent,
-    (outcome, payment): (&CollectionOutcome, Option<&StripePaymentIntentId>),
+    EventRecord {
+        outcome,
+        payment,
+        booked_on,
+    }: EventRecord<'_>,
 ) -> Result<(), CliError> {
     let (status, reason, posting) = match outcome {
         CollectionOutcome::Applied(id) => ("applied", None, Some(*id)),
@@ -581,6 +607,9 @@ fn store_event(
     let event_id = event.id().to_string();
     let collection = id.to_string();
     let payment = payment.map(ToString::to_string);
+    let body_sha256 = event.body_sha256();
+    let occurred_on = event.created().date_naive();
+    let resolved = booked_on.is_some();
     record(
         tx,
         actor,
@@ -590,13 +619,26 @@ fn store_event(
         &json!({
             "account": account, "collection": collection, "status": status,
             "reason": reason, "payment": payment, "posting": posting,
+            "body_sha256": body_sha256, "occurred_on": occurred_on,
+            "resolved": resolved, "booked_on": booked_on,
         }),
     )?;
     tx.insert(
-        "INSERT INTO collection_events(account,event,collection,status,reason,payment,posting)
-        VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO collection_events(account,event,collection,status,reason,payment,posting,
+                                        body_sha256,occurred_on,resolved,booked_on)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         params![
-            account, event_id, collection, status, reason, payment, posting
+            account,
+            event_id,
+            collection,
+            status,
+            reason,
+            payment,
+            posting,
+            body_sha256,
+            occurred_on,
+            resolved,
+            booked_on
         ],
     )?;
     Ok(())
@@ -650,6 +692,10 @@ pub(crate) struct CollectionException {
     collection: CollectionId,
     event: String,
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_posting: Option<TransactionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    booked_on: Option<chrono::NaiveDate>,
 }
 
 pub(crate) fn show(
@@ -691,20 +737,29 @@ fn read_exceptions(
     id: Option<&CollectionId>,
 ) -> Result<Vec<CollectionException>, CliError> {
     let mut statement = reader.prepare_cached(
-        "SELECT e.collection,e.event,e.reason FROM collection_events e
+        "SELECT e.collection,e.event,e.reason,r.posting,r.booked_on FROM collection_events e
          JOIN invoice_collections c ON c.id=e.collection
+         LEFT JOIN collection_events r ON r.account=e.account AND r.event=e.event AND r.resolved=1
          WHERE c.company_slug=?1 AND (?2 IS NULL OR c.id=?2) AND e.status='review'
          ORDER BY e.rowid DESC LIMIT 100",
     )?;
     let rows = statement.query_map(params![company, id.map(ToString::to_string)], |row| {
-        Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
     })?;
     rows.map(|row| {
-        let (collection, event, reason) = row?;
+        let (collection, event, reason, resolved_posting, booked_on) = row?;
         Ok(CollectionException {
             collection: collection.parse().map_err(validation)?,
             event,
             reason,
+            resolved_posting,
+            booked_on,
         })
     })
     .collect()

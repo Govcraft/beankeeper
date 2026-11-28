@@ -112,6 +112,7 @@ Use only one of as_of and to. For date-range reports without as_of, use from and
             ScheduleRun => ("schedule.run", Post, cli_only(PendingParity)),
             CollectionCreateLink => ("collection.create-link", Post, tool(collection_create_link, CollectionCheckout, "Create or recover a hosted link using an issued invoice and frozen request key.")),
             CollectionApply => ("collection.apply", Post, tool(collection_apply, CollectionDelivery, "Authenticate and apply a signed Stripe delivery from the trusted host spool.")),
+            CollectionResolveReceipt => ("collection.resolve-receipt", Post, tool(collection_resolve_receipt, CollectionReceiptResolution, "Post a freshly authenticated Checkout receipt reviewed only for its closed original period. Supply booked_on on or after the event date.")),
             CollectionShow => ("collection.show", Read, tool(collection_show, CollectionShow, "Read a collection's current state and delivery exceptions.")),
             CollectionReconcilePayout => ("collection.reconcile-payout", Post, tool(collection_reconcile_payout, CollectionPayout, "Match verified Stripe payout evidence to an exact group of gross payments and fees.")),
             CollectionReconcileRefund => ("collection.reconcile-refund", Post, tool(collection_reconcile_refund, CollectionRefund, "Post a verified Stripe refund and reopen the original invoice by the exact refunded amount.")),

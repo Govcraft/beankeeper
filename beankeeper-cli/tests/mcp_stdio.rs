@@ -888,6 +888,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "financial_summary",
     "collection_create_link",
     "collection_apply",
+    "collection_resolve_receipt",
     "collection_show",
     "collection_exceptions",
     "collection_reconcile_refund",
@@ -1688,6 +1689,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(names.contains("collection_payouts"));
     assert!(!names.contains("collection_create_link"));
     assert!(!names.contains("collection_apply"));
+    assert!(!names.contains("collection_resolve_receipt"));
     assert!(!names.contains("collection_reconcile_refund"));
     assert!(!names.contains("collection_reconcile_payout"));
     assert!(names.contains("tax_list"));

@@ -223,6 +223,7 @@ pub struct VerifiedStripeEvent {
     mode: StripeMode,
     created: DateTime<Utc>,
     kind: StripeEvent,
+    body_sha256: String,
 }
 
 impl VerifiedStripeEvent {
@@ -248,6 +249,12 @@ impl VerifiedStripeEvent {
     #[must_use]
     pub const fn created(&self) -> DateTime<Utc> {
         self.created
+    }
+
+    /// Digest of the exact body authenticated by the provider signature.
+    #[must_use]
+    pub fn body_sha256(&self) -> &str {
+        &self.body_sha256
     }
 
     /// Authenticated payment or payout evidence.
@@ -415,6 +422,7 @@ pub fn verify_webhook(
         },
         created: timestamp(envelope.created)?,
         kind,
+        body_sha256: hex::encode(ring::digest::digest(&ring::digest::SHA256, body).as_ref()),
     }))
 }
 
