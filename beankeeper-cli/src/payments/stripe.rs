@@ -265,7 +265,10 @@ impl VerifiedStripeEvent {
 }
 
 /// Direction of a dispute-related principal movement confirmed by Stripe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum DisputeMovement {
     /// Funds were withheld from the processor balance.
     Withdrawn,
@@ -297,6 +300,13 @@ pub enum StripeEvent {
         /// Exact gross payment before fees.
         amount: PositiveMoney,
     },
+    /// A settled payment intent that can confirm an existing agent report.
+    PaymentSucceeded {
+        /// Stable payment identity.
+        payment: StripePaymentIntentId,
+        /// Paid amount before fees.
+        amount: PositiveMoney,
+    },
     /// A session definitively expired or ended without a successful payment.
     CheckoutFailed {
         /// Beankeeper's collection ID.
@@ -312,6 +322,8 @@ pub enum StripeEvent {
         payment: StripePaymentIntentId,
         /// Exact refund before any processor adjustment.
         amount: PositiveMoney,
+        /// Creation date of the Stripe refund object when Stripe supplied it.
+        created: Option<DateTime<Utc>>,
     },
     /// The processor moved funds against an identified payment in a dispute.
     DisputeFunds {
@@ -363,8 +375,17 @@ struct Checkout {
 }
 
 #[derive(Deserialize)]
+struct PaymentIntent {
+    id: String,
+    amount_received: i64,
+    currency: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
 struct Refund {
     id: String,
+    created: Option<i64>,
     payment_intent: Option<String>,
     amount: i64,
     currency: String,
@@ -487,6 +508,17 @@ fn normalize(event: &str, object: serde_json::Value) -> Result<Option<StripeEven
             }
             checkout_event(event, checkout)
         }
+        "payment_intent.succeeded" => {
+            let payment: PaymentIntent =
+                serde_json::from_value(object).map_err(|_| StripeError::Payload)?;
+            if payment.status != "succeeded" {
+                return Err(StripeError::Payload);
+            }
+            Ok(Some(StripeEvent::PaymentSucceeded {
+                payment: payment.id.parse()?,
+                amount: positive(payment.amount_received, &payment.currency)?,
+            }))
+        }
         "refund.created" | "refund.updated" => {
             let refund: Refund =
                 serde_json::from_value(object).map_err(|_| StripeError::Payload)?;
@@ -500,6 +532,7 @@ fn normalize(event: &str, object: serde_json::Value) -> Result<Option<StripeEven
                 refund: refund.id.parse()?,
                 payment: payment.parse()?,
                 amount: positive(refund.amount, &refund.currency)?,
+                created: refund.created.map(timestamp).transpose()?,
             }))
         }
         "charge.dispute.funds_withdrawn" | "charge.dispute.funds_reinstated" => {

@@ -62,6 +62,7 @@ convert! {
     bank_feed_disconnect(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Disconnect(input.feed))),
     collection_create_link(CollectionCheckout) => PaymentCollection(input => input.into()),
     collection_apply(CollectionDelivery) => PaymentCollection(input => input.into()),
+    collection_report_evidence(CollectionEvidence) => PaymentCollection(input => input.into()),
     collection_resolve_receipt(CollectionReceiptResolution) => PaymentCollection(input => input.into()),
     collection_reconcile_payout(CollectionPayout) => PaymentCollection(input => input.into()),
     collection_payouts(CompanyScope) => PaymentCollection(input => crate::commands::collection::PaymentCollectionRequest::payouts(input.company.into_inner())),

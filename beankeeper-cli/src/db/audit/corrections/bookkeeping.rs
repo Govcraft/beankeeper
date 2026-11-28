@@ -7,7 +7,7 @@ use super::{Applied, Correction, PendingCorrection, reserve};
 use crate::{
     db::{
         Actor, Db,
-        audit::{counterparties, grant, projects, savepoint::AuditedTx},
+        audit::{counterparties, grant, payment_collection, projects, savepoint::AuditedTx},
         companies::{Company, CompanySlug},
         counterparties::{ContactDetails, CounterpartyId},
         ids::{EntryId, ReceiptId, TransactionId},
@@ -22,6 +22,7 @@ use crate::{
 pub(super) enum Bookkeeping {
     Counterparty(Party),
     Project(Project),
+    StripeCollection(StripeCollection),
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +48,66 @@ pub(crate) enum Project {
         date: NaiveDate,
         splits: Vec<SplitInput>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub(crate) enum StripeCollection {
+    ReportEvidence {
+        evidence: payment_collection::reported::ReportedEvidence,
+    },
+    ReconcilePayout {
+        manifest: payment_collection::payout::PayoutManifest,
+    },
+    ReconcileRefund {
+        terms: payment_collection::refund::RefundSettlement,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum StripeChange {
+    Evidence(payment_collection::CollectionOutcome),
+    Payout(payment_collection::payout::PayoutPosting),
+    Refund(payment_collection::refund::RefundPosting),
+}
+
+impl StripeCollection {
+    pub(crate) fn submit(
+        self,
+        db: &Db,
+        actor: &Actor,
+        company: &CompanySlug,
+    ) -> Result<Submission<StripeChange>, CliError> {
+        submit(
+            db,
+            actor,
+            company,
+            Bookkeeping::StripeCollection(self.clone()),
+            |tx, actor, scope| self.apply(tx, actor, scope),
+        )
+    }
+
+    fn apply(
+        self,
+        tx: &AuditedTx<'_>,
+        actor: &Actor,
+        scope: &Company<'_>,
+    ) -> Result<StripeChange, CliError> {
+        match self {
+            Self::ReportEvidence { evidence } => {
+                evidence.apply(tx, actor, scope).map(StripeChange::Evidence)
+            }
+            Self::ReconcilePayout { manifest } => {
+                payment_collection::payout::reconcile_in_scope(tx, actor, scope.slug(), &manifest)
+                    .map(StripeChange::Payout)
+            }
+            Self::ReconcileRefund { terms } => {
+                payment_collection::refund::reconcile_in_scope(tx, actor, scope.slug(), &terms)
+                    .map(StripeChange::Refund)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -170,6 +231,7 @@ impl Bookkeeping {
             })
         }
         match self {
+            Self::StripeCollection(change) => result(change.apply(tx, actor, scope)?, None),
             Self::Counterparty(change) => {
                 use counterparties::PartyMutationResult::{Association, Record};
                 let value = change.apply(tx, actor, scope)?;

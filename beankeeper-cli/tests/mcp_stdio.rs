@@ -896,6 +896,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "financial_summary",
     "collection_create_link",
     "collection_apply",
+    "collection_report_evidence",
     "collection_resolve_receipt",
     "collection_show",
     "collection_exceptions",
@@ -1692,6 +1693,7 @@ fn assert_collection_read_only_tools(names: &BTreeSet<&str>) {
     for write in [
         "collection_create_link",
         "collection_apply",
+        "collection_report_evidence",
         "collection_resolve_receipt",
         "collection_reconcile_refund",
         "collection_reconcile_payout",

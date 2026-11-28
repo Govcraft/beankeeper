@@ -319,8 +319,9 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `collection_apply` | Authenticate and apply a signed Stripe delivery from the trusted host spool |
 | `collection_resolve_receipt` | Post a freshly authenticated receipt blocked solely by a closed period on an explicit open date |
 | `collection_show`, `collection_exceptions` | Inspect collection status and review exceptions |
-| `collection_reconcile_payout`, `collection_payouts` | Reconcile signed net deposits and list payout evidence |
-| `collection_reconcile_refund`, `collection_refunds` | Post approved verified refunds and list their evidence |
+| `collection_report_evidence` | Record payment, payout, refund or dispute facts read through Stripe MCP for direct posting or independent review |
+| `collection_reconcile_payout`, `collection_payouts` | Reconcile Stripe net deposits and list evidence and bank confirmation |
+| `collection_reconcile_refund`, `collection_refunds` | Post or propose a recorded Stripe refund and list its evidence |
 | `collection_disputes` | Inspect signed dispute movements pending accounting review |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
@@ -596,7 +597,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor_tax_export`,
 `company_create`, `company_delete`, `tax_configure`, `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect`,
 `bank_feed_post`, `bank_feed_link`, `payroll_import`, `payroll_fund`,
-`collection_create_link`, `collection_apply`, `collection_resolve_receipt`, `collection_reconcile_payout`, `collection_reconcile_refund`,
+`collection_create_link`, `collection_apply`, `collection_resolve_receipt`, `collection_report_evidence`, `collection_reconcile_payout`, `collection_reconcile_refund`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,

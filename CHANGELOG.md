@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Reconcile payments, refunds, payouts, and disputes from facts read through Stripe MCP. Preserve evidence provenance and bank confirmation, with independent approval when configured. (#369)
+
 ## [0.42.0] - 2026-11-28
 
 This release advances the ledger schema from v51 to v52 for bookkeeping

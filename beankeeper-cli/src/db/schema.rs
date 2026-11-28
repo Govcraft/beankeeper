@@ -9,7 +9,8 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 52;
+const LATEST_VERSION: i64 = 54;
+pub(super) const STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(54);
 const BOOKKEEPING_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(52);
 pub(super) const PROJECT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(48);
 pub(super) const COLLECTION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(51);
@@ -435,7 +436,31 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
             Ok(())
         })?;
     }
+    if version < STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION {
+        migrate_with_writer(
+            conn,
+            STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
+            apply_stripe_agent_evidence_schema,
+        )?;
+    }
     Ok(())
+}
+
+fn apply_stripe_agent_evidence_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(
+            conn,
+            AuditTable::StripeAgentEvidence,
+            STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
+        )?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/stripe_agent_evidence.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_collection_schema(conn: &Connection) -> Result<(), CliError> {
@@ -2374,6 +2399,7 @@ enum AuditTable {
     Inventory,
     Disbursements,
     Collection,
+    StripeAgentEvidence,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2392,7 +2418,8 @@ impl From<AuditTable> for AuditHistory {
             | AuditTable::Projects
             | AuditTable::Inventory
             | AuditTable::Disbursements
-            | AuditTable::Collection => Self::Bookkeeping,
+            | AuditTable::Collection
+            | AuditTable::StripeAgentEvidence => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2602,6 +2629,9 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
     }
     if table >= AuditTable::Collection {
         append_collection_audit_extensions(entity);
+    }
+    if table >= AuditTable::StripeAgentEvidence {
+        let _ = write!(entity, ",'{}'", AuditEntity::StripeEvidenceReview);
     }
     if table >= AuditTable::Disbursements {
         let _ = write!(entity, ",'{}'", AuditEntity::Disbursement);
@@ -3611,6 +3641,7 @@ mod tests {
                 DISBURSEMENT_SCHEMA_VERSION,
                 COLLECTION_SCHEMA_VERSION,
                 BOOKKEEPING_PROPOSALS_SCHEMA_VERSION,
+                STRIPE_AGENT_EVIDENCE_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
