@@ -335,6 +335,33 @@ fn assert_uncertain_attempt(
     id: &str,
 ) -> TestResult {
     let choice = json!({"company":"acme","id":id});
+    let mut unsupported = bk(&books.path)?;
+    books.provider.configure(&mut unsupported);
+    let outcome = unsupported
+        .arg("--passphrase-file")
+        .arg(&books.passphrase)
+        .args([
+            "--agent-token",
+            dispatch_token,
+            "--company",
+            "acme",
+            "--format",
+            "csv",
+            "disbursement",
+            "dispatch",
+            id,
+        ])
+        .output()?;
+    assert!(!outcome.status.success());
+    assert!(
+        String::from_utf8_lossy(&outcome.stderr).contains("disbursements support table and JSON")
+    );
+    assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        dispatcher.success("disbursement_show", &choice)?["state"]["status"],
+        "approved"
+    );
+
     books.provider.state.changed.store(true, Ordering::Relaxed);
     assert_eq!(
         failure(dispatcher, "disbursement_dispatch", &choice)?["code"],

@@ -348,7 +348,7 @@ fn dispatch_ledger(
             (require_company(cli)?, &args.command).try_into()?,
         )),
         Command::Disbursement(args) => Some(LedgerRequest::Disbursement(
-            (require_company(cli)?.clone(), args.command.clone()).try_into()?,
+            disbursement::DisbursementRequest::from_cli(cli, require_company(cli)?, &args.command)?,
         )),
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),

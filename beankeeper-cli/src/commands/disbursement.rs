@@ -128,6 +128,17 @@ impl TryFrom<(CompanySlug, DisbursementCommand)> for DisbursementRequest {
 }
 
 impl DisbursementRequest {
+    pub(crate) fn from_cli(
+        cli: &Cli,
+        company: &CompanySlug,
+        command: &DisbursementCommand,
+    ) -> Result<Self, CliError> {
+        if matches!(resolve_format(None, cli), OutputFormat::Csv) {
+            return Err(unsupported_output());
+        }
+        (company.clone(), command.clone()).try_into()
+    }
+
     pub(crate) const fn operation(&self) -> Operation {
         match self.action {
             Action::Draft(_) => Operation::DisbursementDraft,
@@ -218,13 +229,15 @@ impl Response {
                 }
             }
             OutputFormat::Csv => {
-                return Err(CliError::Usage(
-                    "disbursements support table and JSON output".into(),
-                ));
+                return Err(unsupported_output());
             }
         }
         Ok(())
     }
+}
+
+fn unsupported_output() -> CliError {
+    CliError::Usage("disbursements support table and JSON output".into())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
