@@ -605,6 +605,15 @@ fn one_invoice_is_accrual_income_at_issue_and_cash_income_as_paid()
         "1100:40",
     ])?;
     let payment_id = payment["data"]["id"].to_string();
+    read(&[
+        "counterparty",
+        "associate",
+        party["data"]["party"]["id"]
+            .as_str()
+            .ok_or("missing counterparty")?,
+        &payment_id,
+    ])?;
+
     let allocation = serde_json::json!([{"document_id":id,"amount_minor":4000}]).to_string();
     read(&[
         "document",
