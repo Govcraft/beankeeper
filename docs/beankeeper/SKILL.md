@@ -386,7 +386,7 @@ arguments. It is reverified on every tool call, so expiry/revocation takes effec
 without a restart. Enforcement filters discovery by startup grants; restart stdio
 after policy changes to refresh the tool list. HTTP accepts per-request bearer
 headers and filters discovery by current credentials and policy. Both transports
-check grants/policy on every call. `--read-only` hides all writes including `txn_reconcile` regardless of
+check grants/policy on every call. `--read-only` hides all writes regardless of
 grants. Keep token values out of tool arguments. See the
 [key and agent command reference](references/commands.md#agent-identity).
 
