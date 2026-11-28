@@ -388,4 +388,28 @@ mod tests {
         assert!(script.0.borrow().is_empty());
         Ok(())
     }
+
+    #[test]
+    fn provider_credentials_and_transport_failures_stay_private() {
+        struct FailingProvider(FeedError);
+        impl BankFeedProvider for FailingProvider {
+            fn sync_page(&self, _cursor: Option<&SyncCursor>) -> Result<Page, FeedError> {
+                Err(self.0)
+            }
+        }
+
+        let expired = plaid_error(
+            br#"{"error_code":"ITEM_LOGIN_REQUIRED","error_message":"private context"}"#,
+        );
+        let transient =
+            plaid_error(br#"{"error_code":"INSTITUTION_DOWN","error_message":"private context"}"#);
+        assert_eq!(expired, FeedError::Credentials);
+        assert_eq!(transient, FeedError::Transport);
+        for error in [expired, transient] {
+            assert!(
+                matches!(fetch_complete(&FailingProvider(error), None), Err(failure) if failure == error)
+            );
+            assert!(!error.to_string().contains("private context"));
+        }
+    }
 }

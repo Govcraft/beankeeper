@@ -860,4 +860,50 @@ mod tests {
         VerifiedLedger::read(&db)?;
         Ok(())
     }
+
+    #[test]
+    fn locked_period_leaves_feed_item_available_for_review() -> Result<(), CliError> {
+        let db = Db::open_in_memory()?;
+        let actor = test_support::fixture_actor("tester");
+        let company = "acme".parse()?;
+        let feed = fixture(&db, &company, &actor)?;
+        let row = provider_row("posted", false, -500)?;
+        Granted::<Admin>::with_db(&db, &actor, |grant| {
+            super::super::change_period(
+                grant,
+                &company,
+                db::periods::PeriodChange::Close(row.date.try_into()?),
+            )
+        })?;
+        let feed = commit_sync(
+            &db,
+            &actor,
+            &company,
+            &feed,
+            &"next".parse()?,
+            &SyncDelta {
+                rows: vec![row],
+                removed: vec![],
+            },
+        )?;
+        let item = only_item(&db, &company, &feed, "posted")?;
+        let request = PostArgs {
+            selection: ItemSelection {
+                feed: feed.id.clone(),
+                item: item.id,
+                revision: item.revision,
+            },
+            contra: Some("5000".into()),
+            confirm_new: false,
+        };
+        let attempted = post(&db, &actor, &company, &request);
+        assert!(
+            matches!(attempted, Err(CliError::Validation(message)) if message.contains("closed"))
+        );
+        let after = only_item(&db, &company, &feed, "posted")?;
+        assert!(after.resolved_revision.is_none());
+        assert!(after.transaction_id.is_none());
+        VerifiedLedger::read(&db)?;
+        Ok(())
+    }
 }
