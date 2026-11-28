@@ -604,6 +604,12 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `payroll_import` | Post or propose the exact reviewed aggregate payroll journal |
 | `payroll_show` | Read the payroll liabilities and their reconciled withdrawals |
 | `payroll_fund` | Match a posted withdrawal to a payroll liability |
+| `collection_create_link` | Create or recover a Stripe-hosted link for an issued invoice |
+| `collection_apply` | Authenticate and apply a signed Stripe delivery from the trusted host spool |
+| `collection_show`, `collection_exceptions` | Inspect collection status and review exceptions |
+| `collection_reconcile_payout`, `collection_payouts` | Reconcile signed net deposits and list payout evidence |
+| `collection_reconcile_refund`, `collection_refunds` | Post approved verified refunds and list their evidence |
+| `collection_disputes` | Inspect signed dispute movements pending accounting review |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
 | `fixed_asset_show` | Show a fixed asset and movements as of a date |

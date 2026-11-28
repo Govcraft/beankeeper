@@ -1,3 +1,13 @@
+DROP TABLE stripe_disputes;
+DROP TABLE stripe_payout_refunds;
+DROP TABLE stripe_refund_postings;
+DROP TABLE stripe_refunds;
+DROP TABLE stripe_payout_payments;
+DROP TABLE stripe_payout_postings;
+DROP TABLE stripe_payouts;
+DROP TABLE collection_events;
+DROP TABLE collection_links;
+DROP TABLE invoice_collections;
 DROP TRIGGER protect_disbursement_accounts;
 DROP TABLE disbursement_bills;
 DROP TABLE disbursements;

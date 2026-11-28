@@ -192,6 +192,7 @@ pub fn open_items_as_of(
             .or_default()
             .push(allocation);
     }
+    let mut refunds = refunds_as_of(company, as_of)?;
     list_issued_as_of(company, as_of)?
         .into_iter()
         .map(|document| {
@@ -201,6 +202,11 @@ pub fn open_items_as_of(
                     .checked_add(allocation.amount_minor.minor_units())
                     .ok_or(DocumentError::OutOfRange)
             })?;
+            let refunded_minor = refunds.remove(&document.id).unwrap_or_default();
+            let applied = applied
+                .checked_sub(refunded_minor)
+                .filter(|amount| *amount >= 0)
+                .ok_or(DocumentError::AllocationExceedsBalance)?;
             let open_minor = document
                 .total_minor
                 .minor_units()
@@ -225,9 +231,28 @@ pub fn open_items_as_of(
                 status,
                 days_overdue,
                 allocations,
+                refunded_minor: if refunded_minor > 0 {
+                    Some(beankeeper::types::Amount::from(refunded_minor).try_into()?)
+                } else {
+                    None
+                },
             })
         })
         .collect()
+}
+
+fn refunds_as_of(
+    company: &Company<'_>,
+    as_of: NaiveDate,
+) -> Result<BTreeMap<DocumentId, i64>, CliError> {
+    let mut stmt = company.read().prepare_cached(
+        "SELECT invoice,SUM(amount) FROM stripe_refund_postings
+        WHERE company_slug=?1 AND booked_on<=?2 GROUP BY invoice",
+    )?;
+    let rows = stmt.query_map(params![company.slug(), as_of], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 #[derive(Clone, Copy)]
@@ -261,6 +286,22 @@ pub(in crate::db) fn peak_applied(
         *deltas.entry(effective.max(from)).or_default() += raw;
         if let Some(reversed) = reversed {
             *deltas.entry(reversed).or_default() -= raw;
+        }
+    }
+    if let CapacityFor::Document(id) = item {
+        let mut refunds = company.read().prepare_cached(
+            "SELECT booked_on,amount FROM stripe_refund_postings
+            WHERE company_slug=?1 AND invoice=?2",
+        )?;
+        let rows = refunds.query_map(params![company.slug(), id], |row| {
+            Ok((
+                calendar_date::read(row, 0)?,
+                row.get::<_, PositiveMinorUnits>(1)?,
+            ))
+        })?;
+        for row in rows {
+            let (booked_on, amount) = row?;
+            *deltas.entry(booked_on.max(from)).or_default() -= i128::from(amount);
         }
     }
     let mut used = 0_i128;

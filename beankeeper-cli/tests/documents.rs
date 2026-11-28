@@ -1,5 +1,8 @@
 //! Invoice and bill lifecycle through the executable and its real ledger.
 
+#[path = "documents/collections.rs"]
+mod collections;
+
 use std::{error::Error, path::PathBuf, process::Command};
 
 use assert_cmd::prelude::*;

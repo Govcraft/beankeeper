@@ -27,6 +27,16 @@ use super::{
     grant::PostingGrant, savepoint::AuditedTx,
 };
 
+pub(super) fn apply_verified_collection(
+    tx: &AuditedTx<'_>,
+    actor: &Actor,
+    company: &Company<'_>,
+    source: TransactionId,
+    date: NaiveDate,
+    items: Vec<AllocateItem>,
+) -> Result<DocumentOutcome, CliError> {
+    settlement::apply_payment(tx, actor, company, source, date, items)
+}
 pub use settlement::{AllocateItem, AllocationResult, CreditInput};
 pub(super) use settlement::{apply_payment, return_disbursement_allocation};
 pub(crate) use verification::verify;

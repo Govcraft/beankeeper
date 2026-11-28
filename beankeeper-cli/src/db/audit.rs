@@ -67,6 +67,7 @@ pub(crate) mod grant;
 pub(crate) mod identity_write;
 pub(crate) mod inventory;
 pub(super) mod investment;
+pub mod payment_collection;
 pub mod payroll;
 pub(crate) mod projects;
 pub mod receipts;
@@ -198,6 +199,14 @@ audit_labels! {
         StockDocumentLink => "stock_document_link",
         DocumentAllocation => "document_allocation",
         DocumentReview => "document_review",
+        InvoiceCollection => "invoice_collection",
+        CollectionLink => "collection_link",
+        CollectionEvent => "collection_event",
+        StripeDispute => "stripe_dispute",
+        StripeRefund => "stripe_refund",
+        StripeRefundPosting => "stripe_refund_posting",
+        StripePayout => "stripe_payout",
+        StripePayoutPosting => "stripe_payout_posting",
         VatRate => "vat_rate",
         VatEvidence => "vat_evidence",
         Project => "project",
@@ -254,6 +263,14 @@ impl AuditEntity {
             | Self::StockDocumentLink
             | Self::DocumentAllocation
             | Self::DocumentReview
+            | Self::InvoiceCollection
+            | Self::CollectionLink
+            | Self::CollectionEvent
+            | Self::StripeDispute
+            | Self::StripeRefund
+            | Self::StripeRefundPosting
+            | Self::StripePayout
+            | Self::StripePayoutPosting
             | Self::VatRate
             | Self::VatEvidence
             | Self::Project

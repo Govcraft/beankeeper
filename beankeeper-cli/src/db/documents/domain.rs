@@ -540,6 +540,9 @@ pub struct OpenItem {
     pub days_overdue: i64,
     /// Effective allocations included in this projection.
     pub allocations: Vec<EffectiveAllocation>,
+    /// Verified processor refunds that reopened this amount at the cutoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refunded_minor: Option<PositiveMinorUnits>,
 }
 
 /// Checked contribution to a journal produced by issuance or correction.

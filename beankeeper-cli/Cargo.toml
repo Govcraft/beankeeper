@@ -29,9 +29,11 @@ chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
 comfy-table = { version = "7.2.2", features = ["custom_styling"] }
 csv = "1.4.0"
+hex = "0.4.3"
 mti = "1.1.2"
 ofx-rs = "0.2.0"
-reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls-vendored-no-alpn"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "form", "json", "native-tls-vendored-no-alpn"] }
+ring = { version = "0.17.14", default-features = false, features = ["alloc"] }
 rmcp = { version = "3.11.0", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 rpassword = "7.4.0"
 rusqlite = { version = "0.39.0", features = ["bundled-sqlcipher-vendored-openssl", "chrono"] }

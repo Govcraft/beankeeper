@@ -5,6 +5,7 @@ mod audit_snapshot;
 pub mod backup;
 pub mod bank_feed;
 pub mod budget;
+pub mod collection;
 pub mod company;
 pub mod contractor_tax;
 pub mod counterparty;
@@ -95,6 +96,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Project(args) => args.command.operation(),
         Command::Inventory(args) => args.command.operation(),
         Command::Disbursement(args) => args.command.operation(),
+        Command::Collection(command) => command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -350,6 +352,7 @@ fn dispatch_ledger(
         Command::Disbursement(args) => Some(LedgerRequest::Disbursement(
             disbursement::DisbursementRequest::from_cli(cli, require_company(cli)?, &args.command)?,
         )),
+        Command::Collection(command) => Some(collection::ledger_request(cli, command)?),
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
@@ -547,6 +550,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Project(_)
         | Command::Inventory(_)
         | Command::Disbursement(_)
+        | Command::Collection(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)

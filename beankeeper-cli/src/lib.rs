@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod operation;
 pub mod output;
 pub mod passphrase;
+pub mod payments;
 mod payroll;
 pub mod percent;
 pub mod request;

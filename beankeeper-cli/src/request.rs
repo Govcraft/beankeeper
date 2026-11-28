@@ -22,6 +22,7 @@ use crate::{
         audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
         bank_feed::{BankFeedRequest, BankFeedResponse},
         budget::{BudgetRequest, BudgetResponse},
+        collection::{PaymentCollectionRequest, PaymentCollectionResponse},
         company::{CompanyRequest, CompanyResponse},
         contractor_tax::{ContractorTaxRequest, ContractorTaxResponse},
         counterparty::{CounterpartyRequest, CounterpartyResponse},
@@ -64,6 +65,7 @@ pub enum LedgerRequest {
     AuditReceipts(ReceiptRequest),
     BankFeed((CompanySlug, BankFeedRequest)),
     Budget(BudgetRequest),
+    PaymentCollection(PaymentCollectionRequest),
     Company(CompanyRequest),
     Counterparty(CounterpartyRequest),
     ContractorTax(ContractorTaxRequest),
@@ -97,6 +99,7 @@ pub enum LedgerResponse {
     AuditReceipts(ReceiptResponse),
     BankFeed(Operation, CompanySlug, BankFeedResponse),
     Budget(BudgetResponse),
+    PaymentCollection(PaymentCollectionResponse),
     Company(CompanyResponse),
     Counterparty(Operation, CompanySlug, CounterpartyResponse),
     ContractorTax(Operation, CompanySlug, ContractorTaxResponse),
@@ -146,6 +149,7 @@ impl LedgerRequest {
             Self::AuditReceipts(request) => request.operation(),
             Self::BankFeed((_, request)) => request.operation(),
             Self::Budget(request) => request.operation(),
+            Self::PaymentCollection(request) => request.operation(),
             Self::Company(request) => request.operation(),
             Self::Counterparty(request) => request.operation(),
             Self::ContractorTax(request) => request.operation(),
@@ -191,7 +195,8 @@ impl LedgerRequest {
                 | Operation::DisbursementPreview
                 | Operation::DisbursementApprove
                 | Operation::DisbursementDispatch
-        ) {
+        ) || matches!(&self, Self::PaymentCollection(request) if request.calls_provider())
+        {
             // Release the authorization snapshot before provider I/O. Each
             // workflow rechecks the actor in its own audited write stages.
             let actor =
@@ -236,6 +241,9 @@ impl LedgerRequest {
                 .execute(db, actor)
                 .map(LedgerResponse::AuditReceipts),
             Self::Budget(request) => request.execute(db, actor).map(LedgerResponse::Budget),
+            Self::PaymentCollection(request) => request
+                .execute(db, actor)
+                .map(LedgerResponse::PaymentCollection),
             Self::Company(request) => request.execute(db, actor).map(LedgerResponse::Company),
             Self::Expense(request) => request.execute(db, actor).map(LedgerResponse::Expense),
             Self::Counterparty(request) => {
@@ -326,6 +334,7 @@ impl LedgerResponse {
             Self::AuditLog(response) => response.render(cli),
             Self::AuditReceipts(response) => response.render(cli),
             Self::Budget(response) => response.render(cli),
+            Self::PaymentCollection(response) => response.render(cli),
             Self::Company(response) => response.render(cli),
             Self::Tax(operation, company, response) => response.render(cli, *operation, company),
             Self::ContractorTax(operation, company, response) => {

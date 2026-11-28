@@ -80,6 +80,7 @@ enum Check {
     ContractorTax,
     Projects,
     Disbursements,
+    PaymentCollections,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -113,6 +114,7 @@ impl Check {
             Self::ContractorTax => "contractor_tax",
             Self::Projects => "projects",
             Self::Disbursements => "disbursements",
+            Self::PaymentCollections => "payment_collections",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
@@ -219,6 +221,9 @@ fn verify_commercial_subledgers(
         checks,
         || audit::disbursements::verify(reader),
     )?;
+    Check::PaymentCollections.when(version >= schema::COLLECTION_SCHEMA_VERSION, checks, || {
+        audit::payment_collection::verify(reader)
+    })?;
     Ok(())
 }
 

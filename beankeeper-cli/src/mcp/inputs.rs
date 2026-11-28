@@ -52,6 +52,9 @@ use crate::error::CliError;
 pub(crate) use crate::commands::payroll::wire::{
     PayrollFund, PayrollImport, PayrollPreview, PayrollShow,
 };
+pub(crate) use crate::commands::collection::wire::{
+    CollectionCheckout, CollectionDelivery, CollectionPayout, CollectionRefund, CollectionShow,
+};
 
 type Company = Text<CompanySlug>;
 type Account = Text<AccountCode>;
