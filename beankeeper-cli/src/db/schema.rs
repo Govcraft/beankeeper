@@ -2849,7 +2849,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets | AuditTable::Vat | AuditTable::ExpenseClaims | AuditTable::ContractorTax | AuditTable::Projects | AuditTable::Inventory | AuditTable::Disbursements | AuditTable::Collection => {
+        table if table >= AuditTable::Receipts => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
