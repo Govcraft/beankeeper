@@ -318,16 +318,32 @@ pub(crate) fn review(
     feed: &Connection,
     item: Item,
 ) -> Result<Review, CliError> {
+    let candidates = candidate_transactions(reader, company, feed, &item, None)?;
+    let scope = super::companies::Company::bind(reader, company.clone())?;
+    let rules = super::rules::list_active_rules(&scope)?;
+    Ok(plan_feed_review(feed, item, candidates, &rules))
+}
+
+pub(crate) fn candidate_transactions(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    feed: &Connection,
+    item: &Item,
+    target: Option<TransactionId>,
+) -> Result<Vec<Candidate>, CliError> {
     let mut statement = reader.connection().prepare_cached(
-        "SELECT DISTINCT t.id, t.date, t.description,
+        "SELECT t.id, t.date, t.description,
             EXISTS(SELECT 1 FROM bank_feed_items i LEFT JOIN txn_proposals p ON p.id = i.proposal_id
               WHERE i.connection_id = ?2 AND COALESCE(i.transaction_id, p.transaction_id) = t.id)
          FROM entries e JOIN transactions t ON t.id = e.transaction_id
          WHERE e.company_slug = ?1 AND e.account_code = ?3 AND t.currency = ?4
-           AND e.direction = ?5 AND e.amount = ?6 AND t.posting_status = 'posted'
-           AND t.date BETWEEN date(?7, '-3 days') AND date(?7, '+3 days')
+           AND t.posting_status = 'posted'
+           AND (?7 IS NULL OR t.id = ?7)
+           AND t.date BETWEEN date(?6, '-3 days') AND date(?6, '+3 days')
            AND NOT EXISTS(SELECT 1 FROM posting_reversals r WHERE r.company_slug = ?1
                AND (r.original_id = CAST(t.id AS TEXT) OR r.reversal_id = t.id))
+         GROUP BY t.id, t.date, t.description
+         HAVING SUM(CASE e.direction WHEN 'debit' THEN e.amount ELSE -e.amount END) = ?5
          ORDER BY t.date DESC, t.id DESC LIMIT 51",
     )?;
     let candidates = statement
@@ -337,9 +353,9 @@ pub(crate) fn review(
                 feed.id,
                 feed.account,
                 feed.currency.code(),
-                direction(item.amount).code(),
-                item.amount.get().abs(),
-                item.date
+                item.amount.get(),
+                item.date,
+                target
             ],
             |row| {
                 Ok(Candidate {
@@ -351,9 +367,7 @@ pub(crate) fn review(
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let scope = super::companies::Company::bind(reader, company.clone())?;
-    let rules = super::rules::list_active_rules(&scope)?;
-    Ok(plan_feed_review(feed, item, candidates, &rules))
+    Ok(candidates)
 }
 
 fn plan_feed_review(

@@ -275,10 +275,17 @@ pub(crate) fn link(
             {
                 return Ok(item);
             }
-            let review = review_unresolved(tx, company, &feed, item)?;
-            if !review.candidate_transactions.iter().any(|candidate| {
-                candidate.transaction == args.transaction && !candidate.already_linked
-            }) {
+            require_unresolved(tx, company, &item)?;
+            if !bank_feed::candidate_transactions(
+                tx.read(),
+                company,
+                &feed,
+                &item,
+                Some(args.transaction),
+            )?
+            .into_iter()
+            .any(|candidate| !candidate.already_linked)
+            {
                 return Err(FeedError::UnavailableItem.into());
             }
             resolve(
@@ -286,7 +293,7 @@ pub(crate) fn link(
                 actor,
                 company,
                 &feed,
-                &review.item,
+                &item,
                 Resolution::Posted(args.transaction),
             )
         })
@@ -322,12 +329,11 @@ fn selected(
     Ok((feed, item))
 }
 
-fn review_unresolved(
+fn require_unresolved(
     tx: &AuditedTx<'_>,
     company: &CompanySlug,
-    feed: &Connection,
-    item: Item,
-) -> Result<Review, CliError> {
+    item: &Item,
+) -> Result<(), CliError> {
     if item.status != ItemStatus::Posted || item.transaction_id.is_some() {
         return Err(FeedError::UnavailableItem.into());
     }
@@ -340,7 +346,7 @@ fn review_unresolved(
             return Err(FeedError::UnavailableItem.into());
         }
     }
-    bank_feed::review(tx.read(), company, feed, item)
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -393,7 +399,8 @@ fn post_selected(
             return Ok(item);
         }
     }
-    let review = review_unresolved(tx, company, &feed, item)?;
+    require_unresolved(tx, company, &item)?;
+    let review = bank_feed::review(tx.read(), company, &feed, item)?;
     if !args.confirm_new && !review.candidate_transactions.is_empty() {
         return Err(FeedError::ExistingCandidates.into());
     }
@@ -682,7 +689,14 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: DebitOrCredit::Credit,
-                amount: 4200_i64.try_into()?,
+                amount: 4000_i64.try_into()?,
+                memo: None,
+                tax_category: None,
+            },
+            PostEntryParams {
+                account_code: "1000".into(),
+                direction: DebitOrCredit::Credit,
+                amount: 200_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
