@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use crate::capability::Capability;
 use crate::db::Actor;
 use crate::db::audit::grant::{
-    self, AgentUndo, Bookkeeping, Chart, CorrectionPropose, OnboardingPost, OnboardingPropose,
-    RefreshFeed, RefreshFeedProposed, StatementReconcile,
+    self, AgentUndo, Bookkeeping, BookkeepingBudget, Chart, CorrectionPropose, OnboardingPost,
+    OnboardingPropose, RefreshFeed, RefreshFeedProposed, StatementReconcile,
 };
 pub use crate::db::audit::grant::{
     Admin, Approve, Budget, Granted, OwnerUndo, Post, Propose, Reconcile, ResolveProposal, Reverse,
@@ -98,6 +98,10 @@ impl VerifiedAgent {
                 WriteMode::Direct => grant::permits::<RefreshFeed>(self),
                 WriteMode::ProposeOnly => grant::permits::<RefreshFeedProposed>(self),
             },
+            Permission::BookkeepingBudget => match self.write_mode() {
+                WriteMode::Direct => grant::permits::<BookkeepingBudget>(self),
+                WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
+            },
             Permission::Bookkeeping => match self.write_mode() {
                 WriteMode::Direct => grant::permits::<Bookkeeping>(self),
                 WriteMode::ProposeOnly => grant::permits::<CorrectionPropose>(self),
@@ -153,6 +157,7 @@ impl VerifiedAgent {
                     | Permission::Bookkeeping
                     | Permission::StatementReconciliation
                     | Permission::FeedRefresh
+                    | Permission::BookkeepingBudget
                     | Permission::AgentUndo
                     | Permission::Reversal
             )
@@ -392,6 +397,7 @@ fn require_operation_grant(
     let required = match permission {
         Permission::Posting
         | Permission::Bookkeeping
+        | Permission::BookkeepingBudget
         | Permission::StatementReconciliation
         | Permission::FeedRefresh => identity.write_mode().posting_capability(),
         Permission::AgentUndo | Permission::Reversal
@@ -411,6 +417,7 @@ fn require_operation_grant(
                 | Permission::Bookkeeping
                 | Permission::StatementReconciliation
                 | Permission::FeedRefresh
+                | Permission::BookkeepingBudget
                 | Permission::AgentUndo
                 | Permission::Reversal
         )
@@ -432,6 +439,9 @@ fn require_operation_grant(
         }
         Permission::FeedRefresh => Some(Capability::Admin),
         Permission::SetupStatus | Permission::SetupOrChart => Some(Capability::Setup),
+        Permission::BookkeepingBudget if identity.write_mode() == WriteMode::Direct => {
+            Some(Capability::Budget)
+        }
         Permission::Chart | Permission::AgentUndo | Permission::Bookkeeping
             if identity.write_mode() == WriteMode::Direct =>
         {

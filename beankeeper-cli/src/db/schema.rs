@@ -9,8 +9,9 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 53;
 const STATEMENT_CORRECTIONS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(53);
+const LATEST_VERSION: i64 = 56;
+const MAINTENANCE_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(56);
 const BOOKKEEPING_PROPOSALS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(52);
 pub(super) const PROJECT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(48);
 pub(super) const COLLECTION_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(51);
@@ -441,6 +442,16 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
                 [STATEMENT_CORRECTIONS_SCHEMA_VERSION],
+            )?;
+            Ok(())
+        })?;
+    }
+    if version < MAINTENANCE_PROPOSALS_SCHEMA_VERSION {
+        // Reject older readers that cannot decode the added proposal variants.
+        migrate_with_writer(conn, MAINTENANCE_PROPOSALS_SCHEMA_VERSION, |conn| {
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [MAINTENANCE_PROPOSALS_SCHEMA_VERSION],
             )?;
             Ok(())
         })?;
@@ -3622,6 +3633,7 @@ mod tests {
                 COLLECTION_SCHEMA_VERSION,
                 BOOKKEEPING_PROPOSALS_SCHEMA_VERSION,
                 STATEMENT_CORRECTIONS_SCHEMA_VERSION,
+                MAINTENANCE_PROPOSALS_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );

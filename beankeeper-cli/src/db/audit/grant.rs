@@ -128,6 +128,16 @@ impl sealed::GrantKind for Bookkeeping {
     const MODE: Option<WriteMode> = Some(WriteMode::Direct);
 }
 
+/// The agent can maintain project budgets. Existing budget credentials retain access.
+pub(crate) enum BookkeepingBudget {}
+
+impl sealed::GrantKind for BookkeepingBudget {
+    const REQUIRED: Capability = Capability::Post;
+    const SIGNED: bool = true;
+    const ALTERNATE: Option<Capability> = Some(Capability::Budget);
+    const MODE: Option<WriteMode> = Some(WriteMode::Direct);
+}
+
 /// Authority to reverse an existing posting.
 pub enum Reverse {}
 

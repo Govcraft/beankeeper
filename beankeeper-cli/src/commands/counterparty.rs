@@ -12,7 +12,7 @@ use crate::{
                 PendingCorrection,
                 bookkeeping::{Party, Submission},
             },
-            counterparties::{self, PartyEdit, PartyMutationResult},
+            counterparties::PartyMutationResult,
         },
         companies::{Company, CompanySlug},
         counterparties::{
@@ -252,14 +252,12 @@ impl CounterpartyRequest {
             CounterpartyAction::Create(details) => Party::Create { details }
                 .submit(db, actor, &self.company)
                 .map(PartyOutput::from),
-            CounterpartyAction::Amend(id, patch) => {
-                counterparties::mutate(db, actor, &self.company, PartyEdit::Amend(id, patch))
-                    .map(PartyOutput::Change)
-            }
-            CounterpartyAction::Archive(id) => {
-                counterparties::mutate(db, actor, &self.company, PartyEdit::Archive(id))
-                    .map(PartyOutput::Change)
-            }
+            CounterpartyAction::Amend(id, patch) => Party::Amend { id, patch }
+                .submit(db, actor, &self.company)
+                .map(PartyOutput::from),
+            CounterpartyAction::Archive(id) => Party::Archive { id }
+                .submit(db, actor, &self.company)
+                .map(PartyOutput::from),
             CounterpartyAction::Associate(id, transaction) => Party::Associate { id, transaction }
                 .submit(db, actor, &self.company)
                 .map(PartyOutput::from),

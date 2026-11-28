@@ -472,7 +472,7 @@ impl fmt::Display for ProjectMonth {
 }
 
 /// Input for a monthly project expense budget.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBudgetInput {
     /// Project being planned.

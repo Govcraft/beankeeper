@@ -12,6 +12,7 @@ pub(crate) enum Permission {
     Bookkeeping,
     StatementReconciliation,
     FeedRefresh,
+    BookkeepingBudget,
     ProposalList,
     ReadOrReconcile,
     ProposalReject,
@@ -32,6 +33,7 @@ impl Permission {
             Self::Capability(capability) => Ok(capability),
             Self::Posting
             | Self::Bookkeeping
+            | Self::BookkeepingBudget
             | Self::StatementReconciliation
             | Self::FeedRefresh => Ok(Capability::Post),
             Self::AgentUndo | Self::Reversal => Ok(Capability::Reverse),
@@ -52,6 +54,9 @@ macro_rules! permission {
     };
     (FeedRefresh) => {
         Permission::FeedRefresh
+    };
+    (BookkeepingBudget) => {
+        Permission::BookkeepingBudget
     };
     (Bookkeeping) => {
         Permission::Bookkeeping

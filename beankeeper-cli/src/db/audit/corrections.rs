@@ -401,7 +401,12 @@ impl CorrectionProposal {
                 Bookkeeping::Counterparty(Party::Associate { .. }) => {
                     "Link a customer or vendor to a transaction"
                 }
+                Bookkeeping::Counterparty(Party::Amend { .. }) => "Update a customer or vendor",
+                Bookkeeping::Counterparty(Party::Archive { .. }) => "Archive a customer or vendor",
                 Bookkeeping::Project(Project::Create { .. }) => "Create a project",
+                Bookkeeping::Project(Project::Archive { .. }) => "Archive a project",
+                Bookkeeping::Project(Project::Budget { .. }) => "Set a project budget",
+                Bookkeeping::Classify(_) => "Classify an account for cash reporting",
                 Bookkeeping::Project(Project::Split { .. }) => {
                     "Allocate a posted entry to projects"
                 }
