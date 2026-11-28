@@ -51,7 +51,7 @@ impl<'db> OwnerSummaryReader<'db> {
 
     /// Compute the summary and deliver its attribution to the host's audit sink.
     ///
-    /// Audit recording belongs to the host so this also works with an SQLite
+    /// Audit recording belongs to the host so this also works with an `SQLite`
     /// read-only snapshot. The sink receives one record per successful read.
     ///
     /// ```compile_fail,E0308

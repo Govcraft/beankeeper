@@ -50,7 +50,7 @@ pub enum Caps {
 }
 
 impl Caps {
-    /// Validate optional caps from SQLite or a transport boundary.
+    /// Validate optional caps from `SQLite` or a transport boundary.
     ///
     /// # Errors
     ///

@@ -178,7 +178,7 @@ impl DemoLedger {
 /// serving the ledger.
 ///
 /// # Errors
-/// Returns an error for an existing destination, a SQLite sidecar, an empty
+/// Returns an error for an existing destination, a `SQLite` sidecar, an empty
 /// passphrase, or a failure to stage, seed, verify or publish the database.
 pub fn create_demo_ledger(
     path: &Path,

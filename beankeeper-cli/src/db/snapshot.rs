@@ -242,7 +242,7 @@ impl VerifiedSnapshot {
 impl Db {
     /// Migrate the ledger bound to a published, verified snapshot and open it for use.
     ///
-    /// Create a fresh snapshot if another SQLite connection has written to the
+    /// Create a fresh snapshot if another `SQLite` connection has written to the
     /// ledger since the copy began. Hosts must coordinate any out-of-band file
     /// moves or replacements while taking a snapshot and opening the ledger.
     ///

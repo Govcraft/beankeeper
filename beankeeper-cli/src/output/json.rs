@@ -70,7 +70,7 @@ pub(crate) fn serialize_optional_currency<'a, S: Serializer>(
     currency.into().map(Currency::code).serialize(serializer)
 }
 
-/// A filtered result page. Negative limits mean unlimited, as in SQLite.
+/// A filtered result page. Negative limits mean unlimited, as in `SQLite`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Pagination {
     pub limit: i64,

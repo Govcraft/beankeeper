@@ -116,7 +116,7 @@ macro_rules! audit_labels {
         audit_labels!(@variants $name [$($variant),+] $($all)?);
 
         impl $name {
-            /// Canonical label stored in SQLite and used in audit hashes and output.
+            /// Canonical label stored in `SQLite` and used in audit hashes and output.
             #[must_use]
             pub const fn as_str(self) -> &'static str {
                 match self {
@@ -491,7 +491,7 @@ pub(super) fn backfill_hash_chain(conn: &Connection) -> Result<(), CliError> {
 }
 
 /// Evidence that every audit row matched its recomputed hash and that the tail
-/// matched SQLite's high-water mark.
+/// matched `SQLite`'s high-water mark.
 #[derive(Debug)]
 pub struct VerifiedAuditChain(Option<AuditHead>);
 
@@ -2587,7 +2587,7 @@ pub fn delete_company(
     })
 }
 
-/// A company checked for retained data under the same reserved SQLite writer
+/// A company checked for retained data under the same reserved `SQLite` writer
 /// that can remove it.
 struct EmptyCompany<'tx> {
     tx: &'tx savepoint::AuditedTx<'tx>,

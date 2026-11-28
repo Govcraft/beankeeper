@@ -1,4 +1,4 @@
-//! Typed minor-unit values at the SQLite and journal boundaries.
+//! Typed minor-unit values at the `SQLite` and journal boundaries.
 
 use std::{fmt, num::NonZeroI64};
 
@@ -8,13 +8,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::CliError;
 
-/// A strictly positive amount that fits in the ledger's SQLite integer column.
+/// A strictly positive amount that fits in the ledger's `SQLite` integer column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct PositiveMinorUnits(NonZeroI64);
 
 impl PositiveMinorUnits {
-    /// The original SQLite integer, in minor units of the surrounding currency.
+    /// The original `SQLite` integer, in minor units of the surrounding currency.
     #[must_use]
     pub const fn minor_units(self) -> i64 {
         self.0.get()

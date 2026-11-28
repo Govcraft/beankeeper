@@ -127,7 +127,7 @@ impl Ledger {
                 &IssueRequest {
                     name: "review",
                     capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },

@@ -710,7 +710,7 @@ impl TransactionValueFilter {
     ///
     /// # Errors
     /// Returns [`CliError::Validation`] if bounds use different currencies
-    /// or cannot be represented by the ledger's signed SQLite integers.
+    /// or cannot be represented by the ledger's signed `SQLite` integers.
     pub fn from_bounds(
         gt: Option<Money>,
         lt: Option<Money>,

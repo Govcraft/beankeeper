@@ -130,7 +130,7 @@ impl Ledger {
                 &IssueRequest {
                     name: "spender",
                     capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },
@@ -160,7 +160,7 @@ impl Ledger {
             .agent_key(&agent_key)
             .capabilities(grants.iter().map(ToString::to_string).collect::<Vec<_>>())
             .issuer(&root)
-            .ttl(Duration::from_secs(3600))
+            .ttl(Duration::from_hours(1))
             .build()?;
         // Reissue a second registered token for the same agent, as on key rotation.
         self.raw()?.execute(
@@ -168,12 +168,8 @@ impl Ledger {
             params![claims.agent_uri, claims.agent_key, claims.jti],
         )?;
         let seed: &[u8; 32] = raw.as_slice().try_into()?;
-        let token = Issuer::new(
-            root,
-            SigningKey::from_bytes(seed)?,
-            Duration::from_secs(3600),
-        )
-        .issue_claims(&claims)?;
+        let token = Issuer::new(root, SigningKey::from_bytes(seed)?, Duration::from_hours(1))
+            .issue_claims(&claims)?;
         Ok(Agent {
             token,
             uri: uri.to_owned(),

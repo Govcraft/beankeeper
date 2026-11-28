@@ -166,7 +166,7 @@ pub fn get_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
     Ok(version)
 }
 
-/// Read and validate the SQLite schema version of an initialized ledger.
+/// Read and validate the `SQLite` schema version of an initialized ledger.
 pub(super) fn stored_schema(reader: ReadConn<'_>) -> Result<SchemaVersion, CliError> {
     get_schema_version(reader)?.try_into()
 }
@@ -192,7 +192,7 @@ fn create_schema(conn: &Connection) -> Result<(), CliError> {
     ensure_schema_at(conn, INITIAL_SCHEMA_VERSION)
 }
 
-/// Initialize an empty database while holding SQLite's writer reservation.
+/// Initialize an empty database while holding `SQLite`'s writer reservation.
 pub(super) fn initialize(conn: &Connection) -> Result<(), CliError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let reader = ReadConn::physical(&tx);
@@ -3834,7 +3834,7 @@ mod tests {
                 &identity::IssueRequest {
                     name: "restore",
                     capabilities: &["ledger/admin".into()],
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },

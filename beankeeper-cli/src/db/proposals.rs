@@ -25,7 +25,7 @@ impl ProposalId {
         Self("proposal".create_type_id::<V7>())
     }
 
-    /// The canonical identifier stored in SQLite and exposed in JSON.
+    /// The canonical identifier stored in `SQLite` and exposed in JSON.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
@@ -233,7 +233,7 @@ pub enum ProposalState {
 }
 
 impl ProposalState {
-    /// Status label in existing clients and SQLite.
+    /// Status label in existing clients and `SQLite`.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {

@@ -242,7 +242,7 @@ impl Db {
         self.admit_write(kind, |grant| AuditedTx::run(grant, name, run))
     }
 
-    /// Give a sequence of authorized mutations one reserved SQLite writer.
+    /// Give a sequence of authorized mutations one reserved `SQLite` writer.
     pub(crate) fn in_write_batch<T>(
         &self,
         run: impl FnOnce() -> Result<T, CliError>,
@@ -280,7 +280,7 @@ impl Db {
             .is_ok_and(|salt| !salt.is_empty())
     }
 
-    /// Borrows this ledger for query-only access without exposing its SQLite connection.
+    /// Borrows this ledger for query-only access without exposing its `SQLite` connection.
     ///
     /// ```compile_fail
     /// use beankeeper_cli::db::Db;
@@ -293,7 +293,7 @@ impl Db {
         ReadConn::for_db(self)
     }
 
-    /// Run queries against one SQLite snapshot.
+    /// Run queries against one `SQLite` snapshot.
     ///
     /// Values can be returned from the callback. Its reader and prepared
     /// statements borrow the snapshot for the duration of the callback.

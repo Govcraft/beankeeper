@@ -225,7 +225,7 @@ fn issue_proposer(ledger: &Ledger) -> TestResult<IssuedCredential> {
                 &IssueRequest {
                     name: "startup_proposer",
                     capabilities: &["ledger/read".into(), "ledger/post".into()],
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },

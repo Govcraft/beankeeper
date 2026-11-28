@@ -82,7 +82,7 @@ impl Ledger {
                     &IssueRequest {
                         name,
                         capabilities,
-                        ttl: Duration::from_secs(3600),
+                        ttl: Duration::from_hours(1),
                         public_key: None,
                         generate_key: true,
                     },
@@ -575,7 +575,7 @@ fn http_resolves_the_posting_mode_of_each_request() -> TestResult {
             &IssueRequest {
                 name: "http_proposer",
                 capabilities: &["ledger/read".into(), "ledger/post".into()],
-                ttl: Duration::from_secs(3600),
+                ttl: Duration::from_hours(1),
                 public_key: None,
                 generate_key: true,
             },
@@ -613,7 +613,7 @@ fn http_proposal_discovery_and_resolution_follow_request_grants() -> TestResult 
                 &IssueRequest {
                     name,
                     capabilities: &[capability.into()],
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },
@@ -1521,7 +1521,7 @@ fn embedded_session_dispatches_against_a_ledger_registered_after_initialization(
             &IssueRequest {
                 name: "demo_proposer",
                 capabilities: &["ledger/read".into(), "ledger/post".into()],
-                ttl: Duration::from_secs(3600),
+                ttl: Duration::from_hours(1),
                 public_key: None,
                 generate_key: true,
             },
@@ -1867,7 +1867,7 @@ fn exercise_host_tools(read_only: bool) -> TestResult {
                 &IssueRequest {
                     name: "navigator",
                     capabilities: &["ui/navigate".into()],
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },
@@ -2121,7 +2121,7 @@ fn demo_host_tool_provisions_only_the_host_managed_path() -> TestResult {
             &IssueRequest {
                 name: "synthetic_demo_initializer",
                 capabilities: &["ledger/admin".into()],
-                ttl: Duration::from_secs(3600),
+                ttl: Duration::from_hours(1),
                 public_key: None,
                 generate_key: true,
             },
@@ -2347,7 +2347,7 @@ fn assert_restore_redo(
             &IssueRequest {
                 name: "post_restore_reader",
                 capabilities: &["ledger/read".into()],
-                ttl: Duration::from_secs(3600),
+                ttl: Duration::from_hours(1),
                 public_key: None,
                 generate_key: true,
             },

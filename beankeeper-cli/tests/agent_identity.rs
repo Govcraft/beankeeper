@@ -755,7 +755,7 @@ fn dated_token(ledger: &Ledger, issued: &Value, seconds: i64) -> Result<String, 
     let authority = Issuer::new(
         &root,
         SigningKey::from_bytes(&seed)?,
-        std::time::Duration::from_secs(3600),
+        std::time::Duration::from_hours(1),
     );
     let claims = AttestationClaims::builder()
         .jti(text(issued, "token_jti")?)
@@ -766,7 +766,7 @@ fn dated_token(ledger: &Ledger, issued: &Value, seconds: i64) -> Result<String, 
         )?)?)
         .capabilities(vec!["ledger/post".into()])
         .issuer(&root)
-        .ttl(std::time::Duration::from_secs(3600))
+        .ttl(std::time::Duration::from_hours(1))
         .build_at(Utc::now() + chrono::Duration::seconds(seconds))?;
     Ok(authority.issue_claims(&claims)?)
 }

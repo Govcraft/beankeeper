@@ -1986,7 +1986,7 @@ fn identity_ledger(path: &Path, passphrase_file: &Path) -> Result<Value, Box<dyn
                 &IssueRequest {
                     name: "mcp_agent",
                     capabilities: &["ledger/read".into()],
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },
@@ -2831,7 +2831,7 @@ fn proposal_identity(
                         .iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>(),
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },
@@ -3388,7 +3388,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
             &IssueRequest {
                 name: "poster",
                 capabilities: &["ledger/read".into(), "ledger/post".into()],
-                ttl: Duration::from_secs(3600),
+                ttl: Duration::from_hours(1),
                 public_key: None,
                 generate_key: true,
             },

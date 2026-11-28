@@ -641,7 +641,6 @@ pub(crate) fn statements(doc: &OfxDocument) -> impl Iterator<Item = OfxStatement
 /// # Errors
 ///
 /// Returns `CliError` on parse failure, missing accounts, or database errors.
-#[allow(clippy::too_many_arguments)]
 pub fn run_import_ofx(
     cli: &Cli,
     db_handle: &Db,

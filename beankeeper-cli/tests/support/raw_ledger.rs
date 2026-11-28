@@ -1,4 +1,4 @@
-//! Independent SQLite connections for deliberate fixture mutations.
+//! Independent `SQLite` connections for deliberate fixture mutations.
 
 use std::path::Path;
 
