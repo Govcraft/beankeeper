@@ -3406,6 +3406,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
     let admin = proposal_identity(&db, "owner", &["ledger/admin"])?;
+    let chart = proposal_identity(&db, "group_profile", &["ledger/chart"])?;
     let verified = identity::verify(db.read(), admin["token"].as_str().ok_or("admin token")?)?;
     let owner = Actor::new("owner".parse()?).with_identity(verified);
     Granted::<Admin>::with_db(&db, &owner, |grant| {
@@ -3449,6 +3450,26 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
         }),
     )?;
     assert_eq!(grouped["combined_before_eliminations"]["balanced"], true);
+    let mut bookkeeper = identity_client(&path, &passphrase_file, chart["token"].as_str(), false)?;
+    bookkeeper.success(
+        "ledger_setup_book_initialize",
+        &json!({
+            "target":{"company":"beta","reference":"group-test-profile"},
+            "settings":{"purpose":"business","base_currency":"EUR","fiscal_year_start":"01-01"}
+        }),
+    )?;
+    let response = client.call(
+        "group_balance_sheet",
+        &json!({"members":["acme","beta"],"currency":"USD","as_of":"2026-12-31"}),
+    )?;
+    assert_eq!(response["result"]["isError"], true);
+    let error = payload(&response)?;
+    assert_eq!(error["code"], "VALIDATION");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("functional currency EUR"))
+    );
 
     for kind in ["schedule-c", "1099", "1099-nec"] {
         client.success(
