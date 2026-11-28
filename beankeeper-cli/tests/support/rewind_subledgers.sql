@@ -1,3 +1,4 @@
+DROP TABLE stripe_evidence_reviews;
 DROP TABLE stripe_disputes;
 DROP TABLE stripe_payout_refunds;
 DROP TABLE stripe_refund_postings;
