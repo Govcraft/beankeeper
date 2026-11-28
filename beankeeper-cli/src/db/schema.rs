@@ -9,7 +9,8 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 47;
+const LATEST_VERSION: i64 = 48;
+pub(super) const PROJECT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(48);
 pub(super) const VAT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(45);
 pub(super) const FIXED_ASSETS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(44);
 pub(super) const EXPENSE_CLAIMS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(46);
@@ -408,6 +409,9 @@ fn apply_subledger_migrations(conn: &Connection, version: SchemaVersion) -> Resu
             apply_contractor_tax_schema,
         )?;
     }
+    if version < PROJECT_SCHEMA_VERSION {
+        migrate_with_writer(conn, PROJECT_SCHEMA_VERSION, apply_project_schema)?;
+    }
     Ok(())
 }
 
@@ -431,6 +435,19 @@ fn apply_fixed_assets_schema(conn: &Connection) -> Result<(), CliError> {
         migrate_hold_audit(conn, AuditTable::FixedAssets, FIXED_ASSETS_SCHEMA_VERSION)?;
         install_cash_class_guard(conn)?;
         conn.execute_batch(include_str!("schema/fixed_assets.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
+}
+
+fn apply_project_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(conn, AuditTable::Projects, PROJECT_SCHEMA_VERSION)?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/projects.sql"))?;
         super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
         conn.pragma_update(None, "defer_foreign_keys", false)?;
         Ok(())
@@ -2291,6 +2308,7 @@ enum AuditTable {
     Vat,
     ExpenseClaims,
     ContractorTax,
+    Projects,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2305,7 +2323,8 @@ impl From<AuditTable> for AuditHistory {
             | AuditTable::FixedAssets
             | AuditTable::Vat
             | AuditTable::ExpenseClaims
-            | AuditTable::ContractorTax => Self::Bookkeeping,
+            | AuditTable::ContractorTax
+            | AuditTable::Projects => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2501,6 +2520,38 @@ fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, act
             AuditAction::ContractorW9Recorded
         );
     }
+    if table >= AuditTable::Projects {
+        append_project_audit_extensions(entity, action);
+    }
+}
+
+fn append_project_audit_extensions(entity: &mut String, action: &mut String) {
+    use super::audit::{AuditAction, AuditEntity};
+    use std::fmt::Write as _;
+
+    for value in [
+        AuditEntity::Project,
+        AuditEntity::ProjectWork,
+        AuditEntity::ProjectDistribution,
+        AuditEntity::ProjectBudget,
+        AuditEntity::ProjectInvoice,
+    ] {
+        let _ = write!(entity, ",'{value}'");
+    }
+    for value in [
+        AuditAction::ProjectCreate,
+        AuditAction::ProjectArchive,
+        AuditAction::ProjectWorkRecord,
+        AuditAction::ProjectWorkApprove,
+        AuditAction::ProjectAllocate,
+        AuditAction::ProjectBudgetSet,
+        AuditAction::ProjectInvoiceDraft,
+        AuditAction::ProjectInvoiceClaim,
+        AuditAction::ProjectInvoiceCancel,
+        AuditAction::ProjectInvoiceRelease,
+    ] {
+        let _ = write!(action, ",'{value}'");
+    }
 }
 
 fn append_document_audit_extensions(entity: &mut String, action: &mut String) {
@@ -2667,7 +2718,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets | AuditTable::Vat | AuditTable::ExpenseClaims | AuditTable::ContractorTax => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed | AuditTable::Payroll | AuditTable::Documents | AuditTable::FixedAssets | AuditTable::Vat | AuditTable::ExpenseClaims | AuditTable::ContractorTax | AuditTable::Projects => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -3454,6 +3505,7 @@ mod tests {
                 VAT_SCHEMA_VERSION,
                 EXPENSE_CLAIMS_SCHEMA_VERSION,
                 CONTRACTOR_TAX_SCHEMA_VERSION,
+                PROJECT_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );

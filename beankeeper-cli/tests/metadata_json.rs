@@ -361,6 +361,14 @@ fn revert_to_v8_fixture(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
          DROP TABLE contractor_w9_details;
          DROP TABLE contractor_tax_profiles;
          DROP TABLE contractor_reviews;
+         DROP TABLE project_invoice_sources;
+         DROP TABLE project_invoice_drafts;
+         DROP TABLE project_expense_budgets;
+         DROP TABLE project_splits;
+         DROP TABLE project_distributions;
+         DROP TABLE project_time_entries;
+         DROP TABLE projects;
+         DROP INDEX idx_entry_company_id;
          DROP TABLE document_review_requests;
          DROP TABLE document_allocations;
          DROP TABLE book_documents;

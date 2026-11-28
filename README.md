@@ -574,6 +574,8 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `contractor_tax_worksheet`, `contractor_tax_preview` | Run the redacted 2025 worksheet or preview legacy candidates |
 | `contractor_tax_w9`, `contractor_tax_export` | Import checked identity details and export a protected local artifact using a signed tax-details grant |
 | `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
+| `project_list`, `project_show`, `project_time`, `project_unbilled`, `project_report` | Read project history, budgets, profitability and unbilled work |
+| `project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice` | Set up projects, record and approve work, split journal entries, and prepare invoices |
 | `account_list`, `account_show`, `account_create`, `account_rename`, `account_classify` | Inspect, create, rename, and classify accounts |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
 | `txn_link` | Record an undoable relationship between two transactions in the same book |

@@ -738,6 +738,8 @@ EXAMPLES:\n  \
 
     /// Manage invoices, bills and allocations.
     Document(crate::commands::document::DocumentArgs),
+    /// Track project work, costs, profitability and billing.
+    Project(crate::commands::project::ProjectArgs),
 
     /// Configure UK invoice VAT and review its ledger evidence.
     #[command(subcommand)]
@@ -3228,6 +3230,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Counterparty(args) => args.company.as_ref(),
         Command::Document(args) => args.company.as_ref(),
         Command::ExpenseClaim(args) => args.company.as_ref(),
+        Command::Project(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
         Command::FixedAsset(args) => args.company.as_ref(),

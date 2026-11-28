@@ -83,7 +83,7 @@ fn functional_currency(company: &Company<'_>) -> Result<Currency, CliError> {
     }
 }
 
-pub(super) fn save_draft(
+pub(in crate::db::audit) fn save_draft(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &Company<'_>,
@@ -94,6 +94,7 @@ pub(super) fn save_draft(
     validate_accounts(company, &draft)?;
     let previous = edit
         .map(|(id, revision)| -> Result<_, CliError> {
+            crate::db::audit::projects::protect_invoice_terms(company, id)?;
             let record = find_document(company, id)?;
             if record.issued.is_some() {
                 return Err(DocumentError::AlreadyIssued.into());
@@ -216,6 +217,7 @@ pub(super) fn apply_issue(
     {
         return Err(DocumentError::StaleDraft.into());
     }
+    let manifest = crate::db::audit::projects::validate_invoice(company, &before, intent.date)?;
     if current.vat != intent.vat {
         return Err(TaxError::StaleReview.into());
     }
@@ -278,6 +280,9 @@ pub(super) fn apply_issue(
         vat: intent.vat,
         total_minor: plan.total,
     };
+    if let Some(manifest) = manifest {
+        crate::db::audit::projects::claim_invoice(tx, actor, company, &manifest, &issued)?;
+    }
     let mut record = before.clone();
     persist_issue(tx, actor, company, &before, &mut record, issued)
 }

@@ -69,6 +69,13 @@ table_set!(RestorableTable {
     ContractorTaxProfiles => "contractor_tax_profiles",
     ContractorW9Details => "contractor_w9_details",
     ContractorReviews => "contractor_reviews",
+    Projects => "projects",
+    ProjectTime => "project_time_entries",
+    ProjectDistributions => "project_distributions",
+    ProjectSplits => "project_splits",
+    ProjectBudgets => "project_expense_budgets",
+    ProjectInvoices => "project_invoice_drafts",
+    ProjectInvoiceSources => "project_invoice_sources",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

@@ -1868,3 +1868,89 @@ pub(crate) struct TaxReportInput {
     #[schemars(with = "Option<String>")]
     pub currency: Option<beankeeper::types::Currency>,
 }
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectCreateInput {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub terms: crate::db::projects::ProjectTerms,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectSelector {
+    pub company: Company,
+    pub id: crate::db::projects::ProjectId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectListInput {
+    pub company: Company,
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectWorkInput {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub work: crate::db::projects::WorkInput,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectApprovalInput {
+    pub company: Company,
+    pub id: crate::db::projects::TimeEntryId,
+    pub date: Date,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectSplitInput {
+    pub company: Company,
+    pub entry: EntryId,
+    pub date: Date,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub splits: Vec<crate::db::projects::SplitInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectBudgetArgs {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub budget: crate::db::projects::ProjectBudgetInput,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectUnbilledInput {
+    pub company: Company,
+    pub id: crate::db::projects::ProjectId,
+    pub from: Date,
+    pub through: Date,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectInvoiceArgs {
+    pub company: Company,
+    #[serde(deserialize_with = "deserialize_structured")]
+    pub invoice: crate::db::audit::projects::ProjectInvoiceInput,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectReportInput {
+    pub company: Company,
+    pub month: crate::db::projects::ProjectMonth,
+    #[serde(deserialize_with = "deserialize_currency")]
+    #[schemars(with = "String")]
+    pub currency: Currency,
+    #[serde(default)]
+    pub detail: bool,
+}

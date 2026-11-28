@@ -78,6 +78,7 @@ enum Check {
     OpenItems,
     Vat,
     ContractorTax,
+    Projects,
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
@@ -108,6 +109,7 @@ impl Check {
             Self::OpenItems => "open_items",
             Self::Vat => "vat",
             Self::ContractorTax => "contractor_tax",
+            Self::Projects => "projects",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
             Self::FixedAssets => "fixed_assets",
@@ -202,6 +204,9 @@ fn verify_commercial_subledgers(
         checks,
         || audit::contractor_tax::verify(reader),
     )?;
+    Check::Projects.when(version >= schema::PROJECT_SCHEMA_VERSION, checks, || {
+        audit::projects::verify(reader)
+    })?;
     Ok(())
 }
 

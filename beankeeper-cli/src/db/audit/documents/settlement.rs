@@ -422,13 +422,21 @@ pub(super) fn credit(
         actor,
         company,
         AllocationPlan {
-            document_id: input.document_id,
+            document_id: input.document_id.clone(),
             source_id: source,
             effective_on: input.date,
             amount: input.amount_minor,
             kind: AllocationKind::Credit,
         },
         Some(input.line),
+    )?;
+    crate::db::audit::projects::apply_invoice_credit(
+        tx,
+        actor,
+        company,
+        &input.document_id,
+        input.line,
+        source,
     )?;
     Ok(DocumentOutcome::Allocations {
         items: vec![result],

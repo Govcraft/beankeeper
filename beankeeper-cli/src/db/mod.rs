@@ -23,6 +23,7 @@ pub mod metadata;
 pub mod metadata_filter;
 pub mod periods;
 pub mod policy;
+pub mod projects;
 pub mod proposals;
 pub mod rules;
 pub mod schedules;

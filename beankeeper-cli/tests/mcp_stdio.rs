@@ -821,6 +821,19 @@ const LEDGER_TOOLS: &[&str] = &[
     "document_allocations",
     "document_aging",
     "document_proposals",
+    "project_create",
+    "project_archive",
+    "project_list",
+    "project_show",
+    "project_record",
+    "project_approve",
+    "project_time",
+    "project_split",
+    "project_budget",
+    "project_unbilled",
+    "project_draft_invoice",
+    "project_cancel_invoice",
+    "project_report",
     "document_draft",
     "document_amend",
     "document_issue",
@@ -1638,7 +1651,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
-    assert_eq!(names.len(), 49);
+    assert_eq!(names.len(), 54);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3339,7 +3352,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 49);
+    assert_eq!(names.len(), 54);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3509,7 +3522,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 49);
+    assert_eq!(names.len(), 54);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

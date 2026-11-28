@@ -21,6 +21,7 @@ pub mod payroll;
 pub mod period;
 pub mod policy;
 mod posting_output;
+pub mod project;
 pub mod reconcile;
 pub mod reference;
 pub mod report;
@@ -88,6 +89,7 @@ pub fn operation(cmd: &Command) -> Operation {
         Command::Document(args) => args.command.operation(),
         Command::Tax(command) => command.operation(),
         Command::ExpenseClaim(args) => args.command.operation(),
+        Command::Project(args) => args.command.operation(),
         Command::BookkeepingPolicy(command) => command.operation(),
         Command::InformPreference(command) => command.operation(),
         Command::Period(command) => period::operation(command),
@@ -342,6 +344,10 @@ fn dispatch_ledger(
         Command::Document(args) => Some(LedgerRequest::Document(
             (require_company(cli)?.clone(), args.command.clone()).into(),
         )),
+        Command::Project(args) => Some(LedgerRequest::Project(project::ProjectRequest::new(
+            require_company(cli)?.clone(),
+            args.command.clone(),
+        ))),
         Command::BookkeepingPolicy(command) => Some(LedgerRequest::Standing(
             (require_company(cli)?, command).into(),
         )),
@@ -525,6 +531,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Document(_)
         | Command::Tax(_)
         | Command::ExpenseClaim(_)
+        | Command::Project(_)
         | Command::BookkeepingPolicy(_)
         | Command::InformPreference(_)
         | Command::Report(_)
