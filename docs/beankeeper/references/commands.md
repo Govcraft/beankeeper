@@ -297,6 +297,10 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_reverse` | `company`, original transaction `id`; optional `date`, `description`, `reference` |
 | `txn_recategorize` | `company`, exactly one of the original transaction's `id` or `reference`, and `to_account`; optional `from_account`, `entry_id`, `date`, `tax_category`, `description`, `posting_reference`, `on_conflict` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, `include_reversed`, and repeated `meta` filters; show accepts `id` |
+| `payroll_preview` | Preview aggregate payroll and return a reviewed import digest |
+| `payroll_import` | Post or propose the exact reviewed aggregate payroll journal |
+| `payroll_show` | Read the payroll liabilities and their reconciled withdrawals |
+| `payroll_fund` | Match a posted withdrawal to a payroll liability |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
 | `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
 | `fixed_asset_show` | Show a fixed asset and movements as of a date |
@@ -562,7 +566,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 
 Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor_tax_export`,
 `company_create`, `company_delete`, `tax_configure`, `bank_feed_connect`, `bank_feed_sync`, `bank_feed_disconnect`,
-`bank_feed_post`, `bank_feed_link`,
+`bank_feed_post`, `bank_feed_link`, `payroll_import`, `payroll_fund`,
 `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
