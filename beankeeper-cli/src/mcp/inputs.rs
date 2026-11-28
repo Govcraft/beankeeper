@@ -955,6 +955,9 @@ pub(crate) struct CashForecastInput {
     pub cash_account: Vec<Account>,
     #[serde(default)]
     pub adjust: Vec<String>,
+    /// Confirmed scheduled:TEMPLATE:DATE=open-item:DOCUMENT source links.
+    #[serde(default)]
+    pub link_sources: Vec<crate::commands::report_forecast::ForecastLink>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

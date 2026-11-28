@@ -14,6 +14,8 @@ mod corrections;
 mod counterparties;
 #[path = "mcp_stdio/documents.rs"]
 mod documents;
+#[path = "mcp_stdio/forecast_links.rs"]
+mod forecast_links;
 
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;

@@ -2275,7 +2275,21 @@ occurrences, and invoice and bill balances still open after applying
 allocations posted through the horizon. Transfers between selected cash
 accounts net to zero. Overdue items without an expected date remain
 visible as unscheduled. Identical amounts on the same date between an
-open item and a schedule appear as possible overlaps for review.
+open item and a schedule appear as possible overlaps for review. Confirm a
+scheduled payment for a specific invoice or bill using the emitted source IDs:
+
+```sh
+bk --company acme --json report cash-forecast --as-of 2026-02-01 \
+  --through 2026-03-31 \
+  --link-source 'scheduled:sched_…:2026-02-08=open-item:doc_…'
+```
+
+A confirmed link counts the occurrence at its scheduled date. Only the excess
+open balance remains at the document's due date. An occurrence can cover one
+document, and several distinct occurrences can cover one document up to its
+outstanding balance. For an already posted payment, use the document allocation
+workflow. Forecast links appear in the output and apply only to the requested
+projection. Scenario adjustments can then move, resize or omit its cash events.
 
 Add an adjustment for an emitted `source_id` to compare a scenario against
 the baseline. Repeat `--adjust` for different sources. Supported forms are
@@ -2287,4 +2301,5 @@ and the first date cash is projected to fall below zero.
 MCP uses the same report request. Set `basis: "cash"` for
 `kind: "income-statement"` and pass `card_accounts` as an array when used.
 For forecasts, use `kind: "cash-forecast"` with
-`as_of`, `through`, and optional `cadence` and `adjust`.
+`as_of`, `through`, and optional `cadence`, `adjust`, and `link_sources` arrays.
+Each `link_sources` string uses the same syntax as `--link-source`.

@@ -31,6 +31,10 @@ use crate::{
     output::amounts::MoneyField,
 };
 
+mod links;
+use links::ConfirmedLink;
+pub(crate) use links::ForecastLink;
+
 const MAX_SCHEDULE_OCCURRENCES: usize = 10_000;
 const MAX_OVERLAP_EXAMPLES: usize = 200;
 
@@ -60,6 +64,7 @@ pub(crate) struct ForecastRequest {
     pub(crate) currency: Option<Currency>,
     pub(crate) accounts: Vec<AccountSelector>,
     pub(crate) adjustments: Vec<String>,
+    pub(crate) links: Vec<ForecastLink>,
 }
 
 impl From<&crate::cli::CashForecastArgs> for ForecastRequest {
@@ -70,6 +75,7 @@ impl From<&crate::cli::CashForecastArgs> for ForecastRequest {
             cadence: args.cadence.into(),
             currency: args.currency,
             adjustments: args.adjust.clone(),
+            links: args.link_source.clone(),
             accounts: args
                 .cash_account
                 .iter()
@@ -88,6 +94,7 @@ impl From<crate::mcp::inputs::CashForecastInput> for ForecastRequest {
             cadence: input.cadence.unwrap_or(ForecastCadenceArg::Weekly).into(),
             currency: input.currency,
             adjustments: input.adjust,
+            links: input.link_sources,
             accounts: input
                 .cash_account
                 .into_iter()
@@ -177,6 +184,8 @@ pub(super) struct Forecast {
     accounts: Vec<CashAccount>,
     possible_overlaps: Vec<PossibleOverlap>,
     overlaps_truncated: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    linked_sources: Vec<ConfirmedLink>,
     #[serde(flatten)]
     baseline: Projection,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,8 +229,10 @@ pub(super) fn read(
         &codes,
         &references,
     )?);
-    let open_items = document_movements(company, request, currency)?;
-    let (possible_overlaps, overlaps_truncated) = find_overlaps(&events, &open_items);
+    let mut open_items = document_movements(company, request, currency)?;
+    let linked_sources = links::apply(&events, &mut open_items, &request.links)?;
+    let (possible_overlaps, overlaps_truncated) =
+        find_overlaps(&events, &open_items, &request.links);
     events.extend(open_items);
     let opening = Money::from_minor(i128::from(opening), currency);
     let adjustments = parse_adjustments(&request.adjustments, currency)?;
@@ -250,6 +261,7 @@ pub(super) fn read(
         accounts,
         possible_overlaps,
         overlaps_truncated,
+        linked_sources,
         baseline,
         scenario,
     })
@@ -364,7 +376,9 @@ fn document_movements(
 fn find_overlaps(
     events: &[ForecastEvent<ForecastSource>],
     open_items: &[ForecastEvent<ForecastSource>],
+    links: &[ForecastLink],
 ) -> (Vec<PossibleOverlap>, bool) {
+    let linked_pairs: BTreeMap<_, _> = links.iter().map(ForecastLink::pair).collect();
     let mut by_date_and_amount = BTreeMap::new();
     for event in events {
         if let ForecastSource::Scheduled { .. } = event.source
@@ -379,6 +393,7 @@ fn find_overlaps(
     let mut matches: Vec<_> = open_items
         .iter()
         .flat_map(|document| {
+            let linked_pairs = &linked_pairs;
             document
                 .on
                 .and_then(|date| {
@@ -386,6 +401,9 @@ fn find_overlaps(
                 })
                 .into_iter()
                 .flatten()
+                .filter(move |&&scheduled| {
+                    linked_pairs.get(scheduled).copied() != Some(&document.source)
+                })
                 .map(move |scheduled| PossibleOverlap {
                     scheduled_source_id: scheduled.to_string(),
                     document_source_id: document.source.to_string(),
@@ -593,6 +611,14 @@ pub(super) fn render(
             if let Some(date) = report.baseline.first_shortfall {
                 writeln!(output.writer, "First projected shortfall: {date}")?;
             }
+            for linked in &report.linked_sources {
+                writeln!(
+                    output.writer,
+                    "Linked source {} covers {}",
+                    linked.link,
+                    linked.covered.decimal()
+                )?;
+            }
             if !report.possible_overlaps.is_empty() {
                 writeln!(
                     output.writer,
@@ -676,6 +702,23 @@ fn render_csv(report: &Forecast, output: &mut dyn std::io::Write) -> Result<(), 
                 ])
                 .map_err(map)?;
         }
+    }
+    for linked in &report.linked_sources {
+        writer
+            .write_record([
+                "link",
+                "baseline",
+                "",
+                "",
+                &report.currency.to_string(),
+                &linked.link.to_string(),
+                &linked.covered.minor_units().to_string(),
+                "",
+                "",
+                "",
+                "",
+            ])
+            .map_err(map)?;
     }
     writer.flush()?;
     Ok(())

@@ -719,3 +719,136 @@ fn a_designated_card_uses_the_charge_date_and_omits_its_cash_settlement()
     );
     Ok(())
 }
+
+type ForecastTest = Result<(), Box<dyn std::error::Error>>;
+
+fn linked_forecast(db: &str, extra: &[&str]) -> Result<Value, serde_json::Error> {
+    let mut args = vec![
+        "--json",
+        "report",
+        "cash-forecast",
+        "--as-of",
+        "2026-02-01",
+        "--through",
+        "2026-02-20",
+        "--cadence",
+        "monthly",
+    ];
+    args.extend_from_slice(extra);
+    let envelope: Value = serde_json::from_str(&ok(db, &args))?;
+    Ok(envelope["data"].clone())
+}
+
+fn forecast_obligations(
+    path: &str,
+    schedule_amount: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    post(path, "2026-02-01", &["1000:70"], &["3000:70"]);
+    let party: Value = serde_json::from_str(&ok(
+        path,
+        &[
+            "--json",
+            "counterparty",
+            "create",
+            "--name",
+            "Rent vendor",
+            "--role",
+            "vendor",
+        ],
+    ))?;
+    let terms = serde_json::json!({
+        "kind":"bill", "number":"RENT-1", "counterparty_id":party["data"]["party"]["id"],
+        "control_account":"2000", "due_date":"2026-02-08",
+        "lines":[{"description":"Rent","quantity":"1","unit_price_minor":10000,"account":"5000"}],
+    });
+    let draft: Value = serde_json::from_str(&ok(
+        path,
+        &["--json", "document", "draft", "--terms", &terms.to_string()],
+    ))?;
+    let bill = draft["data"]["record"]["id"]
+        .as_str()
+        .ok_or("missing bill ID")?;
+    ok(path, &["document", "issue", bill, "--date", "2026-02-01"]);
+    ok(
+        path,
+        &[
+            "schedule",
+            "create",
+            "-d",
+            "February cash payment",
+            "--start",
+            "2026-02-08",
+            "--debit",
+            &format!("5000:{schedule_amount}"),
+            "--credit",
+            &format!("1000:{schedule_amount}"),
+        ],
+    );
+    Ok(format!("open-item:{bill}"))
+}
+
+fn forecast_schedule(data: &Value) -> Result<&str, Box<dyn std::error::Error>> {
+    data["events"]
+        .as_array()
+        .ok_or("missing forecast evidence")?
+        .iter()
+        .find(|event| event["source"]["kind"] == "scheduled")
+        .and_then(|event| event["source_id"].as_str())
+        .ok_or_else(|| "missing scheduled source".into())
+}
+
+#[test]
+fn forecast_reports_equal_amount_and_date_as_advisory_until_linked() -> ForecastTest {
+    let (_directory, db) = empty_ledger();
+    let document = forecast_obligations(&db, "100")?;
+    let baseline = linked_forecast(&db, &[])?;
+    let schedule = forecast_schedule(&baseline)?;
+    assert_eq!(baseline["events"].as_array().map(Vec::len), Some(2));
+    assert_eq!(baseline["periods"][0]["closing"], -13_000);
+    assert_eq!(
+        baseline["possible_overlaps"][0]["scheduled_source_id"],
+        schedule
+    );
+    assert_eq!(
+        baseline["possible_overlaps"][0]["document_source_id"],
+        document
+    );
+    let link = format!("{schedule}={document}");
+    let linked = linked_forecast(&db, &["--link-source", &link])?;
+    assert_eq!(linked["events"].as_array().map(Vec::len), Some(1));
+    assert_eq!(linked["events"][0]["source_id"], schedule);
+    assert_eq!(linked["periods"][0]["closing"], -3_000);
+    assert_eq!(linked["possible_overlaps"], serde_json::json!([]));
+    assert_eq!(linked["linked_sources"][0]["link"], link);
+    assert_eq!(linked["linked_sources"][0]["covered"], -10_000);
+    Ok(())
+}
+
+#[test]
+fn forecast_link_preserves_partial_bill_and_uses_the_scheduled_cash_date() -> ForecastTest {
+    let (_directory, db) = empty_ledger();
+    let document = forecast_obligations(&db, "60")?;
+    let before = ok(&db, &["--json", "verify"]);
+    let baseline = linked_forecast(&db, &[])?;
+    let schedule = forecast_schedule(&baseline)?;
+    let link = format!("{schedule}={document}");
+    let adjustment = format!("{schedule}=move:2026-02-15");
+    let linked = linked_forecast(&db, &["--link-source", &link, "--adjust", &adjustment])?;
+    assert_eq!(linked["periods"][0]["closing"], -3_000);
+    assert_eq!(linked["first_shortfall"], "2026-02-08");
+    assert_eq!(linked["scenario"]["first_shortfall"], "2026-02-15");
+    let residual = linked["events"]
+        .as_array()
+        .ok_or("missing linked events")?
+        .iter()
+        .find(|event| event["source_id"] == document)
+        .ok_or("missing residual bill")?;
+    assert_eq!(residual["movement"], -4_000);
+    assert_eq!(residual["on"], "2026-02-08");
+    assert_eq!(linked["linked_sources"][0]["covered"], -6_000);
+    let after = ok(&db, &["--json", "verify"]);
+    let before: Value = serde_json::from_str(&before)?;
+    let after: Value = serde_json::from_str(&after)?;
+    assert_eq!(before["data"], after["data"]);
+    Ok(())
+}

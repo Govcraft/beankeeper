@@ -2496,6 +2496,9 @@ pub struct CashForecastArgs {
     /// Scenario adjustment such as posted:123=move:2026-12-15. Repeat for each source.
     #[arg(long)]
     pub(crate) adjust: Vec<String>,
+    /// Confirm scheduled:TEMPLATE:DATE=open-item:DOCUMENT. Repeat for each occurrence.
+    #[arg(long)]
+    pub(crate) link_source: Vec<crate::commands::report_forecast::ForecastLink>,
 }
 
 #[derive(Subcommand, Debug, Clone)]

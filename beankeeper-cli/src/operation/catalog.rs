@@ -73,7 +73,7 @@ macro_rules! ledger_operations {
 - aging: account (at least one required), as_of, include_children, buckets, group_by_metadata, currency, method, link_key, detail, group_across_accounts, filter_metadata.
 - reconciliation: account (required), to or as_of, mode, link_key, statement_balance, statement, filter_metadata, group_by_metadata, currency.
 - cash-flow: from, to, cash_account, currency, compare, explain_change.
-- cash-forecast: as_of and through required; cadence, cash_account, currency, adjust.
+- cash-forecast: as_of and through required; cadence, cash_account, currency, adjust, link_sources (scheduled:TEMPLATE:DATE=open-item:DOCUMENT).
 Use only one of as_of and to. For date-range reports without as_of, use from and to.")),
             ReportAging => ("report.aging", Read, grouped(Report, "report.aging")),
             ReportBalance => ("report.balance", Read, grouped(Report, "report.balance")),
