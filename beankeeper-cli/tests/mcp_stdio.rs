@@ -16,6 +16,7 @@ mod documents;
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;
 
+mod fixed_assets;
 #[path = "mcp_stdio/fx.rs"]
 mod fx;
 
@@ -834,6 +835,12 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_show",
     "report",
     "financial_summary",
+    "fixed_asset_register",
+    "fixed_asset_show",
+    "fixed_asset_list",
+    "fixed_asset_preview",
+    "fixed_asset_depreciate",
+    "fixed_asset_dispose",
     "fx_post",
     "fx_revalue",
     "ledger_setup_status",
@@ -1591,7 +1598,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 37);
+    assert_eq!(names.len(), 40);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3288,7 +3295,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 37);
+    assert_eq!(names.len(), 40);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3454,7 +3461,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 37);
+    assert_eq!(names.len(), 40);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

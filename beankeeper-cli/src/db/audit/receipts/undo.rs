@@ -641,6 +641,7 @@ fn check_profile_undo(
         })
         .transpose()?;
     crate::db::fx::guard_profile(reader, company, previous_currency)?;
+    crate::db::fixed_assets::guard_profile(reader, company, previous_currency)?;
     if created_book {
         let in_use = reader.query_row(
             "SELECT EXISTS (SELECT 1 FROM accounts WHERE company_slug = ?1 AND archived = 0)

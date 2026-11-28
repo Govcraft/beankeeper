@@ -261,6 +261,22 @@ fn require_account(
     Ok(())
 }
 
+pub(in crate::db) fn guard_profile(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    currency: Option<Currency>,
+) -> Result<(), CliError> {
+    if reader.schema_version()? >= super::schema::FIXED_ASSETS_SCHEMA_VERSION
+        && reader.query_row(
+            "SELECT EXISTS(SELECT 1 FROM fixed_assets WHERE company_slug=?1 AND json_extract(details,'$.currency') IS NOT ?2)",
+            params![company,currency], |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Err(invalid("fixed assets require the existing functional currency"));
+    }
+    Ok(())
+}
+
 fn validate_terms(company: &Company<'_>, terms: &Terms) -> Result<(), CliError> {
     terms.schedule()?;
     if super::fx::functional_currency(company.read(), company.slug())?

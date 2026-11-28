@@ -580,6 +580,11 @@ fn record_profile(
     settings: BookSettings,
 ) -> Result<BookProfile, CliError> {
     crate::db::fx::guard_profile(writer.tx.read(), company, Some(settings.base_currency))?;
+    crate::db::fixed_assets::guard_profile(
+        writer.tx.read(),
+        company,
+        Some(settings.base_currency),
+    )?;
     let supersedes = previous.as_ref().map(|profile| profile.revision);
     let revision = writer
         .tx

@@ -1,5 +1,5 @@
 use super::asset_from_row;
-use super::{Asset, AssetView, Depreciation, movements};
+use super::{Asset, AssetView, Depreciation, MovementKind, movements};
 use crate::{db::companies::Company, error::CliError, output::amounts::MoneyField};
 use beankeeper::types::{AccountCode, Currency};
 use chrono::NaiveDate;
@@ -11,6 +11,55 @@ pub(crate) struct RegisterView {
     as_of: NaiveDate,
     assets: Vec<AssetView>,
     control_accounts: Vec<ControlAccount>,
+    rollforward: Option<Rollforward>,
+}
+
+#[derive(Debug, Serialize)]
+struct Rollforward {
+    currency: Currency,
+    #[serde(flatten)]
+    additions: MoneyField,
+    #[serde(flatten)]
+    opening_depreciation: MoneyField,
+    #[serde(flatten)]
+    depreciation: MoneyField,
+    #[serde(flatten)]
+    disposed_book_value: MoneyField,
+    #[serde(flatten)]
+    ending_book_value: MoneyField,
+}
+
+impl Rollforward {
+    fn from_assets(assets: &[AssetView]) -> Option<Self> {
+        let currency = assets.first()?.asset.terms.currency;
+        let amounts = assets.iter().fold([0_i128; 5], |mut sum, asset| {
+            let terms = &asset.asset.terms;
+            let cost = i128::from(terms.cost.minor_units());
+            let opening = i128::from(terms.opening_depreciation_minor);
+            sum[0] += cost;
+            sum[1] += opening;
+            sum[2] += asset
+                .movements
+                .iter()
+                .filter(|m| m.kind == MovementKind::Depreciation)
+                .map(|m| i128::from(m.amount))
+                .sum::<i128>();
+            if asset.disposal_gain_loss.is_some() {
+                sum[3] += cost - asset.accumulated_depreciation.minor_units();
+            }
+            sum[4] += asset.book_value.minor_units();
+            sum
+        });
+        let amount = |key, value| MoneyField::from_minor(key, value, currency);
+        Some(Self {
+            currency,
+            additions: amount("additions_minor", amounts[0]),
+            opening_depreciation: amount("opening_depreciation_minor", amounts[1]),
+            depreciation: amount("depreciation_minor", amounts[2]),
+            disposed_book_value: amount("disposed_book_value_minor", amounts[3]),
+            ending_book_value: amount("ending_book_value_minor", amounts[4]),
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -69,29 +118,49 @@ impl fmt::Display for AssetView {
     }
 }
 
+#[derive(Serialize)]
+pub(crate) struct AssetCsvRow<'a> {
+    id: String,
+    name: &'a str,
+    as_of: NaiveDate,
+    currency: Currency,
+    cost_minor: i64,
+    accumulated_depreciation_minor: i128,
+    book_value_minor: i128,
+    disposal_gain_loss_minor: Option<i128>,
+}
+
 impl AssetView {
-    pub(crate) fn csv_row(&self) -> impl Serialize {
-        (
-            self.asset.id.to_string(),
-            self.asset.terms.name.to_string(),
-            self.as_of,
-            self.asset.terms.currency,
-            self.asset.terms.cost.minor_units(),
-            self.accumulated_depreciation.minor_units(),
-            self.book_value.minor_units(),
-            self.disposal_gain_loss.map(MoneyField::minor_units),
-        )
+    pub(crate) fn csv_row(&self) -> AssetCsvRow<'_> {
+        AssetCsvRow {
+            id: self.asset.id.to_string(),
+            name: self.asset.terms.name.as_ref(),
+            as_of: self.as_of,
+            currency: self.asset.terms.currency,
+            cost_minor: self.asset.terms.cost.minor_units(),
+            accumulated_depreciation_minor: self.accumulated_depreciation.minor_units(),
+            book_value_minor: self.book_value.minor_units(),
+            disposal_gain_loss_minor: self.disposal_gain_loss.map(MoneyField::minor_units),
+        }
     }
 }
 
+#[derive(Serialize)]
+pub(crate) struct DepreciationCsvRow {
+    date: NaiveDate,
+    currency: Currency,
+    amount_minor: i128,
+    transaction_id: Option<crate::db::ids::TransactionId>,
+}
+
 impl Depreciation {
-    pub(crate) fn csv_row(&self) -> impl Serialize {
-        (
-            self.date,
-            self.amount.money().currency(),
-            self.amount.minor_units(),
-            self.transaction_id,
-        )
+    pub(crate) const fn csv_row(&self) -> DepreciationCsvRow {
+        DepreciationCsvRow {
+            date: self.date,
+            currency: self.amount.money().currency(),
+            amount_minor: self.amount.minor_units(),
+            transaction_id: self.transaction_id,
+        }
     }
 }
 
@@ -111,7 +180,10 @@ impl fmt::Display for Depreciation {
     }
 }
 
-pub(super) fn read_assets(company: &Company<'_>, as_of: NaiveDate) -> Result<Vec<Asset>, CliError> {
+pub(super) fn read_assets(
+    company: &Company<'_>,
+    as_of: Option<NaiveDate>,
+) -> Result<Vec<Asset>, CliError> {
     let mut query = company.read().prepare(
         "SELECT id,acquisition_id,details FROM fixed_assets WHERE company_slug=?1 AND (?2 IS NULL OR acquired_on<=?2) ORDER BY acquired_on,id"
     )?;
@@ -171,6 +243,7 @@ pub(crate) fn list(company: &Company<'_>, as_of: NaiveDate) -> Result<RegisterVi
         })
         .collect::<Result<_, CliError>>()?;
     Ok(RegisterView {
+        rollforward: Rollforward::from_assets(&assets),
         as_of,
         assets,
         control_accounts,
