@@ -49,7 +49,7 @@ pub enum AccountingBasis {
     Cash,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum BasisMode {
     Accrual,
     Cash { allow_incomplete: bool },
