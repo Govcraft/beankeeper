@@ -305,3 +305,22 @@ fn snapshot_restore_and_undo_follow_counterparty_bookkeeping_history() -> TestRe
     books.data(&["verify"])?;
     Ok(())
 }
+
+#[test]
+fn summary_can_match_open_items_within_each_party() -> TestResult {
+    let books = Books::new()?;
+    let first = books.customer()?;
+    let second = books.customer()?;
+    let charge = books.post("acme", "1100:100", "4000:100")?;
+    let payment = books.post("acme", "1000:100", "1100:100")?;
+    books.acme(&["counterparty", "associate", &first, &charge])?;
+    books.acme(&["counterparty", "associate", &second, &payment])?;
+
+    let standard = books.acme(&["summary", "--to", "2026-04-01"])?;
+    let grouped = books.acme(&["summary", "--to", "2026-04-01", "--group-by-counterparty"])?;
+    assert_eq!(standard["attention"]["aged_receivables"]["count"], 0);
+    assert_eq!(grouped["attention"]["aged_receivables"]["count"], 1);
+    assert_eq!(grouped["attention"]["aged_receivables"]["total"], 10_000);
+    assert_eq!(standard["standing"], grouped["standing"]);
+    Ok(())
+}

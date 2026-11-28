@@ -2264,6 +2264,7 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
 }
 
 fn append_counterparty_audit_extensions(entity: &mut String, action: &mut String) {
+    use super::audit::{AuditAction, AuditEntity};
     use std::fmt::Write as _;
 
     let _ = write!(
