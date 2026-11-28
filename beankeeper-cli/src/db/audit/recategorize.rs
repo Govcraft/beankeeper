@@ -334,6 +334,11 @@ impl ReadyMove {
                 "expense claim journals require a claim correction".into(),
             ));
         }
+        if super::payment_collection::protects(tx.read(), company.slug(), original.id)? {
+            return Err(CliError::Validation(
+                "Stripe collection journals require a verified provider correction".into(),
+            ));
+        }
         check_original(tx, company, &original)?;
         let source = SourceLine::load(company, original.id, request)?;
         super::projects::guard_project_entry(company, source.id)?;

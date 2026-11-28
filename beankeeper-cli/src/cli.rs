@@ -752,6 +752,10 @@ EXAMPLES:\n  \
     /// Draft, review, and reconcile vendor payments.
     Disbursement(crate::commands::disbursement::DisbursementArgs),
 
+    /// Collect payments for issued invoices through the configured Stripe host.
+    #[command(subcommand)]
+    Collection(crate::commands::collection::CollectionCommand),
+
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
     BookkeepingPolicy(BookkeepingPolicyCommand),

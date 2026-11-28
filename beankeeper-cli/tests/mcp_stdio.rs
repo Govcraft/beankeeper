@@ -886,6 +886,16 @@ const LEDGER_TOOLS: &[&str] = &[
     "txn_show",
     "report",
     "financial_summary",
+    "collection_create_link",
+    "collection_apply",
+    "collection_resolve_receipt",
+    "collection_show",
+    "collection_exceptions",
+    "collection_reconcile_refund",
+    "collection_refunds",
+    "collection_disputes",
+    "collection_reconcile_payout",
+    "collection_payouts",
     "fixed_asset_register",
     "fixed_asset_show",
     "fixed_asset_list",
@@ -1661,6 +1671,27 @@ fn settlement_report_schema_and_stdio_preserve_statement_charge_applications() -
     Ok(())
 }
 
+fn assert_collection_read_only_tools(names: &BTreeSet<&str>) {
+    for read in [
+        "collection_show",
+        "collection_exceptions",
+        "collection_refunds",
+        "collection_disputes",
+        "collection_payouts",
+    ] {
+        assert!(names.contains(read), "read-only catalog omits {read}");
+    }
+    for write in [
+        "collection_create_link",
+        "collection_apply",
+        "collection_resolve_receipt",
+        "collection_reconcile_refund",
+        "collection_reconcile_payout",
+    ] {
+        assert!(!names.contains(write), "read-only catalog exposes {write}");
+    }
+}
+
 #[test]
 fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult {
     let dir = tempdir()?;
@@ -1672,6 +1703,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
+    assert_eq!(names.len(), 66);
+    assert_collection_read_only_tools(&names);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
     assert!(!names.contains("tax_configure"));
@@ -3375,7 +3408,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 61);
+    assert_eq!(names.len(), 66);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3545,7 +3578,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 61);
+    assert_eq!(names.len(), 66);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));

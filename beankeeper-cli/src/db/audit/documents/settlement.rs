@@ -525,6 +525,17 @@ fn revoke_payment(
     reason: AllocationRevocation,
 ) -> Result<DocumentOutcome, CliError> {
     let before = read_allocation(company, id)?;
+    let captured: bool = company.read().query_row(
+        "SELECT EXISTS(SELECT 1 FROM collection_events WHERE posting=?1)",
+        [before.allocation.source_id],
+        |row| row.get(0),
+    )?;
+    if captured {
+        return Err(CliError::Validation(
+            "Stripe allocations are adjusted using verified refunds".into(),
+        ));
+    }
+
     if before.reversed_on == Some(date) {
         return Ok(DocumentOutcome::Revoked {
             allocation: before,

@@ -83,6 +83,16 @@ table_set!(RestorableTable {
     StockDocumentLinks => "stock_document_links",
     Disbursements => "disbursements",
     DisbursementBills => "disbursement_bills",
+    InvoiceCollections => "invoice_collections",
+    CollectionLinks => "collection_links",
+    CollectionEvents => "collection_events",
+    StripeDisputes => "stripe_disputes",
+    StripeRefunds => "stripe_refunds",
+    StripeRefundPostings => "stripe_refund_postings",
+    StripePayouts => "stripe_payouts",
+    StripePayoutPostings => "stripe_payout_postings",
+    StripePayoutPayments => "stripe_payout_payments",
+    StripePayoutRefunds => "stripe_payout_refunds",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are
