@@ -49,6 +49,8 @@ table_set!(RestorableTable {
     FxPostings => "fx_postings",
     Counterparties => "counterparties",
     TransactionCounterparties => "transaction_counterparties",
+    BankFeedConnections => "bank_feed_connections",
+    BankFeedItems => "bank_feed_items",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

@@ -1175,6 +1175,13 @@ posts only the additional occurrence. File names and unrelated rows do not
 affect these references. Duplicate explicit references still skip or error
 according to `--on-conflict`. Explicit blank JSON references are rejected.
 
+### Connected Bank Feeds
+
+Poll a Plaid bank or card account into a review queue. Review an exact
+provider revision before matching it to a ledger posting or creating a new
+posting or approval proposal. Sync leaves balances unchanged. See
+[bank feeds](docs/bank-feeds.md) for host credentials and commands.
+
 ### Bank Import Categorization Rules
 
 Save recurring description-to-account mappings once, then apply them automatically

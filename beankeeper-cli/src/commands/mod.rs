@@ -3,6 +3,7 @@ pub mod agent;
 pub mod audit;
 mod audit_snapshot;
 pub mod backup;
+pub mod bank_feed;
 pub mod budget;
 pub mod company;
 pub mod counterparty;
@@ -60,6 +61,7 @@ pub fn command_name(cmd: &Command) -> &'static str {
 pub fn operation(cmd: &Command) -> Operation {
     match cmd {
         Command::Summary(_) => Operation::Summary,
+        Command::BankFeed(command) => command.operation(),
         Command::Setup(command) => command.operation(),
         Command::Security(args) => args.command.operation(),
         Command::Investment(args) => args.command.operation(),
@@ -235,6 +237,9 @@ fn can_append_audit(command: &Command) -> bool {
 }
 
 fn dispatch_command(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
+    if matches!(cli.command, Command::BankFeed(_)) {
+        bank_feed::check_output(cli)?;
+    }
     let chart = report::ChartRequest::try_from((cli.output.chart, cli.output.chart_all))?;
     chart.validate_cli(cli)?;
     if dispatch_ledger(cli, meta.clone(), chart)? {
@@ -252,6 +257,15 @@ fn dispatch_ledger(
 
     let request = match &cli.command {
         Command::Setup(command) => return dispatch_setup(cli, meta, command).map(|()| true),
+        Command::BankFeed(command) => command
+            .request()
+            .map(|request| {
+                Ok::<_, CliError>(LedgerRequest::BankFeed((
+                    require_company(cli)?.clone(),
+                    request,
+                )))
+            })
+            .transpose()?,
         Command::Summary(args) => Some(LedgerRequest::Summary(
             (require_company(cli)?, args, chart).try_into()?,
         )),
@@ -413,6 +427,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
     }
     let meta = meta.map(|m| cli.meta(m.command, m.company.as_deref()));
     match &cli.command {
+        Command::BankFeed(command) => bank_feed::run(cli, command),
         Command::Backup { output, overwrite } => backup::backup(cli, output, *overwrite),
         Command::Restore { input } => backup::restore(
             cli,

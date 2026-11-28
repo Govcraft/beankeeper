@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod amounts;
 pub mod attachments;
 pub mod audit;
+pub mod bank_feed;
 pub mod budgets;
 pub(crate) mod calendar_date;
 pub mod clearings;

@@ -539,6 +539,10 @@ pub enum Command {
     /// Answer how your finances are doing, with facts, comparisons and optional Desktop links.
     Summary(crate::commands::summary::SummaryArgs),
 
+    /// Connect and review provider bank or card transactions.
+    #[command(subcommand)]
+    BankFeed(crate::commands::bank_feed::BankFeedCommand),
+
     /// Inspect the ledger's readiness for guided setup.
     #[command(subcommand)]
     Setup(crate::commands::setup::SetupCommand),

@@ -197,7 +197,7 @@ pub(in crate::db) fn propose_onboarding(
     propose(scope.tx(), scope.actor(), company, line, options)
 }
 
-fn post(
+pub(in crate::db) fn post(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &CompanySlug,
@@ -214,7 +214,7 @@ fn post(
     )
 }
 
-fn propose(
+pub(in crate::db) fn propose(
     tx: &AuditedTx<'_>,
     actor: &Actor,
     company: &CompanySlug,
