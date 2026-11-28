@@ -193,6 +193,13 @@ pub(super) fn apply_issue(
 ) -> Result<DocumentOutcome, CliError> {
     let before = find_document(company, &intent.id)?;
     if let Some(issued) = &before.issued {
+        if before.revision != intent.revision
+            || issued.counterparty != intent.counterparty
+            || issued.due_date != intent.due_date
+            || issued.currency != intent.currency
+        {
+            return Err(DocumentError::StaleDraft.into());
+        }
         return repeat_issue(&before, issued, intent.date);
     }
     let current = prepare_issue(company, &before, intent.date)?;

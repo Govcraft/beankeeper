@@ -13,7 +13,7 @@ use crate::{
 
 use super::{
     AllocationId, AllocationKind, DocumentDraft, DocumentError, DocumentId, DocumentRevision,
-    EffectiveAllocation, IssuedDocument, OpenItem,
+    DocumentSettlementStatus, EffectiveAllocation, IssuedDocument, OpenItem,
 };
 
 /// Current draft and, when issued, its immutable financial snapshot.
@@ -212,9 +212,17 @@ pub fn open_items_as_of(
             } else {
                 0
             };
+            let status = if open_minor == 0 {
+                DocumentSettlementStatus::Paid
+            } else if applied == 0 {
+                DocumentSettlementStatus::Open
+            } else {
+                DocumentSettlementStatus::Partial
+            };
             Ok(OpenItem {
                 document,
                 open_minor,
+                status,
                 days_overdue,
                 allocations,
             })

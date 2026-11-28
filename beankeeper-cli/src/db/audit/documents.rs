@@ -54,6 +54,9 @@ pub enum DocumentOutcome {
     /// A batch of applied settlements.
     Allocations {
         items: Vec<settlement::AllocationResult>,
+        /// Part of the payment left unapplied on the effective date.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unapplied_minor: Option<i64>,
     },
     /// An allocation that was removed from active settlement.
     Revoked {

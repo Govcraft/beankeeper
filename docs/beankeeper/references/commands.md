@@ -275,6 +275,8 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `bank_feed_show`, `bank_feed_list`, `bank_feed_review` | Inspect the connection, staged revisions and matching ledger transactions |
 | `bank_feed_post`, `bank_feed_link` | Submit a reviewed bank feed revision for posting or attach it to an existing transaction |
 | `counterparty_list`, `counterparty_show`, `counterparty_suggest` | Search records, inspect a record, or preview legacy metadata matches |
+| `document_show`, `document_print`, `document_list`, `document_allocations`, `document_aging`, `document_proposals` | Inspect issued terms, allocations, due-date aging and document proposals |
+| `document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject` | Draft, issue, settle and review invoices and bills |
 | `account_list`, `account_show` | `company`; list accepts `account_type` and `name`. Set `with_balances: true` for balances, with optional `from`, `to`, and `currency`; show accepts `code` |
 | `account_create` | `company`, `code`, `name`, `account_type`, optional `default_tax_category` |
 | `account_rename` | `company`, existing account `code`, and the new display `name` |
@@ -536,6 +538,7 @@ Aging takes `as_of`. Use `from` and `to` for other date-range reports.
 ### Read-only tools
 
 Read-only mode removes `company_create`, `company_delete`, `bank_feed_post`, `bank_feed_link`,
+`document_draft`, `document_amend`, `document_issue`, `document_allocate`, `document_credit`, `document_revoke`, `document_approve`, `document_reject`,
 `counterparty_create`, `counterparty_amend`, `counterparty_archive`, `counterparty_associate`,
 `account_create`, `account_rename`, `account_classify`, `txn_post`, `txn_propose`, `txn_approve`,
 `fx_post`, `fx_revalue`, `txn_reject`, `txn_reverse`, `txn_recategorize`, `txn_link`, `txn_settle_hold`,
@@ -2155,3 +2158,57 @@ a `totals` object with these decimal-string fields from the
 Supply aggregate totals only. The adapter does not need employee records or
 provider credentials. It recognizes gross wages and employer tax expense
 against net pay and combined employee and employer taxes payable.
+
+## Invoices and bills
+
+A draft gives an invoice or bill its company-scoped number and stable `doc_`
+ID. Its revision changes on amendment. An issued record keeps the original
+contact details, due date, terms and exact line amounts. Use the book profile's
+base currency. A legacy company with no profile uses its sole journal currency
+or USD when empty.
+
+```sh
+bk --company acme document draft --terms '{
+  "kind":"invoice", "number":"INV-001", "counterparty_id":"PARTY_ID",
+  "control_account":"1100",
+  "lines":[{"description":"Design work","quantity":"1.5","unit_price_minor":10000,"account":"4000"}]
+}'
+bk --company acme document issue DOC_ID --date 2026-02-01
+bk --company acme document print DOC_ID
+bk --company acme document aging --as-of 2026-03-15
+bk --company acme document allocate 42 --date 2026-03-15 --allocations   '[{"document_id":"DOC_ID","amount_minor":5000}]'
+```
+
+A line uses an exact decimal quantity and integer minor-unit price.
+Round half up per line before totaling. An invoice credits revenue and debits
+the receivable control. A bill debits expense or asset accounts and credits
+the payable control. Supply `due_date` in the terms to override party terms.
+Issue creates one journal. Retrying the same document and issue date returns
+the issued record without creating another journal.
+
+Allocate a posted payment to one or more documents that share the same
+counterparty, account, and currency. A pre-existing conflicting association is
+rejected. If the source has no association, the allocation records it using
+the selected documents. Any unassigned payment capacity is returned in
+`unapplied_minor`. Effectiveness begins on the requested date, which may not
+precede the source or issue dates. Use `document allocations` for the historical
+record and `document revoke ID --date YYYY-MM-DD` to remove a payment allocation
+without editing its journal. Reconciled payments and closed dates are protected.
+
+Credit an open balance with `document credit --credit` and an object containing
+`document_id`, a credit `number`, the original one-based `line`, positive
+`amount_minor`, and effective `date`. The credit creates a reversing journal
+against that line and a linked allocation. To credit a previously paid amount,
+first revoke the applicable payment allocation. General journal reversal and
+recategorization reject protected open-item postings.
+
+In propose-only mode, issuing, allocating, crediting, and revoking return a
+frozen proposal instead of posting. A separate signed reviewer uses
+`document approve` or `document reject`. The reviewed issue captures the draft
+revision, party details, currency, and due date. A changed draft or party must
+be submitted again. Approval retries return the first approval result.
+
+`document aging` reads typed documents and uses their due dates.
+`report aging` remains the general-ledger view using posting dates. Choose the
+typed report for document due dates. The two views overlap on postings created
+by invoices and bills, so their totals should not be combined.

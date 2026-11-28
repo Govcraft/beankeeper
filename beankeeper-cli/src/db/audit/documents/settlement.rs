@@ -71,11 +71,17 @@ pub(super) fn apply_payment(
 ) -> Result<DocumentOutcome, CliError> {
     periods::ensure_open(company.read(), company.slug(), on)?;
     let planned = plan_payment(company, source, on, items)?;
-    let mut applied = Vec::with_capacity(planned.len());
-    for item in planned {
+    if let Some(party) = planned.link_party {
+        counterparties::associate_issued(tx.connection(), actor, company, party, source)?;
+    }
+    let mut applied = Vec::with_capacity(planned.items.len());
+    for item in planned.items {
         applied.push(save_allocation(tx, actor, company, item, None)?);
     }
-    Ok(DocumentOutcome::Allocations { items: applied })
+    Ok(DocumentOutcome::Allocations {
+        items: applied,
+        unapplied_minor: Some(planned.unapplied_minor),
+    })
 }
 
 impl AllocationKind {
@@ -95,12 +101,18 @@ struct AllocationPlan {
     kind: AllocationKind,
 }
 
+struct PaymentPlan {
+    items: Vec<AllocationPlan>,
+    link_party: Option<CounterpartyId>,
+    unapplied_minor: i64,
+}
+
 fn plan_payment(
     company: &Company<'_>,
     source: TransactionId,
     on: NaiveDate,
     items: Vec<AllocateItem>,
-) -> Result<Vec<AllocationPlan>, CliError> {
+) -> Result<PaymentPlan, CliError> {
     if items.is_empty() || items.len() > 1000 {
         return Err(CliError::Validation(
             "provide between 1 and 1000 allocations".into(),
@@ -132,9 +144,13 @@ fn plan_payment(
         }
         let issued = issued_document(company, &item.document_id)?;
         if issued.currency != payment.currency
-            || Some(&issued.counterparty.id) != party.as_ref()
+            || party
+                .as_ref()
+                .is_some_and(|current| current != &issued.counterparty.id)
             || base.as_ref().is_some_and(|root| {
-                root.control_account != issued.control_account || root.kind != issued.kind
+                root.control_account != issued.control_account
+                    || root.kind != issued.kind
+                    || root.counterparty.id != issued.counterparty.id
             })
         {
             return Err(DocumentError::IncompatibleSource.into());
@@ -151,7 +167,27 @@ fn plan_payment(
         });
     }
     let document = base.ok_or(DocumentError::IncompatibleSource)?;
-    let usable: i128 = entries
+    let usable = source_capacity(&entries, &document);
+    let peak = peak_applied(company, CapacityFor::Source(source), on)?;
+    validate_capacity(usable, peak, sum)?;
+    let applied: i64 = company.read().query_row(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM document_allocations
+         WHERE company_slug=?1 AND source_id=?2 AND effective_on<=?3
+           AND (reversed_on IS NULL OR reversed_on>?3)",
+        params![company.slug(), source, on],
+        |row| row.get(0),
+    )?;
+    let unapplied_minor =
+        i64::try_from(usable - i128::from(applied) - sum).map_err(|_| DocumentError::OutOfRange)?;
+    Ok(PaymentPlan {
+        items: planned,
+        link_party: party.is_none().then_some(document.counterparty.id),
+        unapplied_minor,
+    })
+}
+
+fn source_capacity(entries: &[crate::db::EntryRow], document: &IssuedDocument) -> i128 {
+    entries
         .iter()
         .filter(|entry| entry.account_code == document.control_account.as_str())
         .map(|entry| {
@@ -162,12 +198,14 @@ fn plan_payment(
                 -magnitude
             }
         })
-        .sum();
-    let used = peak_applied(company, CapacityFor::Source(source), on)?;
-    if usable <= 0 || sum + used > usable {
-        return Err(DocumentError::AllocationExceedsBalance.into());
+        .sum()
+}
+
+fn validate_capacity(capacity: i128, consumed: i128, requested: i128) -> Result<(), DocumentError> {
+    if capacity <= 0 || consumed + requested > capacity {
+        return Err(DocumentError::AllocationExceedsBalance);
     }
-    Ok(planned)
+    Ok(())
 }
 
 fn issued_document(company: &Company<'_>, id: &DocumentId) -> Result<IssuedDocument, CliError> {
@@ -202,10 +240,11 @@ fn ensure_item_capacity(
         return Err(DocumentError::AllocationBeforeSource.into());
     }
     let applied = peak_applied(company, CapacityFor::Document(&issued.id), on)?;
-    if i128::from(amount) + applied > i128::from(issued.total_minor) {
-        return Err(DocumentError::AllocationExceedsBalance.into());
-    }
-    Ok(())
+    Ok(validate_capacity(
+        i128::from(issued.total_minor),
+        applied,
+        i128::from(amount),
+    )?)
 }
 
 /// A newly applied payment or credit and its audit receipt.
@@ -343,6 +382,7 @@ pub(super) fn credit(
     )?;
     Ok(DocumentOutcome::Allocations {
         items: vec![result],
+        unapplied_minor: None,
     })
 }
 

@@ -509,6 +509,18 @@ pub enum AllocationKind {
     Credit,
 }
 
+/// Settlement state derived from the as-of open balance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentSettlementStatus {
+    /// The full original amount remains outstanding.
+    Open,
+    /// Some of the original amount remains outstanding.
+    Partial,
+    /// No original balance remains outstanding.
+    Paid,
+}
+
 /// Snapshot of a document balance at the report cutoff.
 #[derive(Debug, Clone, Serialize)]
 pub struct OpenItem {
@@ -516,6 +528,8 @@ pub struct OpenItem {
     pub document: IssuedDocument,
     /// Outstanding amount in the document's exact currency.
     pub open_minor: i64,
+    /// Payment status computed at the cutoff.
+    pub status: DocumentSettlementStatus,
     /// Number of days after due date at the cutoff (zero if current).
     pub days_overdue: i64,
     /// Effective allocations included in this projection.
