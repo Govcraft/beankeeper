@@ -221,6 +221,11 @@ for setup, permissions and schema v19 migration behavior.
 
 If you want to edit your ledger in `$EDITOR`, the plain-text tools are excellent. If you want your AI assistant to do the bookkeeping while you keep the guardrails, `bk` is the right foundation.
 
+## Fixed assets
+
+Register acquisitions, preview and post straight-line book depreciation, and
+record disposals with gains or losses. See the [fixed asset guide](docs/fixed-assets.md).
+
 ## Loan amortization
 
 Calculate a monthly fixed-rate schedule without a database or company:
@@ -563,6 +568,12 @@ mutation tools are absent and cannot be called.
 | `security_create`, `security_list`, `security_price` | Register securities and record prices |
 | `investment_buy`, `investment_sell`, `investment_lots`, `investment_holdings` | Trade, inspect lots and value holdings |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
+| `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
+| `fixed_asset_show` | Show a fixed asset and movements as of a date |
+| `fixed_asset_list` | List as-of assets and reconcile their control accounts |
+| `fixed_asset_preview` | Preview unposted depreciation charges through a date |
+| `fixed_asset_depreciate` | Post pending full-month depreciation charges |
+| `fixed_asset_dispose` | Dispose of an asset and record the gain or loss |
 | `fx_post` | Record native minor units and their functional value with a rate and unique reference |
 | `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |

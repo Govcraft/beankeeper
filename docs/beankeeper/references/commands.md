@@ -292,6 +292,12 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `txn_recategorize` | `company`, exactly one of the original transaction's `id` or `reference`, and `to_account`; optional `from_account`, `entry_id`, `date`, `tax_category`, `description`, `posting_reference`, `on_conflict` |
 | `txn_list`, `txn_show` | `company`; list accepts CLI filters in snake_case, including `limit`, `offset`, `count`, `include_reversed`, and repeated `meta` filters; show accepts `id` |
 | `financial_summary` | Read-only advisor facts and comparisons; `company`, optional dates, currency and account selector arrays; returns the full `bk summary` JSON envelope |
+| `fixed_asset_register` | Register an existing acquisition or post its acquisition journal |
+| `fixed_asset_show` | Show a fixed asset and movements as of a date |
+| `fixed_asset_list` | List as-of assets and reconcile their control accounts |
+| `fixed_asset_preview` | Preview unposted depreciation charges through a date |
+| `fixed_asset_depreciate` | Post pending full-month depreciation charges |
+| `fixed_asset_dispose` | Dispose of an asset and record the gain or loss |
 | `fx_post` | Record native minor units and their functional value with a rate and unique reference |
 | `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
@@ -551,7 +557,7 @@ Read-only mode removes `company_create`, `company_delete`, `bank_feed_post`, `ba
 `ledger_setup_opening_preview`, `ledger_setup_opening_reserve`,
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
-`inform_preference_set`, `reconcile_statement`, `audit_undo`, `restore`, and `restore_undo` from the router.
+`inform_preference_set`, `reconcile_statement`, `audit_undo`, `restore`, `restore_undo`, `fixed_asset_register`, `fixed_asset_depreciate`, and `fixed_asset_dispose` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

@@ -79,6 +79,7 @@ enum Check {
     TransactionLinks,
     StatementBatches,
     StatementReconciliations,
+    FixedAssets,
     ForeignKeys,
     SqliteIntegrity,
     RowCounts,
@@ -104,6 +105,7 @@ impl Check {
             Self::OpenItems => "open_items",
             Self::TransactionLinks => "transaction_links",
             Self::StatementBatches => "statement_batches",
+            Self::FixedAssets => "fixed_assets",
             Self::StatementReconciliations => "statement_reconciliations",
             Self::ForeignKeys => "foreign_keys",
             Self::SqliteIntegrity => "sqlite_integrity",
@@ -266,6 +268,9 @@ impl VerifiedLedger {
         }
         if version >= schema::PAYROLL_SCHEMA_VERSION {
             Check::PayrollRuns.record(audit::payroll::verify(reader), &mut checks)?;
+        }
+        if version >= schema::FIXED_ASSETS_SCHEMA_VERSION {
+            Check::FixedAssets.record(super::fixed_assets::verify(reader), &mut checks)?;
         }
         Check::ForeignKeys.record(verify_foreign_keys(reader), &mut checks)?;
         Check::SqliteIntegrity.record(verify_integrity(reader), &mut checks)?;

@@ -564,6 +564,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk period close/reopen/list` | Close company posting dates, explicitly reopen with a reason, and inspect cutoffs |
 | `bk company create/list/show/delete` | Manage companies |
 | `bk account create/list/show/rename/classify/delete` | Manage chart of accounts |
+| `bk fixed-asset register/show/list/preview/depreciate/dispose` | Manage a fixed asset register and book depreciation |
 | `bk fx post/revalue` | Record native movements and audited carrying-value adjustments |
 | `bk txn post` | Record a balanced journal entry |
 | `bk txn meta set/unset` | Annotate posted transactions by ID or reference without changing financial fields |

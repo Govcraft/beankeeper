@@ -322,6 +322,11 @@ impl ReadyMove {
         request: &Details,
     ) -> Result<Self, CliError> {
         let original = request.transaction.load(company)?;
+        if crate::db::fixed_assets::protects(tx.read(), company.slug(), original.id)? {
+            return Err(CliError::Validation(
+                "fixed asset movements cannot be recategorized as standalone transactions".into(),
+            ));
+        }
         check_original(tx, company, &original)?;
         let source = SourceLine::load(company, original.id, request)?;
         let accounts = MoveAccounts::try_from((company, source, &request.to_account))?;

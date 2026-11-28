@@ -79,6 +79,11 @@ convert! {
         account_type: input.account_type, default_tax_category: input.default_tax_category,
         native_currency: input.native_currency,
     }),
+    fixed_asset_show(FixedAssetAt) => FixedAsset(input => input.show()),
+    fixed_asset_list(FixedAssetList) => FixedAsset(input => input.into()),
+    fixed_asset_preview(FixedAssetAt) => FixedAsset(input => input.preview()),
+    fixed_asset_depreciate(FixedAssetAt) => FixedAsset(input => input.depreciate()),
+    fixed_asset_dispose(FixedAssetDispose) => FixedAsset(input => input.into()),
     fx_post(FxPostInput) => Fx(input => (input.company.into_inner(), crate::db::fx::Movement {
         account: input.account.into_inner(), offset: input.offset_account.into_inner(),
         direction: input.direction.into_inner(), native_minor: input.native_minor, rate: input.rate,
@@ -155,6 +160,7 @@ convert! {
 }
 
 try_convert! {
+    fixed_asset_register(FixedAssetRegister) => FixedAsset(input => input.try_into()?),
     txn_link(TxnLink) => Transaction(input => input.try_into()?),
     reconcile_statement(ReconcileStatement) => Reconcile(input => input.try_into()?),
     txn_recategorize(TxnRecategorize) => Transaction(input => input.try_into()?),
@@ -241,6 +247,7 @@ pub(super) fn response(
 
     let (data, pagination): (Value, Option<&Pagination>) = match response {
         LedgerResponse::Account(response) => (encode(response)?, None),
+        LedgerResponse::FixedAsset(response) => (encode(response.data())?, None),
         LedgerResponse::Fx(response) => (encode(response)?, None),
         LedgerResponse::AuditLog(response) => {
             (encode(response.data())?, Some(response.pagination()))

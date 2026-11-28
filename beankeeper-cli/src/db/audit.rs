@@ -59,6 +59,7 @@ pub(crate) mod counterparties;
 pub(crate) mod documents;
 mod standing;
 pub use standing::{set_bookkeeping_policy, set_inform_preference};
+pub(super) mod fixed_assets;
 pub(crate) mod grant;
 pub(crate) mod identity_write;
 pub(super) mod investment;
@@ -159,6 +160,8 @@ macro_rules! audit_labels {
 audit_labels! {
     /// The entity classification stored in the audit trail.
     AuditEntity, "entity" {
+        FixedAsset => "fixed_asset",
+        FixedAssetMovement => "fixed_asset_movement",
         Period => "period",
         StatementReconciliation => "statement_reconciliation",
         Proposal => "proposal",
@@ -200,7 +203,9 @@ impl AuditEntity {
     const fn affects_books(self) -> bool {
         match self {
             Self::Key | Self::Agent | Self::Policy | Self::SpendLimit | Self::Audit => false,
-            Self::Period
+            Self::FixedAsset
+            | Self::FixedAssetMovement
+            | Self::Period
             | Self::StatementReconciliation
             | Self::Proposal
             | Self::Security
@@ -299,6 +304,8 @@ audit_labels! {
 /// The only creation/attachment kinds accepted by the insert recorder.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Creation {
+    FixedAsset,
+    FixedAssetMovement,
     Security,
     Lot,
     Price,
@@ -314,6 +321,8 @@ pub(crate) enum Creation {
 impl Creation {
     fn classification(self) -> (AuditEntity, AuditAction) {
         let entity = match self {
+            Self::FixedAsset => AuditEntity::FixedAsset,
+            Self::FixedAssetMovement => AuditEntity::FixedAssetMovement,
             Self::Security => AuditEntity::Security,
             Self::Lot => AuditEntity::Lot,
             Self::Price => AuditEntity::Price,
@@ -2067,8 +2076,7 @@ fn reverse_in_scope(
             company: p.company_slug.clone(),
         })
     })?;
-    reject_investment_reversal(conn, p.id)?;
-    payroll::reject_generic_reversal(tx.read(), p.id)?;
+    check_subledger_reversal(tx.read(), p.company_slug, p.id)?;
     let mut original_metadata: serde_json::Value = original
         .metadata
         .as_deref()
@@ -2162,7 +2170,22 @@ fn reverse_in_scope(
     Ok(result)
 }
 
-fn is_reversal(
+fn check_subledger_reversal(
+    reader: ReadConn<'_>,
+    company: &super::companies::CompanySlug,
+    id: TransactionId,
+) -> Result<(), CliError> {
+    reject_investment_reversal(reader.connection(), id)?;
+    payroll::reject_generic_reversal(reader, id)?;
+    if super::fixed_assets::protects(reader, company, id)? {
+        return Err(CliError::Validation(
+            "fixed asset movements cannot be reversed as standalone transactions".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn is_reversal(
     reader: ReadConn<'_>,
     company: &super::companies::CompanySlug,
     id: TransactionId,

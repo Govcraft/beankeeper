@@ -57,6 +57,8 @@ table_set!(RestorableTable {
     BookDocuments => "book_documents",
     DocumentAllocations => "document_allocations",
     DocumentReviews => "document_review_requests",
+    FixedAssets => "fixed_assets",
+    FixedAssetMovements => "fixed_asset_movements",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

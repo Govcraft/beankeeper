@@ -9,6 +9,7 @@ pub mod company;
 pub mod counterparty;
 pub mod document;
 pub mod export;
+pub mod fixed_asset;
 pub mod fx;
 pub mod import_ofx;
 pub mod init;
@@ -113,6 +114,7 @@ pub fn operation(cmd: &Command) -> Operation {
             CompanyCommand::Delete { .. } => Operation::CompanyDelete,
         },
         Command::Fx(args) => args.command.operation(),
+        Command::FixedAsset(args) => args.command.operation(),
         Command::Account(args) => match &args.command {
             AccountCommand::Create { .. } => Operation::AccountCreate,
             AccountCommand::Rename { .. } => Operation::AccountRename,
@@ -287,6 +289,9 @@ fn dispatch_ledger(
                 Ok(request.map(LedgerRequest::Company))
             });
         }
+        Command::FixedAsset(args) => Some(LedgerRequest::FixedAsset(
+            (require_company(cli)?, &args.command).try_into()?,
+        )),
         Command::Fx(args) => Some(LedgerRequest::Fx(
             (require_company(cli)?, &args.command).into(),
         )),
@@ -490,6 +495,7 @@ fn dispatch_local(cli: &Cli, meta: Option<Meta>) -> Result<(), CliError> {
         | Command::Verify
         | Command::Company(_)
         | Command::Account(_)
+        | Command::FixedAsset(_)
         | Command::Fx(_)
         | Command::Budget(_)
         | Command::Rule(_)
