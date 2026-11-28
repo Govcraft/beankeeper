@@ -64,6 +64,7 @@ pub(super) mod expense_claims;
 pub(super) mod fixed_assets;
 pub(crate) mod grant;
 pub(crate) mod identity_write;
+pub(crate) mod inventory;
 pub(super) mod investment;
 pub mod payroll;
 pub(crate) mod projects;
@@ -191,6 +192,9 @@ audit_labels! {
         ContractorTaxProfile => "contractor_tax_profile",
         ContractorReview => "contractor_review",
         Document => "document",
+        InventoryItem => "inventory_item",
+        StockMovement => "stock_movement",
+        StockDocumentLink => "stock_document_link",
         DocumentAllocation => "document_allocation",
         DocumentReview => "document_review",
         VatRate => "vat_rate",
@@ -243,6 +247,9 @@ impl AuditEntity {
             | Self::ContractorTaxProfile
             | Self::ContractorReview
             | Self::Document
+            | Self::InventoryItem
+            | Self::StockMovement
+            | Self::StockDocumentLink
             | Self::DocumentAllocation
             | Self::DocumentReview
             | Self::VatRate
@@ -2120,7 +2127,7 @@ fn reverse_in_scope(
             company: p.company_slug.clone(),
         })
     })?;
-    check_subledger_reversal(tx.read(), p.company_slug, p.id)?;
+    check_subledger_reversal(&company, p.id)?;
     if let Some(result) = existing_reversal(&company, p)? {
         return Ok(result);
     }
@@ -2206,11 +2213,9 @@ fn reverse_in_scope(
     Ok(result)
 }
 
-fn check_subledger_reversal(
-    reader: ReadConn<'_>,
-    company: &super::companies::CompanySlug,
-    id: TransactionId,
-) -> Result<(), CliError> {
+fn check_subledger_reversal(scope: &Company<'_>, id: TransactionId) -> Result<(), CliError> {
+    let reader = scope.read();
+    let company = scope.slug();
     reject_investment_reversal(reader.connection(), id)?;
     payroll::reject_generic_reversal(reader, id)?;
     if super::fixed_assets::protects(reader, company, id)? {
@@ -2223,7 +2228,7 @@ fn check_subledger_reversal(
             "expense claim journals require a claim correction".into(),
         ));
     }
-    Ok(())
+    super::inventory::protect_posting(scope, id)
 }
 
 fn reversed_metadata(raw: Option<&str>, reversal: TransactionId) -> String {

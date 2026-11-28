@@ -321,6 +321,14 @@ rejected. See the [HTTP client example](../../../README.md#streamable-http) and
 | `expense_claim_void` | Cancel an approved and unpaid claim |
 | `expense_claim_show` | Show the latest immutable claim revision |
 | `expense_claim_list` | List a book’s most recently created claims |
+| `inventory_register` | Register a stock item and its control accounts |
+| `inventory_list` | List stock items |
+| `inventory_show` | Show a registered stock item |
+| `inventory_move` | Record a receipt, shipment, return or count adjustment |
+| `inventory_movement` | Show the movement and journal |
+| `inventory_movements` | List recent movements through a cutoff |
+| `inventory_match_document` | Match a stock movement with an issued invoice or bill line |
+| `inventory_valuation` | Show historical FIFO value and stock control account differences |
 | `fx_post` | Record native minor units and their functional value with a rate and unique reference |
 | `fx_revalue` | Revalue one or all foreign accounts as of a date and return an undo receipt for each adjustment |
 | `ledger_setup_status` | Read ledger readiness, including company, account, and transaction counts and whether the approval key is configured. Takes no arguments. |
@@ -584,8 +592,8 @@ Read-only mode removes `contractor_tax_review`, `contractor_tax_w9`, `contractor
 `ledger_setup_statement_preview`, `ledger_setup_statement_commit`,
 `rule_create`, `rule_amend`, `rule_undo`, `rule_delete`, `bookkeeping_policy_set`,
 `inform_preference_set`, `reconcile_statement`, `audit_undo`, `restore`, `restore_undo`, `fixed_asset_register`, `fixed_asset_depreciate`, `fixed_asset_dispose`,
-
-`expense_claim_receipt_intake`, `expense_claim_create`, `expense_claim_amend`, `expense_claim_submit`, `expense_claim_approve`, `expense_claim_reject`, `expense_claim_record_payment`, `expense_claim_void` from the router.
+`expense_claim_receipt_intake`, `expense_claim_create`, `expense_claim_amend`, `expense_claim_submit`, `expense_claim_approve`, `expense_claim_reject`, `expense_claim_record_payment`, `expense_claim_void`,
+`inventory_register`, `inventory_move`, and `inventory_match_document` from the router.
 It retains `txn_proposals`, `security_list`, `investment_lots`,
 `investment_holdings` and the other tools requiring `ledger/read`.
 Although `txn_reconcile` only checks links, its `ledger/reconcile` requirement

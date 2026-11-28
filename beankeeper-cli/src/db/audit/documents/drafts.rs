@@ -54,7 +54,8 @@ fn validate_accounts(
     .into_iter()
     .map(|row| (row.code, row.account_type))
     .collect::<BTreeMap<String, AccountType>>();
-    plan_issue(draft, |code| accounts.get(code.as_str()).copied()).map_err(Into::into)
+    let stock = crate::db::inventory::plan_roles(company)?;
+    plan_issue(draft, |code| accounts.get(code.as_str()).copied(), &stock).map_err(Into::into)
 }
 
 fn terms(company: &Company<'_>, draft: &DocumentDraft) -> Result<IssuedCounterparty, CliError> {

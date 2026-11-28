@@ -76,6 +76,11 @@ table_set!(RestorableTable {
     ProjectBudgets => "project_expense_budgets",
     ProjectInvoices => "project_invoice_drafts",
     ProjectInvoiceSources => "project_invoice_sources",
+    InventoryItems => "inventory_items",
+    StockMovements => "stock_movements",
+    StockLots => "stock_lots",
+    StockPartitions => "stock_partitions",
+    StockDocumentLinks => "stock_document_links",
 });
 
 // These tables are outside the mutation API entirely. Sequence rows are

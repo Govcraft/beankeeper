@@ -747,6 +747,9 @@ EXAMPLES:\n  \
     /// Import and review receipts and expense claims.
     ExpenseClaim(crate::commands::expense_claim::ExpenseArgs),
 
+    /// Record physical goods and report inventory valuation.
+    Inventory(crate::commands::inventory::InventoryArgs),
+
     /// Read or set standing sales-tax and processor-fee instructions.
     #[command(subcommand)]
     BookkeepingPolicy(BookkeepingPolicyCommand),
@@ -3231,6 +3234,7 @@ pub fn require_company(cli: &Cli) -> Result<&CompanySlug, CliError> {
         Command::Document(args) => args.company.as_ref(),
         Command::ExpenseClaim(args) => args.company.as_ref(),
         Command::Project(args) => args.company.as_ref(),
+        Command::Inventory(args) => args.company.as_ref(),
         Command::Account(args) => args.company.as_ref(),
         Command::Fx(args) => args.company.as_ref(),
         Command::FixedAsset(args) => args.company.as_ref(),

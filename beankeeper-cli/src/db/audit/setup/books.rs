@@ -585,6 +585,7 @@ fn record_profile(
         company,
         Some(settings.base_currency),
     )?;
+    crate::db::inventory::guard_profile(writer.tx.read(), company, Some(settings.base_currency))?;
     let supersedes = previous.as_ref().map(|profile| profile.revision);
     let revision = writer
         .tx
