@@ -42,8 +42,9 @@ enum ReviewState {
     },
 }
 
+/// An account label change awaiting independent review.
 #[derive(Serialize)]
-pub(crate) struct RenameProposal {
+pub struct RenameProposal {
     kind: &'static str,
     id: ProposalId,
     company_slug: CompanySlug,
@@ -52,6 +53,38 @@ pub(crate) struct RenameProposal {
     payload: RequestedRename,
     #[serde(flatten)]
     state: ReviewState,
+}
+
+impl RenameProposal {
+    /// The company-scoped proposal identifier.
+    #[must_use]
+    pub const fn id(&self) -> &ProposalId {
+        &self.id
+    }
+
+    /// The verified identity that requested the rename.
+    #[must_use]
+    pub fn proposer_uri(&self) -> &str {
+        &self.proposer_uri
+    }
+
+    /// The account code the proposal would leave in place.
+    #[must_use]
+    pub const fn account(&self) -> &AccountCode {
+        &self.payload.code
+    }
+
+    /// The proposed display name.
+    #[must_use]
+    pub const fn name(&self) -> &AccountName {
+        &self.payload.name
+    }
+
+    /// Whether the request is awaiting a decision.
+    #[must_use]
+    pub const fn is_pending(&self) -> bool {
+        matches!(self.state, ReviewState::Pending { .. })
+    }
 }
 
 struct StoredProposal {
@@ -193,7 +226,11 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProposalRow> {
     ))
 }
 
-pub(crate) fn list(
+/// List label changes visible to the caller in the selected company.
+///
+/// # Errors
+/// Returns ledger or authorization errors.
+pub fn list(
     reader: ReadConn<'_>,
     company: &CompanySlug,
     actor: &Actor,
@@ -213,6 +250,31 @@ pub(crate) fn list(
     .collect()
 }
 
+/// Read a proposal that the caller is allowed to review.
+///
+/// # Errors
+/// Returns ledger or authorization errors.
+pub fn get(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    actor: &Actor,
+    id: &ProposalId,
+) -> Result<Option<RenameProposal>, CliError> {
+    let all = proposals::can_review_all(reader, actor)?;
+    reader
+        .query_row(
+            &select_proposals(
+                reader,
+                "AND proposed.entity_id = ?2 AND (?3 OR proposed.agent_uri = ?4)",
+            ),
+            params![company, id, all, actor.agent_uri()],
+            read_row,
+        )
+        .optional()?
+        .map(|row| Ok(StoredProposal::try_from(row)?.review(company)))
+        .transpose()
+}
+
 fn find(
     tx: &AuditedTx<'_>,
     company: &CompanySlug,
@@ -230,7 +292,11 @@ fn find(
         .transpose()
 }
 
-pub(crate) fn approve(
+/// Approve the exact previously requested account name.
+///
+/// # Errors
+/// An unrelated actor must approve and the account must have the same revision.
+pub fn approve(
     grant: &Granted<'_, Approve>,
     company: &CompanySlug,
     id: &ProposalId,
@@ -243,6 +309,11 @@ pub(crate) fn approve(
             Some(Resolution::Approved { .. }) => return Ok(Some(proposal.review(company))),
             Some(_) => return Err(already_resolved(id)),
             None => {}
+        }
+        if actor.agent_uri() == Some(proposal.proposer_uri.as_str()) {
+            return Err(CliError::Forbidden(
+                "the proposer cannot approve their own request".into(),
+            ));
         }
         let scope = Company::bind(tx.read(), company.clone())?;
         let request = &proposal.request;
@@ -274,7 +345,11 @@ pub(crate) fn approve(
     })
 }
 
-pub(crate) fn reject(
+/// Reject a request, or withdraw it when acting as its proposer.
+///
+/// # Errors
+/// Returns ledger, authorization, or proposal state errors.
+pub fn reject(
     grant: &Granted<'_, ResolveProposal>,
     company: &CompanySlug,
     id: &ProposalId,
