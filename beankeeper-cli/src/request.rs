@@ -18,6 +18,7 @@ use crate::{
     commands::{
         account::{AccountRequest, AccountResponse},
         audit::{AuditQuery, AuditResponse, ReceiptRequest, ReceiptResponse},
+        bank_feed::{BankFeedRequest, BankFeedResponse},
         budget::{BudgetRequest, BudgetResponse},
         company::{CompanyRequest, CompanyResponse},
         counterparty::{CounterpartyRequest, CounterpartyResponse},
@@ -51,6 +52,7 @@ pub enum LedgerRequest {
     Fx(FxRequest),
     AuditLog(AuditQuery),
     AuditReceipts(ReceiptRequest),
+    BankFeed((CompanySlug, BankFeedRequest)),
     Budget(BudgetRequest),
     Company(CompanyRequest),
     Counterparty(CounterpartyRequest),
@@ -74,6 +76,7 @@ pub enum LedgerResponse {
     Fx(FxResponse),
     AuditLog(AuditResponse),
     AuditReceipts(ReceiptResponse),
+    BankFeed(Operation, CompanySlug, BankFeedResponse),
     Budget(BudgetResponse),
     Company(CompanyResponse),
     Counterparty(Operation, CompanySlug, CounterpartyResponse),
@@ -99,6 +102,7 @@ impl LedgerRequest {
             Self::Fx(request) => request.operation(),
             Self::AuditLog(_) => Operation::AuditLog,
             Self::AuditReceipts(request) => request.operation(),
+            Self::BankFeed((_, request)) => request.operation(),
             Self::Budget(request) => request.operation(),
             Self::Company(request) => request.operation(),
             Self::Counterparty(request) => request.operation(),
@@ -192,6 +196,10 @@ impl LedgerRequest {
                 let response = request.execute(db, actor)?;
                 Ok(LedgerResponse::Reconcile(operation, company, response))
             }
+            Self::BankFeed((company, request)) => {
+                let response = request.execute(db, db.read(), actor, &company)?;
+                Ok(LedgerResponse::BankFeed(operation, company, response))
+            }
             Self::Report(request) => request.execute(db).map(LedgerResponse::Report),
             Self::Restore(request) => request
                 .execute(db, actor)
@@ -254,6 +262,9 @@ impl LedgerResponse {
                     );
                 }
                 Ok(())
+            }
+            Self::BankFeed(operation, company, response) => {
+                response.render(cli, *operation, company)
             }
             Self::Rule(operation, company, response) => response.render(cli, *operation, company),
             Self::Setup(operation, company, response) => {

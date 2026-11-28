@@ -9,6 +9,7 @@ use crate::{
     commands::{
         account::AccountRequest,
         audit::ReceiptRequest,
+        bank_feed::BankFeedRequest,
         budget::{BudgetRequest, BudgetSetInput},
         company::CompanyRequest,
         counterparty::{CounterpartyAction as Party, CounterpartyRequest},
@@ -46,6 +47,11 @@ macro_rules! try_convert {
 }
 
 convert! {
+    bank_feed_link(BankFeedLink) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Link(input.args))),
+    bank_feed_post(BankFeedPost) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Post(input.args))),
+    bank_feed_review(BankFeedReview) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Review(input.feed, input.item))),
+    bank_feed_list(BankFeedList) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::List(input.feed, input.page))),
+    bank_feed_show(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Show(input.feed))),
     ledger_setup_status(Empty) => Setup(_input => SetupRequest::Status),
     ledger_setup_book_show(CompanyScope) => Setup(input => SetupRequest::BookShow(input.company.into_inner())),
     ledger_setup_statement_commit(LedgerSetupStatementCommit) => Setup(input => input.into()),
@@ -232,6 +238,7 @@ pub(super) fn response(
         LedgerResponse::Reconcile(_, _, response) => (encode(response)?, None),
         LedgerResponse::Report(response) => (response.data()?, None),
         LedgerResponse::Restore(_, response) => (encode(response)?, None),
+        LedgerResponse::BankFeed(_, _, response) => (encode(response)?, None),
         LedgerResponse::Rule(_, _, response) => (encode(response)?, None),
         LedgerResponse::Standing(_, _, response) => (encode(response)?, None),
         LedgerResponse::Setup(_, _, response) => (encode(response)?, None),

@@ -9,7 +9,7 @@ use crate::error::CliError;
 
 const INITIAL_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(1);
 const RESTORE_VERSION_NUMBER: i64 = 38;
-const LATEST_VERSION: i64 = 40;
+const LATEST_VERSION: i64 = 41;
 
 pub(super) const AUDIT_LOG_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(8);
 pub(super) const NORMALIZED_METADATA_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(9);
@@ -40,6 +40,7 @@ pub(super) const RESTORE_SCHEMA_VERSION: SchemaVersion =
     SchemaVersion::known(RESTORE_VERSION_NUMBER);
 pub(crate) const CASH_CLASS_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(39);
 pub(super) const COUNTERPARTY_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(40);
+pub(super) const BANK_FEED_SCHEMA_VERSION: SchemaVersion = SchemaVersion::known(41);
 /// Earliest ledger that supports the read-only setup operations.
 pub(crate) const OLDEST_SETUP_READ_SCHEMA: SchemaVersion = SchemaVersion::known(20);
 
@@ -337,6 +338,10 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
         migrate_with_writer(conn, COUNTERPARTY_SCHEMA_VERSION, apply_counterparty_schema)?;
     }
 
+    if version < BANK_FEED_SCHEMA_VERSION {
+        migrate_with_writer(conn, BANK_FEED_SCHEMA_VERSION, apply_bank_feed_schema)?;
+    }
+
     debug_assert_eq!(
         stored_schema(ReadConn::physical(conn)).ok(),
         Some(CURRENT_VERSION),
@@ -344,6 +349,19 @@ fn ensure_schema_at(conn: &Connection, version: SchemaVersion) -> Result<(), Cli
     );
 
     Ok(())
+}
+
+fn apply_bank_feed_schema(conn: &Connection) -> Result<(), CliError> {
+    super::audit::atomically(conn, || {
+        conn.pragma_update(None, "defer_foreign_keys", true)?;
+        conn.execute_batch("DROP TRIGGER protect_cash_class_update; DROP VIEW bookkeeping_audit;")?;
+        migrate_hold_audit(conn, AuditTable::BankFeed, BANK_FEED_SCHEMA_VERSION)?;
+        install_cash_class_guard(conn)?;
+        conn.execute_batch(include_str!("schema/bank_feed.sql"))?;
+        super::verification::verify_foreign_keys(ReadConn::physical(conn))?;
+        conn.pragma_update(None, "defer_foreign_keys", false)?;
+        Ok(())
+    })
 }
 
 fn apply_counterparty_schema(conn: &Connection) -> Result<(), CliError> {
@@ -2137,6 +2155,7 @@ enum AuditTable {
     LedgerRestore,
     CashClassification,
     Counterparties,
+    BankFeed,
 }
 
 impl From<AuditTable> for AuditHistory {
@@ -2144,7 +2163,8 @@ impl From<AuditTable> for AuditHistory {
         match table {
             AuditTable::LedgerRestore
             | AuditTable::CashClassification
-            | AuditTable::Counterparties => Self::Bookkeeping,
+            | AuditTable::Counterparties
+            | AuditTable::BankFeed => Self::Bookkeeping,
             AuditTable::Periods
             | AuditTable::Demo
             | AuditTable::ClientHints
@@ -2257,30 +2277,34 @@ fn audit_extensions(table: AuditTable) -> (String, String) {
     if table >= AuditTable::CashClassification {
         let _ = write!(action, ",'{}'", AuditAction::AccountClassify);
     }
-    if table >= AuditTable::Counterparties {
-        append_counterparty_audit_extensions(&mut entity, &mut action);
-    }
+    append_subledger_audit_extensions(table, &mut entity, &mut action);
     (entity, action)
 }
 
-fn append_counterparty_audit_extensions(entity: &mut String, action: &mut String) {
+fn append_subledger_audit_extensions(table: AuditTable, entity: &mut String, action: &mut String) {
     use super::audit::{AuditAction, AuditEntity};
     use std::fmt::Write as _;
 
-    let _ = write!(
-        entity,
-        ",'{}','{}'",
-        AuditEntity::Counterparty,
-        AuditEntity::TransactionCounterparty
-    );
-    let _ = write!(
-        action,
-        ",'{}','{}','{}','{}'",
-        AuditAction::CounterpartyCreate,
-        AuditAction::CounterpartyAmend,
-        AuditAction::CounterpartyArchive,
-        AuditAction::CounterpartyAssociate
-    );
+    if table >= AuditTable::Counterparties {
+        let _ = write!(
+            entity,
+            ",'{}','{}'",
+            AuditEntity::Counterparty,
+            AuditEntity::TransactionCounterparty
+        );
+        let _ = write!(
+            action,
+            ",'{}','{}','{}','{}'",
+            AuditAction::CounterpartyCreate,
+            AuditAction::CounterpartyAmend,
+            AuditAction::CounterpartyArchive,
+            AuditAction::CounterpartyAssociate
+        );
+    }
+    if table >= AuditTable::BankFeed {
+        let _ = write!(entity, ",'{}'", AuditEntity::BankFeed);
+        let _ = write!(action, ",'{}'", AuditAction::BankFeedChange);
+    }
 }
 
 fn recategorization_action(table: AuditTable) -> &'static str {
@@ -2422,7 +2446,7 @@ fn receipt_audit_checks(table: AuditTable) -> String {
 fn rebuild_audit(conn: &Connection, table: AuditTable) -> Result<(), CliError> {
     let (entity, action) = audit_extensions(table);
     let (hash_version, version_suffix, column, check, select_suffix) = match table {
-        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties => {
+        AuditTable::Receipts | AuditTable::StandingSettings | AuditTable::RuleUndo | AuditTable::DirectSetup | AuditTable::AnnotationUndo | AuditTable::AccountRename | AuditTable::Correction | AuditTable::Recategorization | AuditTable::TransactionLinks | AuditTable::StatementReconciliation | AuditTable::LedgerRestore | AuditTable::CashClassification | AuditTable::Counterparties | AuditTable::BankFeed => {
             let (hash_version, version_suffix, select_suffix) = if table == AuditTable::Receipts {
                 (6, ",5,6", ", NULL, NULL")
             } else {
@@ -3202,6 +3226,7 @@ mod tests {
                 RESTORE_SCHEMA_VERSION,
                 CASH_CLASS_SCHEMA_VERSION,
                 COUNTERPARTY_SCHEMA_VERSION,
+                BANK_FEED_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
@@ -4008,6 +4033,40 @@ mod tests {
         assert_eq!(classes(&conn)?, ["cash", "non_cash", "non_cash"]);
         assert_restore_sql_uses_bookkeeping_history(ReadConn::physical(&conn))?;
         super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        Ok(())
+    }
+
+    #[test]
+    fn bank_feed_upgrade_preserves_cash_classification_and_audit_history() -> Result<(), CliError> {
+        let conn = Connection::open_in_memory()?;
+        apply_through_v12(&conn)?;
+        ensure_schema_at_before_restore(&conn)?;
+        apply_restore_migration(&conn)?;
+        apply_cash_class_schema(&conn)?;
+        assert_eq!(
+            stored_schema(ReadConn::physical(&conn))?,
+            CASH_CLASS_SCHEMA_VERSION
+        );
+        apply_counterparty_schema(&conn)?;
+        assert_eq!(
+            stored_schema(ReadConn::physical(&conn))?,
+            COUNTERPARTY_SCHEMA_VERSION
+        );
+        let old_chain = super::super::audit::verify_hash_chain(ReadConn::physical(&conn))?;
+        ensure_schema(&conn)?;
+        let reader = ReadConn::physical(&conn);
+        assert_eq!(stored_schema(reader)?, BANK_FEED_SCHEMA_VERSION);
+        assert_eq!(
+            super::super::audit::verify_hash_chain(reader)?.head(),
+            old_chain.head()
+        );
+        let triggers: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE name IN ('protect_cash_class_update', 'bank_feed_proposal_requires_current_revision')",
+            [], |row| row.get(0),
+        )?;
+        assert_eq!(triggers, 2);
+        super::super::bank_feed::verify(reader)?;
         Ok(())
     }
 

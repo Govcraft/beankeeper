@@ -798,6 +798,11 @@ const LEDGER_TOOLS: &[&str] = &[
     "account_create",
     "account_rename",
     "account_classify",
+    "bank_feed_show",
+    "bank_feed_list",
+    "bank_feed_review",
+    "bank_feed_post",
+    "bank_feed_link",
     "txn_post",
     "txn_propose",
     "txn_proposals",
@@ -1570,7 +1575,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 28);
+    assert_eq!(names.len(), 31);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -1583,6 +1588,9 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     assert!(!names.contains("period_close"));
     assert!(!names.contains("period_reopen"));
     for name in [
+        "bank_feed_show",
+        "bank_feed_list",
+        "bank_feed_review",
         "rule_list",
         "rule_match",
         "bookkeeping_policy_show",
@@ -1591,6 +1599,8 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
         assert!(names.contains(name));
     }
     for name in [
+        "bank_feed_post",
+        "bank_feed_link",
         "company_create",
         "company_delete",
         "security_create",
@@ -3262,7 +3272,7 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 28);
+    assert_eq!(names.len(), 31);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));
@@ -3428,7 +3438,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 28);
+    assert_eq!(names.len(), 31);
     assert!(names.contains("audit_receipts"));
     assert!(!names.contains("audit_undo"));
     assert!(names.contains("ledger_setup_status"));

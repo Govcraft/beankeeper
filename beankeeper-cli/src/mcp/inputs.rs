@@ -1639,3 +1639,45 @@ pub(crate) struct CounterpartySuggest {
     #[serde(default)]
     pub offset: u32,
 }
+
+use crate::db::bank_feed::{
+    FeedConnectionId, FeedItemId, LinkArgs as FeedLinkArgs, PageArgs as FeedPageArgs,
+    PostArgs as FeedPostArgs,
+};
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BankFeedShow {
+    pub company: Company,
+    pub feed: FeedConnectionId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct BankFeedList {
+    pub company: Company,
+    pub feed: FeedConnectionId,
+    #[serde(flatten)]
+    pub page: FeedPageArgs,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BankFeedReview {
+    pub company: Company,
+    pub feed: FeedConnectionId,
+    pub item: FeedItemId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct BankFeedPost {
+    pub company: Company,
+    #[serde(flatten)]
+    pub args: FeedPostArgs,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct BankFeedLink {
+    pub company: Company,
+    #[serde(flatten)]
+    pub args: FeedLinkArgs,
+}

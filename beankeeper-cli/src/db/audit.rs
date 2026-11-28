@@ -41,6 +41,7 @@ use crate::error::CliError;
 
 mod actor;
 mod attachment;
+pub(crate) mod bank_feed;
 pub use actor::{Actor, ActorLabel, BlankActorLabel};
 mod client_hint;
 pub use client_hint::{AgentRuntime, ClientHint, EnvSnapshot, UnknownAgentRuntime};
@@ -173,6 +174,7 @@ audit_labels! {
         TransactionLink => "transaction_link",
         Counterparty => "counterparty",
         TransactionCounterparty => "transaction_counterparty",
+        BankFeed => "bank_feed",
         Budget => "budget",
         Account => "account",
         AccountRenameProposal => "account_rename_proposal",
@@ -206,6 +208,7 @@ impl AuditEntity {
             | Self::TransactionLink
             | Self::Counterparty
             | Self::TransactionCounterparty
+            | Self::BankFeed
             | Self::Budget
             | Self::Account
             | Self::AccountRenameProposal
@@ -245,6 +248,7 @@ audit_labels! {
         Correlate => "correlate",
         LinkCreate => "link_create",
         LinkUndo => "link_undo",
+        BankFeedChange => "bank_feed_change",
         Reverse => "reverse",
         BudgetSet => "budget_set" | "budget-set",
         BudgetDelete => "budget_delete" | "budget-delete",
