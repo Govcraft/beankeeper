@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub(super) use self::model::SignedMinor;
 use self::model::SyncCursor;
 pub use self::model::{FeedConnectionId, FeedError, FeedItemId, ProviderAccountKey};
-pub use self::provider::PlaidEnvironment;
+pub use self::provider::{PlaidCredentialSource, PlaidCredentials, PlaidEnvironment};
 use crate::db::{
     Actor, Db, companies::CompanySlug, connection::ReadConn, ids::TransactionId,
     proposals::ProposalId,
@@ -69,8 +69,9 @@ pub struct ConnectArgs {
     pub environment: PlaidEnvironment,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct Connection {
+/// A mapped feed with a redacted serialized representation.
+#[derive(Serialize)]
+pub struct Connection {
     pub(crate) id: FeedConnectionId,
     pub(crate) account: String,
     #[serde(skip)]
@@ -81,6 +82,27 @@ pub(crate) struct Connection {
     pub(crate) connected: bool,
     #[serde(skip)]
     pub(crate) cursor: Option<SyncCursor>,
+}
+
+impl Connection {
+    /// The ID to use for sync and staging operations.
+    #[must_use]
+    pub const fn id(&self) -> &FeedConnectionId {
+        &self.id
+    }
+}
+
+/// Map an authorized provider account to a company ledger account as the owner.
+///
+/// # Errors
+/// Returns an authorization, mapping, or persistence error.
+pub fn connect(
+    db: &Db,
+    actor: &Actor,
+    company: &CompanySlug,
+    args: &ConnectArgs,
+) -> Result<Connection, CliError> {
+    super::audit::bank_feed::connect(db, actor, company, args)
 }
 
 #[derive(Debug, Serialize)]
@@ -125,30 +147,80 @@ where
     })
 }
 
+/// Cursor for a company feed directory.
+#[derive(Debug, Clone, Default, clap::Args, Deserialize, Serialize, JsonSchema)]
+pub struct ConnectionPageArgs {
+    /// Last feed ID from the previous page.
+    #[arg(long)]
+    pub after: Option<FeedConnectionId>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ConnectionPage {
+    connections: Vec<Connection>,
+    next_after: Option<FeedConnectionId>,
+}
+
+fn decode_connection(row: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
+    let cursor = row
+        .get::<_, Option<String>>(6)?
+        .map(|value| value.parse())
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+    Ok(Connection {
+        id: row.get(7)?,
+        account: row.get(0)?,
+        provider_account: decode_parse(row, 1)?,
+        currency: decode_parse(row, 2)?,
+        environment: decode_parse(row, 3)?,
+        revision: row.get(4)?,
+        connected: row.get(5)?,
+        cursor,
+    })
+}
+
 pub(crate) fn connection(
     reader: ReadConn<'_>,
     company: &CompanySlug,
     id: &FeedConnectionId,
 ) -> Result<Connection, CliError> {
     reader.connection().query_row(
-        "SELECT account_code, provider_account, currency, environment, revision, connected, cursor
+        "SELECT account_code, provider_account, currency, environment, revision, connected, cursor, id
          FROM bank_feed_connections WHERE company_slug = ?1 AND id = ?2",
-        params![company, id],
-        |row| {
-            let cursor = row.get::<_, Option<String>>(6)?.map(|s| s.parse()).transpose()
-                .map_err(|error| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error)))?;
-            Ok(Connection {
-                id: id.clone(),
-                account: row.get(0)?,
-                provider_account: decode_parse(row, 1)?,
-                currency: decode_parse(row, 2)?,
-                environment: decode_parse(row, 3)?,
-                revision: row.get(4)?,
-                connected: row.get(5)?,
-                cursor,
-            })
-        },
+        params![company, id], decode_connection,
     ).optional()?.ok_or_else(|| CliError::NotFound(format!("bank feed {id} not found")))
+}
+
+pub(crate) fn connections(
+    reader: ReadConn<'_>,
+    company: &CompanySlug,
+    page: &ConnectionPageArgs,
+) -> Result<ConnectionPage, CliError> {
+    super::companies::Company::bind(reader, company.clone())?;
+    let mut statement = reader.connection().prepare(
+        "SELECT account_code, provider_account, currency, environment, revision, connected, cursor, id
+         FROM bank_feed_connections
+         WHERE company_slug = ?1 AND (?2 IS NULL OR id > ?2)
+         ORDER BY id LIMIT 51",
+    )?;
+    let mut connections = statement
+        .query_map(params![company, page.after], decode_connection)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let has_more = connections.len() > PAGE_SIZE;
+    connections.truncate(PAGE_SIZE);
+    let next_after = has_more
+        .then(|| connections.last().map(|feed| feed.id.clone()))
+        .flatten();
+    Ok(ConnectionPage {
+        connections,
+        next_after,
+    })
 }
 
 fn decode_item(row: &rusqlite::Row<'_>, currency: Currency) -> rusqlite::Result<Item> {
@@ -242,8 +314,15 @@ pub(crate) fn poll(
     if !before.connected {
         return Err(FeedError::Disconnected.into());
     }
-    let provider =
-        provider::PlaidProvider::from_host(before.environment, before.provider_account.clone())?;
+    let credentials = match db.plaid_credentials() {
+        Some(source) => source.credentials(company, id)?,
+        None => PlaidCredentials::from_environment()?,
+    };
+    let provider = provider::PlaidProvider::new(
+        before.environment,
+        before.provider_account.clone(),
+        credentials,
+    )?;
     let (cursor, delta) = provider::fetch_complete(&provider, before.cursor.as_ref())?;
     super::audit::bank_feed::commit_sync(db, actor, company, &before, &cursor, &delta)
 }

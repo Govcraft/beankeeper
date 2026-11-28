@@ -73,6 +73,7 @@ convert! {
     bank_feed_link(BankFeedLink) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Link(input.args))),
     bank_feed_post(BankFeedPost) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Post(input.args))),
     bank_feed_review(BankFeedReview) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Review(input.feed, input.item))),
+    bank_feed_connections(BankFeedConnections) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Connections(input.page))),
     bank_feed_list(BankFeedList) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::List(input.feed, input.page))),
     bank_feed_show(BankFeedShow) => BankFeed(input => (input.company.into_inner(), BankFeedRequest::Show(input.feed))),
     ledger_setup_status(Empty) => Setup(_input => SetupRequest::Status),

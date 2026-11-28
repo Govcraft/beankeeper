@@ -6,6 +6,10 @@ releases use `beankeeper-cli-vX.Y.Z`; library releases have independent versions
 
 ## [Unreleased]
 
+### Added
+
+- Discover and refresh owner-authorized bank feeds through normal agent access and stage provider revisions for review.
+
 ## [0.42.0] - 2026-11-28
 
 This release advances the ledger schema from v51 to v52 for bookkeeping

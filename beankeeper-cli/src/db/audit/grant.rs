@@ -67,6 +67,24 @@ impl sealed::GrantKind for BankFeedAdmin {
     const SIGNED: bool = true;
 }
 
+/// Signed posting or owner authority to stage a configured bank feed.
+pub(crate) enum RefreshFeed {}
+
+impl sealed::GrantKind for RefreshFeed {
+    const REQUIRED: Capability = Capability::Post;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const SIGNED: bool = true;
+}
+
+/// Signed proposal or owner authority to stage a configured bank feed.
+pub(crate) enum RefreshFeedProposed {}
+
+impl sealed::GrantKind for RefreshFeedProposed {
+    const REQUIRED: Capability = Capability::Propose;
+    const ALTERNATE: Option<Capability> = Some(Capability::Admin);
+    const SIGNED: bool = true;
+}
+
 /// Authority to attach source documents and post ledger entries.
 pub enum Post {}
 

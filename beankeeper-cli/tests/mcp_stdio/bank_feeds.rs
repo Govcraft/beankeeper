@@ -62,6 +62,7 @@ fn bank_feed_administration_uses_the_shared_signed_catalog_and_host_credentials(
     let reader = identity_ledger(&path, &passphrase)?;
     let db = Db::open_existing(&path, Some(&"mcp-test-passphrase".into()))?;
     let admin = proposal_identity(&db, "feed_admin", &["ledger/admin", "ledger/read"])?;
+    let poster = proposal_identity(&db, "feed_poster", &["ledger/post", "ledger/read"])?;
     drop(db);
 
     let connect = json!({"company":"acme","account":"1000",
@@ -91,6 +92,30 @@ fn bank_feed_administration_uses_the_shared_signed_catalog_and_host_credentials(
     assert_no_administration(&mut read, &connect, &args)?;
     let mut read_only = client(&path, &passphrase, &admin, true)?;
     assert_no_administration(&mut read_only, &connect, &args)?;
+
+    let mut direct = client(&path, &passphrase, &poster, false)?;
+    let direct_tools = tool_names(&direct.request("tools/list", &json!({}))?)?;
+    assert!(direct_tools.contains("bank_feed_sync"));
+    assert!(!direct_tools.contains("bank_feed_connect"));
+    assert!(!direct_tools.contains("bank_feed_disconnect"));
+    let directory = direct.success("bank_feed_connections", &json!({"company":"acme"}))?;
+    assert_eq!(directory["connections"], json!([connected]));
+    assert_eq!(directory["next_after"], Value::Null);
+    let after = direct.success(
+        "bank_feed_connections",
+        &json!({"company":"acme","after":feed}),
+    )?;
+    assert_eq!(after["connections"], json!([]));
+    let missing = direct.call("bank_feed_sync", &args)?;
+    assert!(
+        missing
+            .to_string()
+            .contains("bank provider credentials are missing")
+    );
+    assert_eq!(
+        read.success("bank_feed_connections", &json!({"company":"acme"}))?,
+        directory
+    );
 
     let scoped = write.call("bank_feed_sync", &args)?;
     assert_eq!(scoped["result"]["isError"], true);

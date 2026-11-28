@@ -1706,8 +1706,8 @@ pub(crate) struct CounterpartySuggest {
 }
 
 use crate::db::bank_feed::{
-    FeedConnectionId, FeedItemId, LinkArgs as FeedLinkArgs, PageArgs as FeedPageArgs,
-    PostArgs as FeedPostArgs,
+    ConnectionPageArgs, FeedConnectionId, FeedItemId, LinkArgs as FeedLinkArgs,
+    PageArgs as FeedPageArgs, PostArgs as FeedPostArgs,
 };
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -1726,6 +1726,13 @@ pub(crate) struct BankFeedConnect {
 pub(crate) struct BankFeedShow {
     pub company: Company,
     pub feed: FeedConnectionId,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct BankFeedConnections {
+    pub company: Company,
+    #[serde(flatten)]
+    pub page: ConnectionPageArgs,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
