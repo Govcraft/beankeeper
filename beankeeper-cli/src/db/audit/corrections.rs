@@ -360,21 +360,25 @@ pub struct CorrectionProposal {
 
 impl CorrectionProposal {
     /// The company-scoped proposal identifier.
+    #[must_use]
     pub const fn id(&self) -> &ProposalId {
         &self.id
     }
 
     /// The verified identity that submitted this request.
+    #[must_use]
     pub fn proposer_uri(&self) -> &str {
         &self.proposer_uri
     }
 
     /// The ledger timestamp when the request was submitted.
+    #[must_use]
     pub fn created_at(&self) -> &str {
         &self.created_at
     }
 
     /// A short description of the requested change.
+    #[must_use]
     pub const fn title(&self) -> &'static str {
         use bookkeeping::{Party, Project};
         match &self.payload.correction {
@@ -395,6 +399,7 @@ impl CorrectionProposal {
     }
 
     /// Whether the request is awaiting a decision.
+    #[must_use]
     pub const fn is_pending(&self) -> bool {
         matches!(&self.state, ReviewState::Pending { .. })
     }

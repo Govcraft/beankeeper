@@ -3610,6 +3610,7 @@ mod tests {
                 INVENTORY_SCHEMA_VERSION,
                 DISBURSEMENT_SCHEMA_VERSION,
                 COLLECTION_SCHEMA_VERSION,
+                BOOKKEEPING_PROPOSALS_SCHEMA_VERSION,
             ]
             .map(i64::from)
         );
