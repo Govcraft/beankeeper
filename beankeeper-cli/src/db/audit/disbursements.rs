@@ -308,6 +308,9 @@ fn observe(
                 after.confirmed = Some(confirmation);
             }
             after.state = apply(&after.state, event.event())?;
+            if after.state == before.state {
+                return Ok(before);
+            }
             match event.status {
                 ProviderStatus::Settled if after.confirmed.is_none() => {
                     after.confirmed = Some(event.clone());
@@ -543,7 +546,7 @@ pub(crate) fn guard_recovered_file(
 }
 
 pub(super) fn guard_posting(reader: ReadConn<'_>, id: TransactionId) -> Result<(), CliError> {
-    if reader.query_row(
+    if reader.schema_version()? >= DISBURSEMENT_SCHEMA_VERSION && reader.query_row(
         "SELECT EXISTS(SELECT 1 FROM disbursements WHERE settlement_posting=?1 OR return_posting=?1)", [id], |row| row.get(0),
     )? {
         return Err(invalid("provider disbursement journals can only be corrected using provider evidence"));

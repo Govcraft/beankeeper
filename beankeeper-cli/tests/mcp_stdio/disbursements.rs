@@ -328,6 +328,90 @@ fn payments_are_reviewed_and_a_lost_response_is_reconciled_once_after_restart() 
     let observed = dispatcher.success("disbursement_dispatch", &choice)?;
     assert_eq!(observed["state"]["status"], "returned");
     assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 1);
+    assert_no_recovery_dispatch(&books, &dispatch_token, id, backup)
+}
+
+fn assert_no_recovery_dispatch(
+    books: &Books,
+    dispatcher: &str,
+    id: &str,
+    backup: &str,
+) -> TestResult {
+    let target = books.directory.path().join("recovered.db");
+    bk(&target)?
+        .arg("--passphrase-file")
+        .arg(&books.passphrase)
+        .args(["recover", "--input", backup])
+        .assert()
+        .success();
+    let mut command = bk(&target)?;
+    books.provider.configure(&mut command);
+    let output = command
+        .arg("--passphrase-file")
+        .arg(&books.passphrase)
+        .args([
+            "--agent-token",
+            dispatcher,
+            "--company",
+            "acme",
+            "--json",
+            "disbursement",
+            "dispatch",
+            id,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["data"]["state"]["status"], "returned");
+    assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[test]
+fn concurrent_reviewers_cannot_double_reserve_the_same_bill() -> TestResult {
+    let books = Books::new()?;
+    let author = books.credential(
+        "reservation_author",
+        &["ledger/read", "ledger/post", "ledger/disbursement-draft"],
+    )?;
+    let reviewer = books.credential(
+        "reservation_reviewer",
+        &["ledger/read", "ledger/disbursement-approve"],
+    )?;
+    let mut client = books.client(&author)?;
+    let terms = bill_and_draft(&mut client)?;
+    let one = client.success("disbursement_draft", &terms)?;
+    let two = client.success("disbursement_draft", &terms)?;
+    let approve = |record: &Value| -> Result<Child, Box<dyn Error>> {
+        let id = record["id"].as_str().ok_or("disbursement ID")?;
+        Ok(books
+            .cli(Some(&reviewer))?
+            .args(["disbursement", "approve", id, "--destination", DESTINATION])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?)
+    };
+    let one = approve(&one)?;
+    let two = approve(&two)?;
+    let outcomes = [one.wait_with_output()?, two.wait_with_output()?];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| result.status.success())
+            .count(),
+        1
+    );
+    let failure = outcomes
+        .iter()
+        .find(|result| !result.status.success())
+        .ok_or("one approval must fail")?;
+    let details = String::from_utf8_lossy(&failure.stderr);
+    assert!(details.contains("after existing reservations"), "{details}");
+    assert_eq!(books.provider.state.submissions.load(Ordering::Relaxed), 0);
     Ok(())
 }
 
