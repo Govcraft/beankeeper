@@ -596,6 +596,7 @@ Use the [contractor worksheet](docs/contractor-tax.md) to review actual payments
 | `project_list`, `project_show`, `project_time`, `project_unbilled`, `project_report` | Read project history, budgets, profitability and unbilled work |
 | `project_create`, `project_archive`, `project_record`, `project_approve`, `project_split`, `project_budget`, `project_draft_invoice`, `project_cancel_invoice` | Set up projects, record and approve work, split journal entries, and prepare invoices |
 | `account_list`, `account_show`, `account_create`, `account_rename`, `account_classify` | Inspect, create, rename, and classify accounts |
+| `txn_import` | Import balanced JSON journals into one company. Pass `transactions` and optionally `currency`, `on_conflict`, or `dry_run`. Requires Direct posting authority. |
 | `txn_post`, `txn_settle_hold`, `txn_reverse`, `txn_recategorize`, `txn_meta_set`, `txn_meta_unset` | Record and correct postings, settle holds, or edit annotations |
 | `txn_link` | Record an undoable relationship between two transactions in the same book |
 | `txn_list`, `txn_show`, `txn_clear`, `txn_reconcile` | Inspect transactions, clear entries and check intercompany links |
@@ -1242,6 +1243,12 @@ fails with no new transactions or entries committed. `--dry-run` exercises the
 same posting and duplicate checks, including duplicates inside the batch, then
 rolls everything back. `--on-conflict skip` is the default; `error` rejects the
 entire batch on a duplicate. Only `skip` and `error` are accepted.
+
+MCP-only clients can send the same journal array as `transactions` to
+`txn_import`. Use `dry_run: true` to check the batch before posting and keep the
+source references on retries. Use `ledger_setup_statement_import` for mapped
+CSV, OFX, or QFX bank statements. See the
+[MCP journal migration example](docs/beankeeper/references/commands.md#journal-migration-with-mcp).
 
 References are trimmed and stored verbatim, with uniqueness scoped to the
 company. CSV uses its `reference` column automatically (or `--reference-col`);

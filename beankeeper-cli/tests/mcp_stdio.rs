@@ -40,6 +40,9 @@ mod holds;
 #[path = "mcp_stdio/inventory.rs"]
 mod inventory;
 
+#[path = "mcp_stdio/journal_import.rs"]
+mod journal_import;
+
 #[path = "mcp_stdio/onboarding.rs"]
 mod onboarding;
 
@@ -876,6 +879,7 @@ const LEDGER_TOOLS: &[&str] = &[
     "bank_feed_post",
     "bank_feed_link",
     "txn_post",
+    "txn_import",
     "txn_propose",
     "txn_proposals",
     "txn_approve",

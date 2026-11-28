@@ -5,7 +5,7 @@
 //! Dry runs exercise that same path inside a transaction that is rolled back.
 
 use crate::operation::Operation;
-use std::collections::HashMap;
+use std::{collections::HashMap, io};
 
 use beankeeper::types::{Currency, DebitOrCredit, Money, PositiveMoney};
 use chrono::NaiveDate;
@@ -17,11 +17,15 @@ use sha2::{Digest, Sha256};
 use super::reference::TransactionReference;
 use super::statement_source::SourceRow;
 use crate::cli::{Cli, ImportFormat, OnConflictArg, OutputFormat, TxnImportArgs};
-use crate::db::connection::Db;
 use crate::db::holds::matching::{BankLine, HoldMatchOptions, match_bank_import};
 use crate::db::{self, accounts, transactions};
+use crate::db::{
+    companies::{Company, CompanySlug},
+    connection::Db,
+};
 use crate::error::CliError;
 use crate::identity::{Granted, Post};
+use crate::mcp::input_values::Text;
 use crate::output::{ImportSettlement, json};
 use crate::request::CurrencySetting;
 
@@ -81,7 +85,7 @@ enum PositiveAmount {
 
 /// Exact major-unit input. JSON fractions must be strings to avoid floating
 /// point rounding. Integer JSON numbers, like `txn post` integers, are major units.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 enum InputAmount {
     Text(String),
@@ -97,25 +101,133 @@ impl InputAmount {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct InputEntry {
+    /// Account code in the destination company.
     account_code: String,
+    #[schemars(with = "Text<DebitOrCredit>")]
     direction: DebitOrCredit,
+    /// Positive amount in major units. Use a string for fractional values.
     amount: InputAmount,
+    #[serde(skip_serializing_if = "Option::is_none")]
     memo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tax_category: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct InputTransaction {
+pub(crate) struct InputTransaction {
+    /// Journal date in YYYY-MM-DD format.
     date: String,
     description: String,
+    /// Balanced lines of the journal.
     entries: Vec<InputEntry>,
+    /// Overrides the batch's default currency for this journal.
+    #[schemars(with = "Option<Text<Currency>>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     currency: Option<Currency>,
+    /// Stable source reference used to detect repeat imports.
+    #[serde(skip_serializing_if = "Option::is_none")]
     reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+pub(crate) const MAX_JOURNAL_BATCH: usize = 500;
+const MAX_BATCH_BYTES: usize = 1024 * 1024;
+const MAX_BATCH_ENTRIES: usize = 5_000;
+
+/// A bounded batch of prepared JSON journals for a single company.
+pub struct JournalImportRequest {
+    company: CompanySlug,
+    transactions: Vec<PreparedTransaction>,
+    strategy: transactions::ConflictStrategy,
+    dry_run: bool,
+}
+
+impl JournalImportRequest {
+    pub(crate) fn new(
+        company: CompanySlug,
+        transactions: Vec<InputTransaction>,
+        currency: Currency,
+        strategy: transactions::ConflictStrategy,
+        dry_run: bool,
+    ) -> Result<Self, CliError> {
+        validate_batch_limits(&transactions)?;
+        Ok(Self {
+            company,
+            transactions: prepare_json_batch(transactions, currency)?,
+            strategy,
+            dry_run,
+        })
+    }
+
+    pub(crate) fn company(&self) -> &CompanySlug {
+        &self.company
+    }
+
+    pub(crate) fn execute(self, db: &Db, actor: &db::Actor) -> Result<BatchResult, CliError> {
+        Company::bind(db.read(), self.company.clone())?;
+        let ctx = ImportContext {
+            db,
+            company: &self.company,
+            actor,
+            format: ImportFormat::Json,
+            rules: &[],
+            bank: None,
+            suspense: None,
+            strategy: self.strategy,
+            dry_run: self.dry_run,
+            matching: HoldMatchOptions::default(),
+        };
+
+        // The ledger executor already reserves the writer and authorizes the operation.
+        let import = || ctx.post_batch(self.transactions);
+        if self.dry_run {
+            db.preview_write_batch(import)
+        } else {
+            import()
+        }
+    }
+}
+
+fn validate_batch_limits(transactions: &[InputTransaction]) -> Result<(), CliError> {
+    if !(1..=MAX_JOURNAL_BATCH).contains(&transactions.len()) {
+        return Err(invalid(format!(
+            "journal import requires 1 to {MAX_JOURNAL_BATCH} transactions"
+        )));
+    }
+    let entries = transactions
+        .iter()
+        .map(|transaction| transaction.entries.len())
+        .sum::<usize>();
+    if entries > MAX_BATCH_ENTRIES {
+        return Err(invalid(format!(
+            "journal import exceeds {MAX_BATCH_ENTRIES} total entries"
+        )));
+    }
+    serde_json::to_writer(JsonByteBudget(MAX_BATCH_BYTES), transactions)
+        .map_err(|error| invalid(format!("JSON import: {error}")))
+}
+
+// Count serialized bytes without allocating another copy of the journals.
+struct JsonByteBudget(usize);
+
+impl io::Write for JsonByteBudget {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.checked_sub(bytes.len()).ok_or_else(|| {
+            io::Error::other(format!(
+                "journal import exceeds {MAX_BATCH_BYTES} JSON bytes"
+            ))
+        })?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -177,6 +289,20 @@ fn prepare_json(
             .transpose()?,
         reference: input.reference.as_deref().map(str::parse).transpose()?,
     })
+}
+
+fn prepare_json_batch(
+    inputs: Vec<InputTransaction>,
+    currency: Currency,
+) -> Result<Vec<PreparedTransaction>, CliError> {
+    inputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, input)| {
+            prepare_json(input, currency)
+                .map_err(|error| invalid(format!("JSON transaction {}: {error}", index + 1)))
+        })
+        .collect()
 }
 
 struct CsvColumns {
@@ -269,15 +395,7 @@ fn read_transactions(
         ImportFormat::Json => {
             let inputs: Vec<InputTransaction> = serde_json::from_str(content)
                 .map_err(|error| invalid(format!("JSON import: {error}")))?;
-            inputs
-                .into_iter()
-                .enumerate()
-                .map(|(index, input)| {
-                    prepare_json(input, currency).map_err(|error| {
-                        invalid(format!("JSON transaction {}: {error}", index + 1))
-                    })
-                })
-                .collect()
+            prepare_json_batch(inputs, currency)
         }
         ImportFormat::Csv => {
             let bank =
@@ -387,8 +505,9 @@ fn row_reference(
     Ok(format!("{hash}:{ordinal}").parse()?)
 }
 
+/// Outcome of an atomic journal import or its dry run.
 #[derive(Serialize)]
-struct BatchResult {
+pub struct BatchResult {
     dry_run: bool,
     imported: usize,
     skipped: usize,
@@ -426,6 +545,41 @@ struct ImportContext<'a> {
     strategy: transactions::ConflictStrategy,
     dry_run: bool,
     matching: HoldMatchOptions,
+}
+
+impl ImportContext<'_> {
+    fn post_batch(&self, prepared: Vec<PreparedTransaction>) -> Result<BatchResult, CliError> {
+        let mut result = BatchResult {
+            dry_run: self.dry_run,
+            imported: 0,
+            skipped: 0,
+            errors: 0,
+            transactions: Vec::with_capacity(prepared.len()),
+        };
+        let mut occurrences = HashMap::new();
+        for (index, prepared) in prepared.into_iter().enumerate() {
+            let outcome = post_import(self, prepared, &mut occurrences)
+                .map_err(|error| import_error(index + 1, error))?;
+            match outcome.status {
+                ImportStatus::Imported => result.imported += 1,
+                ImportStatus::Skipped => result.skipped += 1,
+            }
+            result.transactions.push(outcome);
+        }
+        Ok(result)
+    }
+}
+
+fn import_error(row: usize, error: CliError) -> CliError {
+    match error {
+        CliError::Forbidden(message) => {
+            CliError::Forbidden(format!("import transaction {row}: {message}"))
+        }
+        CliError::Unauthorized(message) => {
+            CliError::Unauthorized(format!("import transaction {row}: {message}"))
+        }
+        other => invalid(format!("import transaction {row}: {other}")),
+    }
 }
 
 fn post_import(
@@ -609,14 +763,6 @@ pub fn run(
     let company_slug = company.parse()?;
     let import = || {
         let rules = load_csv_rules(db, company, format, account.as_deref(), suspense.as_deref())?;
-        let mut result = BatchResult {
-            dry_run: *dry_run,
-            imported: 0,
-            skipped: 0,
-            errors: 0,
-            transactions: Vec::new(),
-        };
-        let mut occurrences = HashMap::new();
         let ctx = ImportContext {
             db,
             company: &company_slug,
@@ -629,24 +775,7 @@ pub fn run(
             dry_run: *dry_run,
             matching: *hold_matching,
         };
-        for (index, prepared) in prepared.into_iter().enumerate() {
-            let outcome =
-                post_import(&ctx, prepared, &mut occurrences).map_err(|error| match error {
-                    CliError::Forbidden(message) => {
-                        CliError::Forbidden(format!("import transaction {}: {message}", index + 1))
-                    }
-                    CliError::Unauthorized(message) => CliError::Unauthorized(format!(
-                        "import transaction {}: {message}",
-                        index + 1
-                    )),
-                    other => invalid(format!("import transaction {}: {other}", index + 1)),
-                })?;
-            match outcome.status {
-                ImportStatus::Imported => result.imported += 1,
-                ImportStatus::Skipped => result.skipped += 1,
-            }
-            result.transactions.push(outcome);
-        }
+        let result = ctx.post_batch(prepared)?;
         // Render before committing, so a serialization failure cannot hide a commit.
         // A rendering error must leave the ledger untouched.
         render_result(cli, company, &result)
@@ -662,7 +791,7 @@ pub fn run(
     Ok(())
 }
 
-fn render_result(
+pub(crate) fn render_result(
     cli: &Cli,
     company: &str,
     result: &BatchResult,

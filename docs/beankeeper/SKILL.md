@@ -887,6 +887,15 @@ occurrences and posts only additional ones. Duplicate explicit references still
 skip or error according to `--on-conflict`.
 See [commands.md](references/commands.md) for the full import contract.
 
+For migration through MCP, normalize exported journal entries to the same JSON
+schema. Send them through `txn_import` as `transactions`, with `company` and
+`dry_run: true`. Review the result before submitting the batch with
+`dry_run: false`. Both calls require Direct posting authority. Keep stable
+source references across calls and split large exports into batches of up to
+500 journals, 5,000 entries and 1 MiB of encoded journal JSON. For bank-only
+CSV, OFX or QFX, use `ledger_setup_statement_import`.
+[Example and rules](references/commands.md#journal-migration-with-mcp)
+
 ### Memorize bank categorization
 
 ```bash
