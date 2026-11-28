@@ -16,6 +16,7 @@ use crate::{
         counterparty::{CounterpartyAction as Party, CounterpartyRequest},
         disbursement::{Action as Pay, DisbursementRequest},
         document::{DocumentAction as Doc, DocumentRequest},
+        group_report::GroupReportRequest,
         investment::InvestmentRequest,
         period::PeriodRequest,
         project::{ProjectCommand, ProjectRequest, Splits},
@@ -265,6 +266,12 @@ try_convert! {
     txn_list(TxnList) => Transaction(input => input.try_into()?),
     txn_clear(ClearInput) => Transaction(input => input.try_into()?),
     report(Report) => Report(input => input.try_into()?),
+    group_income_statement(GroupIncomeStatement) => GroupReport(input => GroupReportRequest::income_statement(
+        input.members.into_iter().map(Text::into_inner).collect(), input.currency.into_inner(), input.from.into_inner().date(), input.to.into_inner().date(),
+    )?),
+    group_balance_sheet(GroupBalanceSheet) => GroupReport(input => GroupReportRequest::balance_sheet(
+        input.members.into_iter().map(Text::into_inner).collect(), input.currency.into_inner(), input.as_of.into_inner().date(),
+    )?),
     budget_set(BudgetSet) => Budget(input => BudgetRequest::Set(input.company.into_inner(), BudgetSetInput {
         account: input.account.into_inner(),
         year: input.year,
@@ -341,6 +348,7 @@ pub(super) fn response(
         LedgerResponse::Period(_, _, response) => (encode(response)?, None),
         LedgerResponse::Reconcile(_, _, response) => (encode(response)?, None),
         LedgerResponse::Report(response) => (response.data()?, None),
+        LedgerResponse::GroupReport(response) => (encode(response)?, None),
         LedgerResponse::Restore(_, response) => (encode(response)?, None),
         LedgerResponse::BankFeed(_, _, response) => (encode(response)?, None),
         LedgerResponse::Rule(_, _, response) => (encode(response)?, None),

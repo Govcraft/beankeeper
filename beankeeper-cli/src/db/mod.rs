@@ -17,6 +17,7 @@ pub mod documents;
 pub(crate) mod expense_claims;
 pub(crate) mod fixed_assets;
 pub(crate) mod fx;
+pub(crate) mod group_reports;
 pub mod holds;
 pub mod ids;
 pub(crate) mod inventory;
@@ -483,7 +484,10 @@ fn push_transaction_dates<'a>(
     }
     if let Some(to) = to {
         bindings.push(to);
-        let _ = write!(sql, " AND t.date <= ?{}", bindings.len());
+        // Retained dates may include a space or T before a time suffix.
+        // Appending U sets an exclusive upper bound after both formats and
+        // keeps the date expression indexable.
+        let _ = write!(sql, " AND t.date < (?{} || 'U')", bindings.len());
     }
 }
 

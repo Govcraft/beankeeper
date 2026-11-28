@@ -75,6 +75,8 @@ macro_rules! ledger_operations {
 - cash-flow: from, to, cash_account, currency, compare, explain_change.
 - cash-forecast: as_of and through required; cadence, cash_account, currency, adjust, link_sources (scheduled:TEMPLATE:DATE=open-item:DOCUMENT).
 Use only one of as_of and to. For date-range reports without as_of, use from and to.")),
+            GroupIncomeStatement => ("group-report.income-statement", Read, tool(group_income_statement, GroupIncomeStatement, "Combine posted income statements for at least two explicitly selected companies in this ledger and one currency. Dates are inclusive. Returns company account detail, totals before eliminations and intercompany link evidence.")),
+            GroupBalanceSheet => ("group-report.balance-sheet", Read, tool(group_balance_sheet, GroupBalanceSheet, "Combine posted balance sheets through an inclusive date for at least two explicitly selected companies in this ledger and one currency. Returns company account detail, totals before eliminations and intercompany link evidence.")),
             ReportAging => ("report.aging", Read, grouped(Report, "report.aging")),
             ReportBalance => ("report.balance", Read, grouped(Report, "report.balance")),
             ReportBalanceSheet => ("report.balance-sheet", Read, grouped(Report, "report.balance-sheet")),

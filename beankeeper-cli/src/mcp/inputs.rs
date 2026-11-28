@@ -1966,3 +1966,29 @@ pub(crate) use crate::commands::disbursement::{
     DisbursementApproveInput, DisbursementDraftInput, DisbursementReconcileInput,
     DisbursementRejectInput, DisbursementSelector,
 };
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GroupIncomeStatement {
+    /// Distinct active company slugs from the selected ledger.
+    #[schemars(length(min = 2))]
+    pub members: Vec<Text<CompanySlug>>,
+    /// The common book currency, such as USD.
+    pub currency: Text<Currency>,
+    /// Start date, inclusive.
+    pub from: Text<CalendarDate>,
+    /// End date, inclusive.
+    pub to: Text<CalendarDate>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GroupBalanceSheet {
+    /// Distinct active company slugs from the selected ledger.
+    #[schemars(length(min = 2))]
+    pub members: Vec<Text<CompanySlug>>,
+    /// The common book currency, such as USD.
+    pub currency: Text<Currency>,
+    /// Last date included in the report.
+    pub as_of: Text<CalendarDate>,
+}

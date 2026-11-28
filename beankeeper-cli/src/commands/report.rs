@@ -837,7 +837,7 @@ pub fn compute_income_statement(
     })
 }
 
-fn compute_income_statement_on(
+pub(super) fn compute_income_statement_on(
     scope: &Company<'_>,
     dates: DateRange,
     currency: Currency,
@@ -910,7 +910,7 @@ pub fn compute_balance_sheet(
     })
 }
 
-fn compute_balance_sheet_on(
+pub(super) fn compute_balance_sheet_on(
     scope: &Company<'_>,
     as_of: NaiveDate,
     currency: Currency,

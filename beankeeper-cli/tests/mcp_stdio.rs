@@ -20,6 +20,8 @@ mod disbursements;
 mod documents;
 #[path = "mcp_stdio/forecast_links.rs"]
 mod forecast_links;
+#[path = "mcp_stdio/group_reports.rs"]
+mod group_reports;
 #[path = "mcp_stdio/projects.rs"]
 mod projects;
 
@@ -791,6 +793,8 @@ fn skill_command_overview_covers_every_canonical_cli_operation() -> TestResult {
 }
 
 const LEDGER_TOOLS: &[&str] = &[
+    "group_income_statement",
+    "group_balance_sheet",
     "security_create",
     "security_list",
     "security_price",
@@ -1703,7 +1707,7 @@ fn read_only_router_omits_writes_and_rejects_direct_write_calls() -> TestResult 
     client.initialize()?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 66);
+    assert_eq!(names.len(), 68);
     assert_collection_read_only_tools(&names);
     assert!(names.contains("tax_list"));
     assert!(names.contains("tax_report"));
@@ -3402,13 +3406,17 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     let passphrase: secrecy::SecretString = "mcp-test-passphrase".into();
     let db = Db::open_existing(&path, Some(&passphrase))?;
     let admin = proposal_identity(&db, "owner", &["ledger/admin"])?;
+    let chart = proposal_identity(&db, "group_profile", &["ledger/chart"])?;
     let verified = identity::verify(db.read(), admin["token"].as_str().ok_or("admin token")?)?;
     let owner = Actor::new("owner".parse()?).with_identity(verified);
+    Granted::<Admin>::with_db(&db, &owner, |grant| {
+        db::create_company(grant, &"beta".parse()?, &"Beta".parse()?, None)
+    })?;
     Granted::<Admin>::with_db(&db, &owner, |grant| db::audit::set_policy(grant, true))?;
     let mut client = identity_client(&path, &passphrase_file, Some(token), false)?;
     let listed = client.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 66);
+    assert_eq!(names.len(), 68);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
@@ -3435,6 +3443,34 @@ fn enforced_read_session_filters_tools_and_rechecks_revocation() -> TestResult {
     assert_eq!(facts["company"], "acme");
     assert!(facts["profile"].is_null());
     client.success("company_list", &json!({}))?;
+    let grouped = client.success(
+        "group_balance_sheet",
+        &json!({
+            "members":["acme","beta"], "currency":"USD", "as_of":"2026-12-31"
+        }),
+    )?;
+    assert_eq!(grouped["combined_before_eliminations"]["balanced"], true);
+    let mut bookkeeper = identity_client(&path, &passphrase_file, chart["token"].as_str(), false)?;
+    bookkeeper.success(
+        "ledger_setup_book_initialize",
+        &json!({
+            "target":{"company":"beta","reference":"group-test-profile"},
+            "settings":{"purpose":"business","base_currency":"EUR","fiscal_year_start":"01-01"}
+        }),
+    )?;
+    let response = client.call(
+        "group_balance_sheet",
+        &json!({"members":["acme","beta"],"currency":"USD","as_of":"2026-12-31"}),
+    )?;
+    assert_eq!(response["result"]["isError"], true);
+    let error = payload(&response)?;
+    assert_eq!(error["code"], "VALIDATION");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("functional currency EUR"))
+    );
+
     for kind in ["schedule-c", "1099", "1099-nec"] {
         client.success(
             "report",
@@ -3578,7 +3614,7 @@ fn enforced_post_session_and_process_read_only_ceiling_remain_independent() -> T
     let mut reader = identity_client(&path, &passphrase_file, Some(token), true)?;
     let listed = reader.request("tools/list", &json!({}))?;
     let names = tool_names(&listed)?;
-    assert_eq!(names.len(), 66);
+    assert_eq!(names.len(), 68);
     assert!(names.contains("payroll_preview"));
     assert!(names.contains("payroll_show"));
     assert!(!names.contains("payroll_import"));
