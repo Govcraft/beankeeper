@@ -1615,7 +1615,7 @@ listener serving the same books. Desktop displays up to 50 receipts per view.
 
 Pass the positive receipt ID to `bk --company acme --json audit undo 52`, or
 call MCP `audit_undo` with `{"company":"acme","receipt":52}`. Both require
-a signed credential. A direct bookkeeper can reverse an eligible posting,
+a signed credential. In direct mode the agent can reverse an eligible posting,
 restore annotations, or restore an account label. Account archiving and
 grouped setup undo require signed owner authority. Repeating an applied
 undo returns the same result.
