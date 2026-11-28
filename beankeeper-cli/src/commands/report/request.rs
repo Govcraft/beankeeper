@@ -241,6 +241,7 @@ pub(crate) enum ReportQuery {
         accounts: Vec<AccountSelector>,
         window: ComparisonWindow,
     },
+    CashForecast(crate::commands::report_forecast::ForecastRequest),
     Aging(AgingRequest),
     Reconciliation(ReconciliationSelection),
 }
@@ -266,6 +267,7 @@ impl ReportQuery {
             Self::Ledger { .. } => Operation::ReportLedger,
             Self::BudgetVariance { .. } => Operation::ReportBudgetVariance,
             Self::Trend { .. } => Operation::ReportTrend,
+            Self::CashForecast(_) => Operation::ReportCashForecast,
             Self::CashFlow { .. } => Operation::ReportCashFlow,
             Self::Aging(_) => Operation::ReportAging,
             Self::Reconciliation(_) => Operation::ReportReconciliation,
@@ -420,6 +422,21 @@ impl TryFrom<&ReportCommand> for ReportQuery {
                 metric: args.metric,
                 window: (args.compare, account(&args.explain_change)).try_into()?,
             },
+            ReportCommand::CashForecast(args) => {
+                Self::CashForecast(crate::commands::report_forecast::ForecastRequest {
+                    as_of: args.as_of.into(),
+                    through: args.through.into(),
+                    cadence: args.cadence.into(),
+                    currency: args.currency,
+                    adjustments: args.adjust.clone(),
+                    accounts: args
+                        .cash_account
+                        .iter()
+                        .cloned()
+                        .map(AccountSelector::from)
+                        .collect(),
+                })
+            }
             ReportCommand::CashFlow(args) => Self::CashFlow {
                 scope: scope(&args.from, &args.to, &args.currency)?,
                 accounts: accounts(&args.cash_account),

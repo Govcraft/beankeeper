@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::report_periods::MultiReportKind;
 use super::{
-    report_aging, report_cash_flow, report_compare, report_ledger, report_periods,
+    report_aging, report_cash_flow, report_compare, report_forecast, report_ledger, report_periods,
     report_reconciliation, report_tax, report_trend,
 };
 use crate::cli::{Cli, Command, OutputFormat, ReportCommand, resolve_format};
@@ -337,6 +337,7 @@ enum ReportData {
     Ledger(report_ledger::LedgerReport),
     Aging(report_aging::AgingResponse),
     CashFlow(report_cash_flow::CashFlowStatement),
+    CashForecast(report_forecast::Forecast),
 }
 
 struct StatementWindow {
@@ -429,6 +430,13 @@ impl ReportReader<'_> {
             } => self.compare_or(Kind::Trend(period, metric), scope, &window, || {
                 self.trend(scope, period, metric)
             }),
+            ReportQuery::CashForecast(request) => report_forecast::read(
+                self.reader,
+                self.company,
+                &request,
+                self.currency(request.currency)?,
+            )
+            .map(ReportData::CashForecast),
             ReportQuery::CashFlow {
                 scope,
                 accounts,
@@ -659,6 +667,7 @@ impl ReportData {
             Self::Ledger(report) => report_ledger::render(context, report, output),
             Self::Aging(report) => report.render(context, output),
             Self::Reconciliation(report) => report_reconciliation::render(context, report, output),
+            Self::CashForecast(report) => report_forecast::render(context, report, output),
             Self::CashFlow(report) => report_cash_flow::render(context, report, output),
         }
     }

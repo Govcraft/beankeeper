@@ -939,6 +939,22 @@ pub(crate) enum ReportOptions {
     Aging(AgingInput),
     Reconciliation(ReconciliationInput),
     CashFlow(CashFlowInput),
+    CashForecast(CashForecastInput),
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CashForecastInput {
+    pub as_of: Date,
+    pub through: Date,
+    pub cadence: Option<crate::commands::report_forecast::ForecastCadenceArg>,
+    #[serde(default, deserialize_with = "deserialize_optional_currency")]
+    #[schemars(with = "Option<Text<Currency>>")]
+    pub currency: Option<Currency>,
+    #[serde(default)]
+    pub cash_account: Vec<Account>,
+    #[serde(default)]
+    pub adjust: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

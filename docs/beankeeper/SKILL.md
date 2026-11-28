@@ -651,6 +651,7 @@ older binaries. `verify` detects mismatched or missing cutoff state.
 | `bk contractor-tax w9/export` | Import private W-9 details or write a protected export with the signed tax-details grant |
 | `bk payroll preview/import` | Review and post or propose a finalized aggregate payroll journal |
 | `bk payroll fund/show` | Match a posted withdrawal to a payroll liability and review the outstanding amount |
+| `bk report cash-forecast` | Project cash positions by date and compare a reviewed scenario |
 | `bk report cash-flow` | Cash flow statement (direct method) for a period |
 | `bk report trend` | Show revenue, spending or net worth across periods |
 | `bk audit log` | Inspect the audit trail of ledger mutations/deletions |

@@ -502,3 +502,64 @@ fn classification_rejects_non_assets_and_unknown_classes() {
         Some(2)
     );
 }
+
+#[test]
+fn cash_forecast_schedules_moves_a_receipt_and_skips_cash_transfers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, path) = empty_ledger();
+    post(&path, "2026-02-01", &["1000:100"], &["3000:100"]);
+    post(&path, "2026-02-07", &["1000:120"], &["4000:120"]);
+    post(&path, "2026-02-09", &["1010:10"], &["1000:10"]);
+    ok(
+        &path,
+        &[
+            "schedule",
+            "create",
+            "-d",
+            "Rent",
+            "--start",
+            "2026-02-08",
+            "--debit",
+            "5000:150",
+            "--credit",
+            "1000:150",
+        ],
+    );
+    let read = |adjust: Option<&str>| -> Result<Value, serde_json::Error> {
+        let mut args = vec![
+            "--json",
+            "report",
+            "cash-forecast",
+            "--as-of",
+            "2026-02-01",
+            "--through",
+            "2026-02-20",
+            "--cadence",
+            "monthly",
+        ];
+        if let Some(adjustment) = adjust {
+            args.extend(["--adjust", adjustment]);
+        }
+        serde_json::from_str(&ok(&path, &args))
+    };
+    let baseline = read(None)?;
+    let data = &baseline["data"];
+    assert_eq!(data["periods"][0]["opening"], 10_000);
+    assert_eq!(data["periods"][0]["closing"], 7_000);
+    assert_eq!(data["events"].as_array().map(Vec::len), Some(2));
+    let receipt = data["events"]
+        .as_array()
+        .ok_or("missing cash forecast evidence")?
+        .iter()
+        .find(|event| event["source"]["kind"] == "posted")
+        .and_then(|event| event["source_id"].as_str())
+        .ok_or("missing receipt source")?;
+    let scenario = read(Some(&format!("{receipt}=move:2026-02-15")))?;
+    assert_eq!(scenario["data"]["first_shortfall"], Value::Null);
+    assert_eq!(
+        scenario["data"]["scenario"]["first_shortfall"],
+        "2026-02-08"
+    );
+    assert_eq!(scenario["data"]["scenario"]["periods"][0]["closing"], 7_000);
+    Ok(())
+}

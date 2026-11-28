@@ -2475,6 +2475,29 @@ pub enum TxnProposalCommand {
 }
 
 /// Report subcommands.
+/// Options for a dated cash forecast.
+#[derive(Debug, Clone, Args)]
+pub struct CashForecastArgs {
+    /// Date of the opening balance.
+    #[arg(long)]
+    pub(crate) as_of: crate::request::CalendarDateArg,
+    /// Last included date.
+    #[arg(long)]
+    pub(crate) through: crate::request::CalendarDateArg,
+    /// Group future movements into weekly or monthly periods.
+    #[arg(long, value_enum, default_value = "weekly")]
+    pub(crate) cadence: crate::commands::report_forecast::ForecastCadenceArg,
+    /// Ledger currency override.
+    #[arg(long)]
+    pub(crate) currency: Option<beankeeper::types::Currency>,
+    /// Cash assets to include. Defaults to classified cash accounts.
+    #[arg(long)]
+    pub(crate) cash_account: Vec<String>,
+    /// Scenario adjustment such as posted:123=move:2026-12-15. Repeat for each source.
+    #[arg(long)]
+    pub(crate) adjust: Vec<String>,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 #[command(after_help = "\
 EXAMPLES:\n  \
@@ -2834,6 +2857,8 @@ EXAMPLES:\n  \
     $ bk --company acme report cash-flow --from 2025-01-01 --to 2025-12-31 --currency EUR\
 ")]
     CashFlow(crate::commands::report_cash_flow::CashFlowArgs),
+    /// Forecast cash from posted activity and dated obligations.
+    CashForecast(CashForecastArgs),
 }
 
 /// CLI arguments for the aging report.

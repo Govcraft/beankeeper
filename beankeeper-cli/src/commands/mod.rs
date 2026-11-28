@@ -29,6 +29,7 @@ pub mod report_cash_flow;
 pub(crate) mod report_compare;
 pub mod report_currency;
 pub(crate) mod report_dates;
+pub(crate) mod report_forecast;
 pub mod report_ledger;
 pub mod report_periods;
 pub mod report_reconciliation;
@@ -188,6 +189,7 @@ fn report_operation(command: &ReportCommand) -> Operation {
         ReportCommand::Ledger { .. } => Operation::ReportLedger,
         ReportCommand::Aging(_) => Operation::ReportAging,
         ReportCommand::Reconciliation(_) => Operation::ReportReconciliation,
+        ReportCommand::CashForecast(_) => Operation::ReportCashForecast,
         ReportCommand::CashFlow(_) => Operation::ReportCashFlow,
         ReportCommand::Trend(_) => Operation::ReportTrend,
     }

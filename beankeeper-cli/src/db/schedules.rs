@@ -18,7 +18,7 @@ use crate::error::CliError;
 use crate::identity::{Granted, Post};
 
 /// A globally unique scheduled-template identifier.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScheduleId(MagicTypeId);
 
 impl ScheduleId {
