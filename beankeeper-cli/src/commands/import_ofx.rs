@@ -641,7 +641,6 @@ pub(crate) fn statements(doc: &OfxDocument) -> impl Iterator<Item = OfxStatement
 /// # Errors
 ///
 /// Returns `CliError` on parse failure, missing accounts, or database errors.
-#[allow(clippy::too_many_arguments)]
 pub fn run_import_ofx(
     cli: &Cli,
     db_handle: &Db,
@@ -874,27 +873,31 @@ mod tests {
     // -- ofx_amount_to_minor -----------------------------------------------
 
     #[test]
-    fn amount_positive_usd() {
+    fn amount_positive_usd() -> Result<(), Box<dyn std::error::Error>> {
         let d = Decimal::new(5000, 2); // 50.00
-        assert_eq!(ofx_amount_to_minor(d, 2, "t1").unwrap(), 5000);
+        assert_eq!(ofx_amount_to_minor(d, 2, "t1")?, 5000);
+        Ok(())
     }
 
     #[test]
-    fn amount_negative_takes_absolute() {
+    fn amount_negative_takes_absolute() -> Result<(), Box<dyn std::error::Error>> {
         let d = Decimal::new(-5000, 2); // -50.00
-        assert_eq!(ofx_amount_to_minor(d, 2, "t1").unwrap(), 5000);
+        assert_eq!(ofx_amount_to_minor(d, 2, "t1")?, 5000);
+        Ok(())
     }
 
     #[test]
-    fn amount_three_decimal_currency() {
+    fn amount_three_decimal_currency() -> Result<(), Box<dyn std::error::Error>> {
         let d = Decimal::new(50125, 3); // 50.125
-        assert_eq!(ofx_amount_to_minor(d, 3, "t1").unwrap(), 50125);
+        assert_eq!(ofx_amount_to_minor(d, 3, "t1")?, 50125);
+        Ok(())
     }
 
     #[test]
-    fn amount_jpy_zero_decimals() {
+    fn amount_jpy_zero_decimals() -> Result<(), Box<dyn std::error::Error>> {
         let d = Decimal::new(5000, 0); // 5000
-        assert_eq!(ofx_amount_to_minor(d, 0, "t1").unwrap(), 5000);
+        assert_eq!(ofx_amount_to_minor(d, 0, "t1")?, 5000);
+        Ok(())
     }
 
     #[test]
@@ -916,23 +919,27 @@ mod tests {
     // -- detect_format -----------------------------------------------------
 
     #[test]
-    fn detect_ofx_extension() {
-        assert_eq!(detect_format("statement.ofx").unwrap(), ImportFormat::Ofx);
+    fn detect_ofx_extension() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(detect_format("statement.ofx")?, ImportFormat::Ofx);
+        Ok(())
     }
 
     #[test]
-    fn detect_qfx_extension() {
-        assert_eq!(detect_format("statement.QFX").unwrap(), ImportFormat::Ofx);
+    fn detect_qfx_extension() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(detect_format("statement.QFX")?, ImportFormat::Ofx);
+        Ok(())
     }
 
     #[test]
-    fn detect_csv_extension() {
-        assert_eq!(detect_format("data.csv").unwrap(), ImportFormat::Csv);
+    fn detect_csv_extension() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(detect_format("data.csv")?, ImportFormat::Csv);
+        Ok(())
     }
 
     #[test]
-    fn detect_json_extension() {
-        assert_eq!(detect_format("data.json").unwrap(), ImportFormat::Json);
+    fn detect_json_extension() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(detect_format("data.json")?, ImportFormat::Json);
+        Ok(())
     }
 
     #[test]

@@ -481,7 +481,7 @@ impl ListRequest {
     }
 }
 
-/// A nonnegative offset that fits in both the CLI and the SQLite pager.
+/// A nonnegative offset that fits in both the CLI and the `SQLite` pager.
 #[derive(Clone, Copy, Default)]
 pub(super) struct RowOffset(u32);
 

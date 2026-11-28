@@ -42,7 +42,11 @@ fn ordinary_opens_refuse_an_older_ledger_without_writing() -> Result<(), CliErro
 
     let before = std::fs::read(&path)?;
     for open in [Db::open_existing, Db::open, Db::open_snapshot] {
-        let error = open(&path, None).expect_err("the path alone cannot upgrade a ledger");
+        let Err(error) = open(&path, None) else {
+            return Err(CliError::Validation(
+                "the path alone cannot upgrade a ledger".into(),
+            ));
+        };
         assert!(matches!(
             error,
             CliError::SchemaMismatch { stored: found, expected: required }

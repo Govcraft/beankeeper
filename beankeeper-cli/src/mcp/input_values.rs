@@ -318,7 +318,7 @@ impl JsonSchema for Month {
     }
 }
 
-/// Page size. SQLite treats negative limits as unlimited.
+/// Page size. `SQLite` treats negative limits as unlimited.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub(crate) struct PageLimit(i64);

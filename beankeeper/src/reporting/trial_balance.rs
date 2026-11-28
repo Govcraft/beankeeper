@@ -111,7 +111,7 @@ mod tests {
         )
     }
 
-    fn make_balanced_trial_balance() -> TrialBalance {
+    fn make_balanced_trial_balance() -> Result<TrialBalance, MoneyError> {
         TrialBalance::new(vec![
             AccountBalance::new(
                 make_account("1000", "Cash", AccountType::Asset),
@@ -129,37 +129,38 @@ mod tests {
                 Amount::ZERO,
             ),
         ])
-        .expect("test totals are representable")
     }
 
     #[test]
-    fn empty_trial_balance_is_balanced() {
-        let tb = TrialBalance::new(vec![]).expect("empty trial balance is representable");
+    fn empty_trial_balance_is_balanced() -> Result<(), Box<dyn std::error::Error>> {
+        let tb = TrialBalance::new(vec![])?;
         assert!(tb.is_balanced());
+        Ok(())
     }
 
     #[test]
-    fn balanced_trial_balance() {
-        let tb = make_balanced_trial_balance();
+    fn balanced_trial_balance() -> Result<(), Box<dyn std::error::Error>> {
+        let tb = make_balanced_trial_balance()?;
         assert!(tb.is_balanced());
         assert_eq!(tb.total_debits(), Amount::new(1500));
         assert_eq!(tb.total_credits(), Amount::new(1500));
+        Ok(())
     }
 
     #[test]
-    fn unbalanced_trial_balance() {
+    fn unbalanced_trial_balance() -> Result<(), Box<dyn std::error::Error>> {
         let tb = TrialBalance::new(vec![AccountBalance::new(
             make_account("1000", "Cash", AccountType::Asset),
             Amount::new(100),
             Amount::ZERO,
-        )])
-        .expect("test totals are representable");
+        )])?;
         assert!(!tb.is_balanced());
+        Ok(())
     }
 
     #[test]
-    fn accounts_by_type_filters() {
-        let tb = make_balanced_trial_balance();
+    fn accounts_by_type_filters() -> Result<(), Box<dyn std::error::Error>> {
+        let tb = make_balanced_trial_balance()?;
 
         let assets = tb.accounts_by_type(AccountType::Asset);
         assert_eq!(assets.len(), 1);
@@ -170,31 +171,34 @@ mod tests {
 
         let liabilities = tb.accounts_by_type(AccountType::Liability);
         assert_eq!(liabilities, Vec::<&AccountBalance>::new());
+        Ok(())
     }
 
     #[test]
-    fn balances_accessor() {
-        let tb = make_balanced_trial_balance();
+    fn balances_accessor() -> Result<(), Box<dyn std::error::Error>> {
+        let tb = make_balanced_trial_balance()?;
         assert_eq!(tb.balances().len(), 3);
+        Ok(())
     }
 
     #[test]
-    fn display_shows_balanced_status() {
-        let tb = make_balanced_trial_balance();
+    fn display_shows_balanced_status() -> Result<(), Box<dyn std::error::Error>> {
+        let tb = make_balanced_trial_balance()?;
         let display = format!("{tb}");
         assert!(display.contains("BALANCED"));
         assert!(display.contains("Trial Balance"));
+        Ok(())
     }
 
     #[test]
-    fn display_shows_unbalanced_status() {
+    fn display_shows_unbalanced_status() -> Result<(), Box<dyn std::error::Error>> {
         let tb = TrialBalance::new(vec![AccountBalance::new(
             make_account("1000", "Cash", AccountType::Asset),
             Amount::new(100),
             Amount::ZERO,
-        )])
-        .expect("test totals are representable");
+        )])?;
         let display = format!("{tb}");
         assert!(display.contains("UNBALANCED"));
+        Ok(())
     }
 }

@@ -15,6 +15,10 @@ use tempfile::TempDir;
 const CO: &str = "acme";
 const AS_OF: &str = "2026-06-30";
 
+/// Reference (also used as the description) and optional metadata for a posting.
+#[derive(Clone, Copy)]
+struct Ref<'a>(&'a str, Option<&'a str>);
+
 struct Ledger {
     _dir: TempDir,
     db: String,
@@ -111,16 +115,8 @@ impl Ledger {
 
     /// Post a two-line transaction with a reference (also used as the
     /// description) and optional metadata.
-    #[allow(clippy::too_many_arguments)] // mirrors `post` plus a reference
-    fn post_ref(
-        &self,
-        date: &str,
-        debit: &str,
-        credit: &str,
-        amount: &str,
-        reference: &str,
-        meta: Option<&str>,
-    ) {
+    fn post_ref(&self, date: &str, debit: &str, credit: &str, amount: &str, tag: Ref<'_>) {
+        let Ref(reference, meta) = tag;
         let d = format!("{debit}:{amount}");
         let c = format!("{credit}:{amount}");
         let mut args = vec![
@@ -582,16 +578,15 @@ fn items(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
 #[test]
 fn specific_short_payment_on_recent_item() {
     let l = Ledger::new();
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-101", None); // 180 days
-    l.post_ref("2026-06-01", "1100", "4000", "300", "INV-102", None); // 29 days
+    l.post_ref("2026-01-01", "1100", "4000", "400", Ref("INV-101", None)); // 180 days
+    l.post_ref("2026-06-01", "1100", "4000", "300", Ref("INV-102", None)); // 29 days
     // A short payment on the recent invoice.
     l.post_ref(
         "2026-06-15",
         "1000",
         "1100",
         "100",
-        "PAY-1",
-        Some(r#"{"applies_to":"INV-102"}"#),
+        Ref("PAY-1", Some(r#"{"applies_to":"INV-102"}"#)),
     );
 
     // FIFO ages the oldest invoice down instead.
@@ -626,12 +621,18 @@ fn specific_short_payment_on_recent_item() {
 #[test]
 fn specific_link_by_transaction_id_and_custom_link_key() {
     let l = Ledger::new();
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-101", None);
-    l.post_ref("2026-06-01", "1100", "4000", "300", "INV-102", None);
+    l.post_ref("2026-01-01", "1100", "4000", "400", Ref("INV-101", None));
+    l.post_ref("2026-06-01", "1100", "4000", "300", Ref("INV-102", None));
     let before = l.aging(&["--account", "1100"]);
     let id = int(&before["data"]["groups"][0]["open_items"][1]["transaction_id"]);
     let meta = format!(r#"{{"invoice":{id}}}"#);
-    l.post_ref("2026-06-15", "1000", "1100", "100", "PAY-1", Some(&meta));
+    l.post_ref(
+        "2026-06-15",
+        "1000",
+        "1100",
+        "100",
+        Ref("PAY-1", Some(&meta)),
+    );
 
     let r = l.aging(&[
         "--account",
@@ -671,19 +672,18 @@ fn specific_link_by_transaction_id_and_custom_link_key() {
 #[test]
 fn specific_excess_and_unlinked_settlements_fall_back_to_fifo() {
     let l = Ledger::new();
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-101", None);
-    l.post_ref("2026-06-01", "1100", "4000", "300", "INV-102", None);
+    l.post_ref("2026-01-01", "1100", "4000", "400", Ref("INV-101", None));
+    l.post_ref("2026-06-01", "1100", "4000", "300", Ref("INV-102", None));
     // 300 settles INV-102; the 50 excess goes FIFO to INV-101.
     l.post_ref(
         "2026-06-10",
         "1000",
         "1100",
         "350",
-        "PAY-1",
-        Some(r#"{"applies_to":"INV-102"}"#),
+        Ref("PAY-1", Some(r#"{"applies_to":"INV-102"}"#)),
     );
     // No link: FIFO.
-    l.post_ref("2026-06-20", "1000", "1100", "100", "PAY-2", None);
+    l.post_ref("2026-06-20", "1000", "1100", "100", Ref("PAY-2", None));
 
     let r = l.aging(&["--account", "1100", "--method", "specific"]);
     assert_eq!(
@@ -697,17 +697,28 @@ fn specific_excess_and_unlinked_settlements_fall_back_to_fifo() {
 #[test]
 fn specific_invalid_links_warn_and_fall_back_to_fifo() {
     let l = Ledger::new();
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-101", Some(GLOBEX));
+    l.post_ref(
+        "2026-01-01",
+        "1100",
+        "4000",
+        "400",
+        Ref("INV-101", Some(GLOBEX)),
+    );
     l.post_ref(
         "2026-06-01",
         "1100",
         "4000",
         "300",
-        "INV-201",
-        Some(INITECH),
+        Ref("INV-201", Some(INITECH)),
     );
-    l.post_ref("2026-05-01", "5000", "1000", "10", "EXP-1", None); // not on AR
-    l.post_ref("2026-07-05", "1100", "4000", "50", "INV-LATE", Some(GLOBEX));
+    l.post_ref("2026-05-01", "5000", "1000", "10", Ref("EXP-1", None)); // not on AR
+    l.post_ref(
+        "2026-07-05",
+        "1100",
+        "4000",
+        "50",
+        Ref("INV-LATE", Some(GLOBEX)),
+    );
     for (date, reference, link) in [
         ("2026-06-10", "PAY-1", r#""INV-999""#),
         ("2026-06-11", "PAY-2", r#""EXP-1""#),
@@ -717,7 +728,7 @@ fn specific_invalid_links_warn_and_fall_back_to_fifo() {
         ("2026-06-15", "PAY-6", r#""PAY-1""#),
     ] {
         let meta = format!(r#"{{"customer":"Globex","applies_to":{link}}}"#);
-        l.post_ref(date, "1000", "1100", "10", reference, Some(&meta));
+        l.post_ref(date, "1000", "1100", "10", Ref(reference, Some(&meta)));
     }
 
     let args = [
@@ -773,16 +784,15 @@ fn specific_invalid_links_warn_and_fall_back_to_fifo() {
 #[test]
 fn reversal_linked_to_a_charge_cancels_it() {
     let l = Ledger::new();
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-101", None);
-    l.post_ref("2026-06-01", "1100", "4000", "300", "INV-102", None);
+    l.post_ref("2026-01-01", "1100", "4000", "400", Ref("INV-101", None));
+    l.post_ref("2026-06-01", "1100", "4000", "300", Ref("INV-102", None));
     // Credit note reversing INV-102 (debit revenue, credit receivable).
     l.post_ref(
         "2026-06-05",
         "4000",
         "1100",
         "300",
-        "CN-1",
-        Some(r#"{"applies_to":"INV-102"}"#),
+        Ref("CN-1", Some(r#"{"applies_to":"INV-102"}"#)),
     );
 
     let r = l.aging(&["--account", "1100", "--method", "specific"]);
@@ -803,8 +813,8 @@ fn reversal_linked_to_a_charge_cancels_it() {
 #[test]
 fn refund_of_overpayment_clears_unapplied_credit() {
     let l = Ledger::new();
-    l.post_ref("2026-06-01", "1100", "4000", "100", "INV-1", None);
-    l.post_ref("2026-06-05", "1000", "1100", "150", "PAY-1", None);
+    l.post_ref("2026-06-01", "1100", "4000", "100", Ref("INV-1", None));
+    l.post_ref("2026-06-05", "1000", "1100", "150", Ref("PAY-1", None));
 
     let r = aging_at(&l, "2026-06-07", &["--account", "1100"]);
     let totals = &r["data"]["totals"];
@@ -814,7 +824,7 @@ fn refund_of_overpayment_clears_unapplied_credit() {
 
     // Refund paid out to the customer: a debit to AR, i.e. a charge that
     // consumes the unapplied credit.
-    l.post_ref("2026-06-10", "1100", "1000", "50", "REFUND-1", None);
+    l.post_ref("2026-06-10", "1100", "1000", "50", Ref("REFUND-1", None));
     let r = l.aging(&["--account", "1100"]);
     let totals = &r["data"]["totals"];
     assert_eq!(int(&totals["total_open"]), 0);
@@ -866,10 +876,28 @@ fn net_credit_account_is_obvious_in_all_formats() {
 #[test]
 fn detail_lists_open_items_in_table_csv_and_json() {
     let l = Ledger::new();
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-101", Some(GLOBEX));
-    l.post_ref("2026-06-01", "1100", "4000", "300", "INV-102", Some(GLOBEX));
+    l.post_ref(
+        "2026-01-01",
+        "1100",
+        "4000",
+        "400",
+        Ref("INV-101", Some(GLOBEX)),
+    );
+    l.post_ref(
+        "2026-06-01",
+        "1100",
+        "4000",
+        "300",
+        Ref("INV-102", Some(GLOBEX)),
+    );
     l.post("2026-06-20", "1100", "4000", "70", Some(INITECH)); // no reference
-    l.post_ref("2026-06-15", "1000", "1100", "100", "PAY-1", Some(GLOBEX));
+    l.post_ref(
+        "2026-06-15",
+        "1000",
+        "1100",
+        "100",
+        Ref("PAY-1", Some(GLOBEX)),
+    );
     let args = ["--account", "1100", "--group-by", "customer", "--detail"];
 
     // JSON: open items carry the reference (null when there is none).
@@ -928,9 +956,9 @@ fn detail_lists_open_items_in_table_csv_and_json() {
 #[test]
 fn as_of_rerun_ignores_later_payments() {
     let l = Ledger::new();
-    l.post_ref("2026-01-15", "1100", "4000", "400", "INV-101", None);
-    l.post_ref("2026-03-10", "1100", "4000", "300", "INV-102", None);
-    l.post_ref("2026-02-01", "1000", "1100", "100", "PAY-1", None);
+    l.post_ref("2026-01-15", "1100", "4000", "400", Ref("INV-101", None));
+    l.post_ref("2026-03-10", "1100", "4000", "300", Ref("INV-102", None));
+    l.post_ref("2026-02-01", "1000", "1100", "100", Ref("PAY-1", None));
     let period_end = "2026-03-31";
     let run = |method: &str| {
         aging_at(
@@ -956,11 +984,10 @@ fn as_of_rerun_ignores_later_payments() {
         "1000",
         "1100",
         "300",
-        "PAY-2",
-        Some(r#"{"applies_to":"INV-102"}"#),
+        Ref("PAY-2", Some(r#"{"applies_to":"INV-102"}"#)),
     );
-    l.post_ref("2026-05-01", "1000", "1100", "250", "PAY-3", None);
-    l.post_ref("2026-04-10", "1100", "4000", "80", "INV-103", None);
+    l.post_ref("2026-05-01", "1000", "1100", "250", Ref("PAY-3", None));
+    l.post_ref("2026-04-10", "1100", "4000", "80", Ref("INV-103", None));
 
     let strip = |mut v: Value| {
         v["meta"] = Value::Null;
@@ -977,24 +1004,22 @@ fn as_of_rerun_ignores_later_payments() {
 #[test]
 fn payable_specific_identification() {
     let l = Ledger::new();
-    l.post_ref("2026-02-15", "5000", "2000", "250", "BILL-1", None); // 135 days
-    l.post_ref("2026-05-20", "5000", "2000", "80", "BILL-2", None); // 41 days
+    l.post_ref("2026-02-15", "5000", "2000", "250", Ref("BILL-1", None)); // 135 days
+    l.post_ref("2026-05-20", "5000", "2000", "80", Ref("BILL-2", None)); // 41 days
     // Debit-side settlements: a payment of BILL-2 and a vendor credit on BILL-1.
     l.post_ref(
         "2026-06-01",
         "2000",
         "1000",
         "80",
-        "PAY-1",
-        Some(r#"{"applies_to":"BILL-2"}"#),
+        Ref("PAY-1", Some(r#"{"applies_to":"BILL-2"}"#)),
     );
     l.post_ref(
         "2026-06-02",
         "2000",
         "5000",
         "50",
-        "VCN-1",
-        Some(r#"{"applies_to":"BILL-1"}"#),
+        Ref("VCN-1", Some(r#"{"applies_to":"BILL-1"}"#)),
     );
 
     let r = l.aging(&["--account", "2000", "--method", "specific"]);
@@ -1038,11 +1063,41 @@ fn sub_ledgers() -> Ledger {
             "asset",
         ]);
     }
-    l.post_ref("2026-01-10", "1100", "4000", "40", "INV-C1", Some(GLOBEX));
-    l.post_ref("2026-02-01", "1110", "4000", "400", "INV-E1", Some(GLOBEX));
-    l.post_ref("2026-05-20", "1110", "4000", "300", "INV-E2", Some(INITECH));
-    l.post_ref("2026-03-15", "1120", "4000", "250", "INV-W1", Some(INITECH));
-    l.post_ref("2026-06-25", "1120", "4000", "80", "INV-W2", Some(GLOBEX));
+    l.post_ref(
+        "2026-01-10",
+        "1100",
+        "4000",
+        "40",
+        Ref("INV-C1", Some(GLOBEX)),
+    );
+    l.post_ref(
+        "2026-02-01",
+        "1110",
+        "4000",
+        "400",
+        Ref("INV-E1", Some(GLOBEX)),
+    );
+    l.post_ref(
+        "2026-05-20",
+        "1110",
+        "4000",
+        "300",
+        Ref("INV-E2", Some(INITECH)),
+    );
+    l.post_ref(
+        "2026-03-15",
+        "1120",
+        "4000",
+        "250",
+        Ref("INV-W1", Some(INITECH)),
+    );
+    l.post_ref(
+        "2026-06-25",
+        "1120",
+        "4000",
+        "80",
+        Ref("INV-W2", Some(GLOBEX)),
+    );
     // Partial FIFO payment on the east ledger.
     l.post("2026-06-01", "1000", "1110", "150", Some(GLOBEX));
     // A west payment linked to the west invoice.
@@ -1383,9 +1438,27 @@ fn multi_account_detail_names_the_account() {
 fn filter_shows_disputed_items_at_original_age_net_of_payments() {
     let l = Ledger::new();
     let disputed = r#"{"customer":"Globex","status":"disputed"}"#;
-    l.post_ref("2026-01-01", "1100", "4000", "400", "INV-1", Some(disputed)); // 180 days
-    l.post_ref("2026-05-15", "1100", "4000", "300", "INV-2", Some(GLOBEX)); // 46 days
-    l.post_ref("2026-06-20", "1100", "4000", "200", "INV-3", Some(disputed)); // 10 days
+    l.post_ref(
+        "2026-01-01",
+        "1100",
+        "4000",
+        "400",
+        Ref("INV-1", Some(disputed)),
+    ); // 180 days
+    l.post_ref(
+        "2026-05-15",
+        "1100",
+        "4000",
+        "300",
+        Ref("INV-2", Some(GLOBEX)),
+    ); // 46 days
+    l.post_ref(
+        "2026-06-20",
+        "1100",
+        "4000",
+        "200",
+        Ref("INV-3", Some(disputed)),
+    ); // 10 days
     // Payments carry no status: they still settle the disputed charges.
     l.post(
         "2026-06-22",

@@ -1,4 +1,4 @@
-//! A query-only capability for the same SQLite snapshot used by audited writes.
+//! A query-only capability for the same `SQLite` snapshot used by audited writes.
 
 use rusqlite::{CachedStatement, Connection, MappedRows, Params, Result, Row, Rows, Statement};
 
@@ -73,7 +73,7 @@ impl<'a> ReadConn<'a> {
     /// Prepares one query returning rows.
     ///
     /// # Errors
-    /// Returns a SQLite error for invalid SQL or a statement that can change state.
+    /// Returns a `SQLite` error for invalid SQL or a statement that can change state.
     pub fn prepare(self, sql: &str) -> Result<ReadStatement<'a>> {
         require_query(sql)?;
         let statement = self.connection.prepare(sql)?;
@@ -81,10 +81,10 @@ impl<'a> ReadConn<'a> {
         Ok(ReadStatement(Query::Direct(statement)))
     }
 
-    /// Prepares a query using the SQLite statement cache.
+    /// Prepares a query using the `SQLite` statement cache.
     ///
     /// # Errors
-    /// Returns a SQLite error for invalid SQL or a statement that can change state.
+    /// Returns a `SQLite` error for invalid SQL or a statement that can change state.
     pub fn prepare_cached(self, sql: &str) -> Result<ReadStatement<'a>> {
         require_query(sql)?;
         let statement = self.connection.prepare_cached(sql)?;
@@ -95,7 +95,7 @@ impl<'a> ReadConn<'a> {
     /// Executes a query and maps its first result row.
     ///
     /// # Errors
-    /// Returns a SQLite error on invalid SQL, a missing row, or failed decoding.
+    /// Returns a `SQLite` error on invalid SQL, a missing row, or failed decoding.
     pub fn query_row<T, P, F>(self, sql: &str, params: P, map: F) -> Result<T>
     where
         P: Params,
@@ -145,7 +145,7 @@ enum Query<'a> {
     Cached(CachedStatement<'a>),
 }
 
-/// A prepared query that cannot execute any SQLite write.
+/// A prepared query that cannot execute any `SQLite` write.
 pub struct ReadStatement<'a>(Query<'a>);
 
 impl<'a> ReadStatement<'a> {
@@ -159,7 +159,7 @@ impl<'a> ReadStatement<'a> {
     /// Runs this query and returns its rows.
     ///
     /// # Errors
-    /// Returns a SQLite error if binding or starting the query fails.
+    /// Returns a `SQLite` error if binding or starting the query fails.
     pub fn query<P: Params>(&mut self, params: P) -> Result<Rows<'_>> {
         self.statement().query(params)
     }
@@ -167,7 +167,7 @@ impl<'a> ReadStatement<'a> {
     /// Maps each row of this query.
     ///
     /// # Errors
-    /// Returns a SQLite error if binding or starting the query fails.
+    /// Returns a `SQLite` error if binding or starting the query fails.
     pub fn query_map<T, P, F>(&mut self, params: P, map: F) -> Result<MappedRows<'_, F>>
     where
         P: Params,
@@ -179,7 +179,7 @@ impl<'a> ReadStatement<'a> {
     /// Runs the query and maps its first result row.
     ///
     /// # Errors
-    /// Returns a SQLite error on invalid parameters, a missing row, or failed decoding.
+    /// Returns a `SQLite` error on invalid parameters, a missing row, or failed decoding.
     pub fn query_row<T, P, F>(&mut self, params: P, map: F) -> Result<T>
     where
         P: Params,

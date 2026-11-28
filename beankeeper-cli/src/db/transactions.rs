@@ -710,7 +710,7 @@ impl TransactionValueFilter {
     ///
     /// # Errors
     /// Returns [`CliError::Validation`] if bounds use different currencies
-    /// or cannot be represented by the ledger's signed SQLite integers.
+    /// or cannot be represented by the ledger's signed `SQLite` integers.
     pub fn from_bounds(
         gt: Option<Money>,
         lt: Option<Money>,
@@ -1226,73 +1226,57 @@ mod tests {
     use crate::db::companies::create_company;
     use crate::db::connection::Db;
 
-    fn setup() -> Db {
-        let db = Db::open_in_memory().unwrap_or_else(|e| panic!("db setup failed: {e}"));
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn setup() -> Result<Db, CliError> {
+        let db = Db::open_in_memory()?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
-            create_company(
-                grant,
-                &"acme"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                &"Acme Corp".parse()?,
-                None,
-            )
-        })
-        .unwrap_or_else(|e| panic!("company setup failed: {e}"));
+            create_company(grant, &"acme".parse()?, &"Acme Corp".parse()?, None)
+        })?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &"acme".parse()?,
                     code: "1000",
                     name: "Cash",
                     account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        })?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &"acme".parse()?,
                     code: "4000",
                     name: "Revenue",
                     account_type: beankeeper::types::AccountType::Revenue,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
-        db
+        })?;
+        Ok(db)
     }
 
-    fn sample_entries() -> Vec<PostEntryParams> {
-        vec![
+    fn sample_entries() -> Result<Vec<PostEntryParams>, CliError> {
+        Ok(vec![
             PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
-        ]
+        ])
     }
 
     fn test_actor() -> &'static Actor {
@@ -1306,56 +1290,57 @@ mod tests {
         description: &'a str,
         metadata: Option<&'a str>,
         date: &'a str,
-    ) -> PostTransactionParams<'a> {
-        static COMPANY: std::sync::LazyLock<CompanySlug> =
-            std::sync::LazyLock::new(|| "acme".parse().expect("fixture company"));
-        PostTransactionParams {
-            company_slug: &COMPANY,
+    ) -> Result<PostTransactionParams<'a>, CliError> {
+        static COMPANY: std::sync::LazyLock<Result<CompanySlug, String>> =
+            std::sync::LazyLock::new(|| {
+                "acme"
+                    .parse::<CompanySlug>()
+                    .map_err(|error| error.to_string())
+            });
+        Ok(PostTransactionParams {
+            company_slug: COMPANY
+                .as_ref()
+                .map_err(|error| CliError::Validation(error.clone()))?,
             description,
             metadata,
             currency: Currency::USD,
             date: date
                 .parse()
-                .unwrap_or_else(|error| panic!("fixture date: {error}")),
+                .map_err(|error| CliError::Validation(format!("fixture date: {error}")))?,
             entries,
             correlate: None,
             reference: None,
             on_conflict: ConflictStrategy::Error,
             actor: test_actor(),
-        }
+        })
     }
 
     #[test]
-    fn post_and_get_transaction() {
-        let db = setup();
-        let entries = sample_entries();
-        let p = make_params(&entries, "Test sale", None, "2024-01-15");
+    fn post_and_get_transaction() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p = make_params(&entries, "Test sale", None, "2024-01-15")?;
         let id = post_fixture(&db, &p);
         assert!(id.is_ok());
-        let PostResult::Created(id) = id.unwrap_or_else(|e| panic!("post failed: {e}")) else {
-            panic!("expected Created");
+        let PostResult::Created(id) = id? else {
+            return Err("expected Created".into());
         };
 
         let result = get_transaction(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("bind fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             id,
         );
         assert!(result.is_ok());
-        let (txn, entry_rows) = result.unwrap_or_else(|e| panic!("get failed: {e}"));
+        let (txn, entry_rows) = result?;
         assert_eq!(txn.description, "Test sale");
         assert_eq!(entry_rows.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn calendar_date_codec_preserves_ledger_text_and_reads_historical_dates() -> Result<(), CliError>
-    {
-        let db = setup();
-        let date =
-            NaiveDate::from_ymd_opt(2026, 1, 5).unwrap_or_else(|| panic!("invalid fixture date"));
+    fn calendar_date_codec_preserves_ledger_text_and_reads_historical_dates() -> TestResult {
+        let db = setup()?;
+        let date = NaiveDate::from_ymd_opt(2026, 1, 5).ok_or("invalid fixture date")?;
         let (encoded, historical): (String, NaiveDate) =
             db.conn()
                 .query_row("SELECT ?1, '2026-1-5'", [date], |row| {
@@ -1367,30 +1352,26 @@ mod tests {
     }
 
     #[test]
-    fn post_transaction_with_metadata() {
-        let db = setup();
-        let entries = sample_entries();
-        let p = make_params(&entries, "Test", Some(r#"{"ref":"INV-001"}"#), "2024-01-15");
+    fn post_transaction_with_metadata() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p = make_params(&entries, "Test", Some(r#"{"ref":"INV-001"}"#), "2024-01-15")?;
         let id = post_fixture(&db, &p);
         assert!(id.is_ok());
-        let PostResult::Created(id) = id.unwrap_or_else(|e| panic!("post failed: {e}")) else {
-            panic!("expected Created");
+        let PostResult::Created(id) = id? else {
+            return Err("expected Created".into());
         };
         let (txn, _) = get_transaction(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("bind fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             id,
-        )
-        .unwrap_or_else(|e| panic!("get failed: {e}"));
+        )?;
         assert_eq!(txn.metadata.as_deref(), Some(r#"{"ref":"INV-001"}"#));
+        Ok(())
     }
 
     #[test]
-    fn storage_rejects_invalid_journals_before_writing() -> Result<(), CliError> {
-        let db = setup();
+    fn storage_rejects_invalid_journals_before_writing() -> TestResult {
+        let db = setup()?;
         let count = || -> rusqlite::Result<i64> {
             db.conn().query_row(
             "SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM entries) + (SELECT COUNT(*) FROM audit_log)",
@@ -1399,13 +1380,13 @@ mod tests {
         )
         };
         let before = count()?;
-        let mut unbalanced = sample_entries();
+        let mut unbalanced = sample_entries()?;
         unbalanced[0].amount = (unbalanced[0].amount.minor_units() + 1).try_into()?;
-        let mut two_debits = sample_entries();
+        let mut two_debits = sample_entries()?;
         two_debits[1].direction = DebitOrCredit::Debit;
-        let balanced = sample_entries();
+        let balanced = sample_entries()?;
         for entries in [unbalanced.as_slice(), two_debits.as_slice(), &balanced[..1]] {
-            let request = make_params(entries, "Invalid", None, "2026-01-05");
+            let request = make_params(entries, "Invalid", None, "2026-01-05")?;
             assert!(matches!(
                 post_fixture(&db, &request),
                 Err(CliError::Validation(_))
@@ -1416,8 +1397,8 @@ mod tests {
     }
 
     #[test]
-    fn direct_post_rejects_reserved_links_before_writing() -> Result<(), CliError> {
-        let db = setup();
+    fn direct_post_rejects_reserved_links_before_writing() -> TestResult {
+        let db = setup()?;
         let count = || -> rusqlite::Result<i64> {
             db.conn().query_row(
             "SELECT (SELECT COUNT(*) FROM transactions) + (SELECT COUNT(*) FROM entries) + (SELECT COUNT(*) FROM audit_log)",
@@ -1426,10 +1407,10 @@ mod tests {
         )
         };
         let before = count()?;
-        let entries = sample_entries();
+        let entries = sample_entries()?;
         for key in ["correlate", "reverses", "reversed_by", "proposal_id"] {
             let metadata = format!(r#"{{"{key}":999}}"#);
-            let request = make_params(&entries, "Forged link", Some(&metadata), "2024-01-15");
+            let request = make_params(&entries, "Forged link", Some(&metadata), "2024-01-15")?;
             assert!(matches!(
                 post_fixture(&db, &request),
                 Err(CliError::Validation(_))
@@ -1440,11 +1421,12 @@ mod tests {
     }
 
     #[test]
-    fn post_empty_entries_is_validation_error() {
-        let db = setup();
-        let p = make_params(&[], "Empty", None, "2024-01-15");
+    fn post_empty_entries_is_validation_error() -> TestResult {
+        let db = setup()?;
+        let p = make_params(&[], "Empty", None, "2024-01-15")?;
         let result = post_fixture(&db, &p);
         assert!(matches!(result, Err(CliError::Validation(_))));
+        Ok(())
     }
 
     #[test]
@@ -1463,54 +1445,47 @@ mod tests {
     }
 
     #[test]
-    fn get_missing_transaction_is_not_found() {
-        let db = setup();
+    fn get_missing_transaction_is_not_found() -> TestResult {
+        let db = setup()?;
         let result = get_transaction(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("bind fixture company"),
-            crate::db::ids::fixture_id(999),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
+            crate::db::ids::fixture_id(999)?,
         );
         assert!(matches!(result, Err(CliError::NotFound(_))));
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_returns_all() {
-        let db = setup();
-        let entries = sample_entries();
-        let p1 = make_params(&entries, "First", None, "2024-01-01");
+    fn list_transactions_returns_all() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p1 = make_params(&entries, "First", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "Second", None, "2024-01-02");
+        let p2 = make_params(&entries, "Second", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn list_and_count_filter_audited_reversal_pairs_before_paging() -> Result<(), CliError> {
+    fn list_and_count_filter_audited_reversal_pairs_before_paging() -> TestResult {
         use crate::db::audit::{ReverseTransactionParams, grant::Reverse};
 
-        let db = setup();
-        let entries = sample_entries();
-        let original = make_params(&entries, "Original", None, "2026-01-01");
-        let active = make_params(&entries, "Active", None, "2026-01-02");
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let original = make_params(&entries, "Original", None, "2026-01-01")?;
+        let active = make_params(&entries, "Active", None, "2026-01-02")?;
         let PostResult::Created(original_id) = post_fixture(&db, &original)? else {
-            panic!("expected original posting");
+            return Err("expected original posting".into());
         };
         let PostResult::Created(active_id) = post_fixture(&db, &active)? else {
-            panic!("expected active posting");
+            return Err("expected active posting".into());
         };
         let reversed = Granted::<Reverse>::with_db(&db, test_actor(), |grant| {
             audit::reverse_transaction(
@@ -1525,7 +1500,7 @@ mod tests {
             )
         })?;
         let PostResult::Created(reversal_id) = reversed else {
-            panic!("expected reversal posting");
+            return Err("expected reversal posting".into());
         };
 
         let company = Company::bind(db.read(), original.company_slug.clone())?;
@@ -1549,49 +1524,42 @@ mod tests {
     }
 
     #[test]
-    fn list_transactions_with_account_filter() {
-        let db = setup();
+    fn list_transactions_with_account_filter() -> TestResult {
+        let db = setup()?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &"acme".parse()?,
                     code: "5000",
                     name: "Expenses",
                     account_type: beankeeper::types::AccountType::Expense,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        })?;
 
-        let entries1 = sample_entries();
-        let p1 = make_params(&entries1, "Sale", None, "2024-01-01");
+        let entries1 = sample_entries()?;
+        let p1 = make_params(&entries1, "Sale", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
 
         let entries2 = vec![
             PostEntryParams {
                 account_code: "5000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 1000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 1000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 1000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 1000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
         ];
-        let p2 = make_params(&entries2, "Expense", None, "2024-01-02");
+        let p2 = make_params(&entries2, "Expense", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
@@ -1599,25 +1567,21 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Expense");
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_date_range() {
-        let db = setup();
-        let entries = sample_entries();
-        let p1 = make_params(&entries, "Jan", None, "2024-01-15");
+    fn list_transactions_with_date_range() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p1 = make_params(&entries, "Jan", None, "2024-01-15")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "Feb", None, "2024-02-15");
+        let p2 = make_params(&entries, "Feb", None, "2024-02-15")?;
         assert!(post_fixture(&db, &p2).is_ok());
-        let p3 = make_params(&entries, "Mar", None, "2024-03-15");
+        let p3 = make_params(&entries, "Mar", None, "2024-03-15")?;
         assert!(post_fixture(&db, &p3).is_ok());
 
         let lp = ListTransactionParams {
@@ -1626,64 +1590,46 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Feb");
+        Ok(())
     }
 
     #[test]
-    fn get_entries_for_transaction_respects_company_scope() {
-        let db = setup();
-        let entries = sample_entries();
-        let p = make_params(&entries, "Test", None, "2024-01-15");
-        let id = post_fixture(&db, &p).unwrap_or_else(|e| panic!("post failed: {e}"));
+    fn get_entries_for_transaction_respects_company_scope() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p = make_params(&entries, "Test", None, "2024-01-15")?;
+        let id = post_fixture(&db, &p)?;
         let PostResult::Created(id) = id else {
-            panic!("expected Created");
+            return Err("expected Created".into());
         };
 
         let actor = fixture_actor("fixture");
         Granted::<Admin>::with_db(&db, &actor, |grant| {
-            create_company(
-                grant,
-                &"other"
-                    .parse()
-                    .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
-                &"Other".parse()?,
-                None,
-            )
-        })
-        .expect("create company");
+            create_company(grant, &"other".parse()?, &"Other".parse()?, None)
+        })?;
         Granted::<Admin>::with_db(&db, &actor, |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"other"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &"other".parse()?,
                     code: "1000",
                     name: "Other cash",
                     account_type: beankeeper::types::AccountType::Asset,
                     default_tax_category: None,
                 },
             )
-        })
-        .expect("create account");
-        db.conn()
-            .execute(
-                "INSERT INTO entries (transaction_id, account_code, company_slug, direction, amount)
+        })?;
+        db.conn().execute(
+            "INSERT INTO entries (transaction_id, account_code, company_slug, direction, amount)
                  VALUES (?1, '1000', 'other', 'debit', 100)",
-                params![id],
-            )
-            .expect("seed a mismatched transaction and entry company");
+            params![id],
+        )?;
 
-        let company = Company::bind(db.read(), "acme".parse().expect("fixture company"))
-            .expect("bind transaction company");
-        let entry_rows = get_entries_for_transaction(&company, id).expect("read entries");
+        let company = Company::bind(db.read(), "acme".parse()?)?;
+        let entry_rows = get_entries_for_transaction(&company, id)?;
         assert_eq!(entry_rows.len(), 2);
         assert_eq!(
             entry_rows[0].direction,
@@ -1695,33 +1641,20 @@ mod tests {
         );
 
         let only_foreign_amount = ListTransactionParams {
-            value_filter: TransactionValueFilter::from_bounds(None, None, Some(Money::usd(100)))
-                .expect("one currency"),
+            value_filter: TransactionValueFilter::from_bounds(None, None, Some(Money::usd(100)))?,
             ..Default::default()
         };
-        assert!(
-            list_transactions(&company, &only_foreign_amount)
-                .expect("list matching transactions")
-                .is_empty()
-        );
-        assert_eq!(
-            count_transactions(&company, &only_foreign_amount)
-                .expect("count matching transactions"),
-            0
-        );
+        assert!(list_transactions(&company, &only_foreign_amount)?.is_empty());
+        assert_eq!(count_transactions(&company, &only_foreign_amount)?, 0);
 
-        let other = Company::bind(db.read(), "other".parse().expect("fixture company"))
-            .expect("bind other company");
-        assert!(
-            get_entries_for_transaction(&other, id)
-                .expect("read entries for other company")
-                .is_empty()
-        );
+        let other = Company::bind(db.read(), "other".parse()?)?;
+        assert!(get_entries_for_transaction(&other, id)?.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn transaction_reads_reject_unsupported_stored_currency() -> Result<(), CliError> {
-        let db = setup();
+    fn transaction_reads_reject_unsupported_stored_currency() -> TestResult {
+        let db = setup()?;
         let conn = db.conn();
         conn.execute(
             "INSERT INTO transactions (company_slug, description, currency, date)
@@ -1730,7 +1663,7 @@ mod tests {
         )?;
         let result = get_transaction(
             &crate::db::companies::Company::bind(ReadConn::physical(conn), "acme".parse()?)?,
-            crate::db::ids::fixture_id(conn.last_insert_rowid()),
+            crate::db::ids::fixture_id(conn.last_insert_rowid())?,
         );
         assert!(matches!(
             result,
@@ -1742,30 +1675,26 @@ mod tests {
     }
 
     #[test]
-    fn savepoint_rolls_back_on_error() {
-        let db = setup();
+    fn savepoint_rolls_back_on_error() -> TestResult {
+        let db = setup()?;
         // This should fail because account "9999" doesn't exist (FK constraint)
         let entries = vec![
             PostEntryParams {
                 account_code: "1000".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "9999".to_string(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
         ];
-        let p = make_params(&entries, "Bad", None, "2024-01-15");
+        let p = make_params(&entries, "Bad", None, "2024-01-15")?;
         let result = post_fixture(&db, &p);
         // The foreign key violation should cause an error
         assert!(result.is_err());
@@ -1775,22 +1704,18 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 0);
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_description_filter() {
-        let db = setup();
-        let entries = sample_entries();
-        let p1 = make_params(&entries, "AWS monthly bill", None, "2024-01-01");
+    fn list_transactions_with_description_filter() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p1 = make_params(&entries, "AWS monthly bill", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "Office supplies", None, "2024-01-02");
+        let p2 = make_params(&entries, "Office supplies", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
@@ -1798,14 +1723,10 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "AWS monthly bill");
+        Ok(())
     }
 
     #[test]
@@ -1822,24 +1743,20 @@ mod tests {
     }
 
     #[test]
-    fn list_transactions_with_amount_gt() {
-        let db = setup();
+    fn list_transactions_with_amount_gt() -> TestResult {
+        let db = setup()?;
         let small_entries = vec![
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 1000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 1000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 1000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 1000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
@@ -1848,87 +1765,67 @@ mod tests {
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 50000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 50000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 50000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 50000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
         ];
-        let p1 = make_params(&small_entries, "Small", None, "2024-01-01");
+        let p1 = make_params(&small_entries, "Small", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&big_entries, "Big", None, "2024-01-02");
+        let p2 = make_params(&big_entries, "Big", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
-            value_filter: TransactionValueFilter::from_bounds(Some(Money::usd(10000)), None, None)
-                .unwrap_or_else(|error| panic!("{error}")),
+            value_filter: TransactionValueFilter::from_bounds(Some(Money::usd(10000)), None, None)?,
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Big");
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_amount_eq() {
-        let db = setup();
-        let entries = sample_entries(); // amount 5000
-        let p1 = make_params(&entries, "Exact", None, "2024-01-01");
+    fn list_transactions_with_amount_eq() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?; // amount 5000
+        let p1 = make_params(&entries, "Exact", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
 
         let lp = ListTransactionParams {
-            value_filter: TransactionValueFilter::from_bounds(None, None, Some(Money::usd(5000)))
-                .unwrap_or_else(|error| panic!("{error}")),
+            value_filter: TransactionValueFilter::from_bounds(None, None, Some(Money::usd(5000)))?,
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
 
         let lp2 = ListTransactionParams {
-            value_filter: TransactionValueFilter::from_bounds(None, None, Some(Money::usd(9999)))
-                .unwrap_or_else(|error| panic!("{error}")),
+            value_filter: TransactionValueFilter::from_bounds(None, None, Some(Money::usd(9999)))?,
             limit: 100,
             ..Default::default()
         };
-        let list2 = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp2,
-        )
-        .unwrap_or_default();
+        let list2 = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp2)?;
         assert_eq!(list2.len(), 0);
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_reference_filter() {
-        let db = setup();
-        let entries = sample_entries();
-        let mut p1 = make_params(&entries, "With ref", None, "2024-01-01");
+    fn list_transactions_with_reference_filter() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let mut p1 = make_params(&entries, "With ref", None, "2024-01-01")?;
         p1.reference = Some("INV-001");
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "No ref", None, "2024-01-02");
+        let p2 = make_params(&entries, "No ref", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
@@ -1936,28 +1833,24 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "With ref");
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_metadata_filter() {
-        let db = setup();
-        let entries = sample_entries();
+    fn list_transactions_with_metadata_filter() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
         let p1 = make_params(
             &entries,
             "Tagged",
             Some(r#"{"vendor":"AWS"}"#),
             "2024-01-01",
-        );
+        )?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "Untagged", None, "2024-01-02");
+        let p2 = make_params(&entries, "Untagged", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
@@ -1965,37 +1858,30 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Tagged");
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_direction_filter() {
-        let db = setup();
+    fn list_transactions_with_direction_filter() -> TestResult {
+        let db = setup()?;
         Granted::<Admin>::with_db(&db, &fixture_actor("fixture"), |grant| {
             create_account(
                 grant,
                 &CreateAccountParams {
-                    company_slug: &"acme"
-                        .parse()
-                        .unwrap_or_else(|error| panic!("invalid fixture company: {error}")),
+                    company_slug: &"acme".parse()?,
                     code: "5000",
                     name: "Expenses",
                     account_type: beankeeper::types::AccountType::Expense,
                     default_tax_category: None,
                 },
             )
-        })
-        .unwrap_or_else(|e| panic!("account setup failed: {e}"));
+        })?;
 
-        let entries = sample_entries();
-        let p1 = make_params(&entries, "Sale", None, "2024-01-01");
+        let entries = sample_entries()?;
+        let p1 = make_params(&entries, "Sale", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
 
         // Filter for transactions where account 1000 has a debit entry
@@ -2005,12 +1891,7 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
 
         // Filter for transactions where account 1000 has a credit entry (none)
@@ -2020,57 +1901,44 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list2 = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp2,
-        )
-        .unwrap_or_default();
+        let list2 = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp2)?;
         assert_eq!(list2.len(), 0);
+        Ok(())
     }
 
     #[test]
-    fn count_transactions_returns_count() {
-        let db = setup();
-        let entries = sample_entries();
-        let p1 = make_params(&entries, "First", None, "2024-01-01");
+    fn count_transactions_returns_count() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p1 = make_params(&entries, "First", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "Second", None, "2024-01-02");
+        let p2 = make_params(&entries, "Second", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
-        let p3 = make_params(&entries, "Third", None, "2024-01-03");
+        let p3 = make_params(&entries, "Third", None, "2024-01-03")?;
         assert!(post_fixture(&db, &p3).is_ok());
 
         let lp = ListTransactionParams::default();
-        let count = count_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or(0);
+        let count = count_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(count, 3);
 
         let lp2 = ListTransactionParams {
             from_date: NaiveDate::from_ymd_opt(2024, 1, 2),
             ..Default::default()
         };
-        let count2 = count_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp2,
-        )
-        .unwrap_or(0);
+        let count2 = count_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp2)?;
         assert_eq!(count2, 2);
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_combined_filters() {
-        let db = setup();
-        let entries = sample_entries();
-        let p1 = make_params(&entries, "AWS January", None, "2024-01-15");
+    fn list_transactions_combined_filters() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p1 = make_params(&entries, "AWS January", None, "2024-01-15")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries, "AWS February", None, "2024-02-15");
+        let p2 = make_params(&entries, "AWS February", None, "2024-02-15")?;
         assert!(post_fixture(&db, &p2).is_ok());
-        let p3 = make_params(&entries, "Office supplies", None, "2024-01-20");
+        let p3 = make_params(&entries, "Office supplies", None, "2024-01-20")?;
         assert!(post_fixture(&db, &p3).is_ok());
 
         // Combine description + date range
@@ -2080,44 +1948,36 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "AWS February");
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_tax_category_filter() {
-        let db = setup();
+    fn list_transactions_with_tax_category_filter() -> TestResult {
+        let db = setup()?;
         let entries_with_tax = vec![
             PostEntryParams {
                 account_code: "1000".into(),
                 direction: beankeeper::types::DebitOrCredit::Debit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: Some("sched-c:24b".into()),
             },
             PostEntryParams {
                 account_code: "4000".into(),
                 direction: beankeeper::types::DebitOrCredit::Credit,
-                amount: 5000_i64
-                    .try_into()
-                    .unwrap_or_else(|error| panic!("invalid fixture amount: {error}")),
+                amount: 5000_i64.try_into()?,
                 memo: None,
                 tax_category: None,
             },
         ];
-        let entries_no_tax = sample_entries();
+        let entries_no_tax = sample_entries()?;
 
-        let p1 = make_params(&entries_with_tax, "Taxed", None, "2024-01-01");
+        let p1 = make_params(&entries_with_tax, "Taxed", None, "2024-01-01")?;
         assert!(post_fixture(&db, &p1).is_ok());
-        let p2 = make_params(&entries_no_tax, "Untaxed", None, "2024-01-02");
+        let p2 = make_params(&entries_no_tax, "Untaxed", None, "2024-01-02")?;
         assert!(post_fixture(&db, &p2).is_ok());
 
         let lp = ListTransactionParams {
@@ -2125,80 +1985,66 @@ mod tests {
             limit: 100,
             ..Default::default()
         };
-        let list = list_transactions(
-            &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                .expect("bind fixture company"),
-            &lp,
-        )
-        .unwrap_or_default();
+        let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].description, "Taxed");
+        Ok(())
     }
 
     #[test]
-    fn post_transaction_wraps_plain_text_metadata() {
-        let db = setup();
-        let entries = sample_entries();
-        let p = make_params(&entries, "Memo", Some("open:1000"), "2024-01-15");
-        let PostResult::Created(id) =
-            post_fixture(&db, &p).unwrap_or_else(|e| panic!("post failed: {e}"))
-        else {
-            panic!("expected Created");
+    fn post_transaction_wraps_plain_text_metadata() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let p = make_params(&entries, "Memo", Some("open:1000"), "2024-01-15")?;
+        let PostResult::Created(id) = post_fixture(&db, &p)? else {
+            return Err("expected Created".into());
         };
         let (txn, _) = get_transaction(
-            &crate::db::companies::Company::bind(
-                db.read(),
-                "acme".parse().expect("fixture company"),
-            )
-            .expect("bind fixture company"),
+            &crate::db::companies::Company::bind(db.read(), "acme".parse()?)?,
             id,
-        )
-        .unwrap_or_else(|e| panic!("get failed: {e}"));
+        )?;
         assert_eq!(txn.metadata.as_deref(), Some(r#"{"memo":"open:1000"}"#));
+        Ok(())
     }
 
     #[test]
-    fn find_orphaned_correlations_tolerates_non_json_metadata() {
-        let db = setup();
+    fn find_orphaned_correlations_tolerates_non_json_metadata() -> TestResult {
+        let db = setup()?;
         // Bypass normalization to simulate rows written before schema v9.
         for meta in ["open:1000", "[1,2]", "", r#"{"correlate":42}"#] {
-            db.conn()
-                .execute(
-                    "INSERT INTO transactions (company_slug, description, metadata, date) \
+            db.conn().execute(
+                "INSERT INTO transactions (company_slug, description, metadata, date) \
                      VALUES ('acme', 'raw', ?1, '2024-01-01')",
-                    params![meta],
-                )
-                .unwrap_or_else(|e| panic!("insert failed: {e}"));
+                params![meta],
+            )?;
         }
-        let orphans = find_orphaned_correlations(db.read(), AllCompanies)
-            .unwrap_or_else(|e| panic!("reconcile: {e}"));
+        let orphans = find_orphaned_correlations(db.read(), AllCompanies)?;
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].partner_id, 42);
+        Ok(())
     }
 
     #[test]
-    fn list_transactions_with_meta_eq_filter() {
-        let db = setup();
-        let entries = sample_entries();
+    fn list_transactions_with_meta_eq_filter() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
         let metas = [
             r#"{"vendor":"AWS","qty":3}"#,
             r#"{"vendor":"aws"}"#,
             r#"{"memo":"vendor=AWS"}"#,
         ];
         for m in metas {
-            let p = make_params(&entries, m, Some(m), "2024-01-01");
+            let p = make_params(&entries, m, Some(m), "2024-01-01")?;
             assert!(post_fixture(&db, &p).is_ok());
         }
         // A pre-v9 free-text row must not break the json_extract filter.
-        db.conn()
-            .execute(
-                "INSERT INTO transactions (company_slug, description, metadata, date) \
+        db.conn().execute(
+            "INSERT INTO transactions (company_slug, description, metadata, date) \
                  VALUES ('acme', 'raw', 'vendor AWS', '2024-01-01')",
-                [],
-            )
-            .unwrap_or_else(|e| panic!("insert failed: {e}"));
+            [],
+        )?;
 
-        let check = |pairs: &[(&str, &str)], expected: usize| {
+        let check = |pairs: &[(&str, &str)], expected: usize| -> TestResult {
             let owned: Vec<metadata_filter::MetadataFilter> = pairs
                 .iter()
                 .map(|(k, v)| metadata_filter::MetadataFilter {
@@ -2210,43 +2056,35 @@ mod tests {
                 meta_eq: &owned,
                 ..Default::default()
             };
-            let list = list_transactions(
-                &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                    .expect("bind fixture company"),
-                &lp,
-            )
-            .unwrap_or_else(|e| panic!("list: {e}"));
+            let list = list_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
             assert_eq!(list.len(), expected, "filters {pairs:?}");
             assert_eq!(
-                count_transactions(
-                    &Company::bind(db.read(), "acme".parse().expect("fixture company"))
-                        .expect("bind fixture company"),
-                    &lp
-                )
-                .unwrap_or(-1),
-                i64::try_from(expected).unwrap_or(-1)
+                count_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?,
+                i64::try_from(expected)?
             );
+            Ok(())
         };
-        check(&[("vendor", "AWS")], 1);
-        check(&[("vendor", "AWS"), ("qty", "3")], 1);
-        check(&[("vendor", "aws"), ("qty", "3")], 0);
-        check(&[("qty", "3.0")], 0);
-        check(&[("memo", "vendor=AWS")], 1);
-        check(&[("missing", "")], 0);
+        check(&[("vendor", "AWS")], 1)?;
+        check(&[("vendor", "AWS"), ("qty", "3")], 1)?;
+        check(&[("vendor", "aws"), ("qty", "3")], 0)?;
+        check(&[("qty", "3.0")], 0)?;
+        check(&[("memo", "vendor=AWS")], 1)?;
+        check(&[("missing", "")], 0)?;
+        Ok(())
     }
 
     #[test]
-    fn post_transaction_skip_conflict() -> Result<(), Box<dyn std::error::Error>> {
-        let db = setup();
-        let entries = sample_entries();
-        let mut p1 = make_params(&entries, "First", None, "2024-01-01");
+    fn post_transaction_skip_conflict() -> TestResult {
+        let db = setup()?;
+        let entries = sample_entries()?;
+        let mut p1 = make_params(&entries, "First", None, "2024-01-01")?;
         p1.reference = Some("REF-1");
         let res1 = post_fixture(&db, &p1)?;
         let PostResult::Created(id1) = res1 else {
-            panic!("expected Created");
+            return Err("expected Created".into());
         };
 
-        let mut p2 = make_params(&entries, "Duplicate", None, "2024-01-01");
+        let mut p2 = make_params(&entries, "Duplicate", None, "2024-01-01")?;
         p2.reference = Some("REF-1");
         p2.on_conflict = ConflictStrategy::Skip;
         let res2 = post_fixture(&db, &p2)?;
@@ -2254,10 +2092,7 @@ mod tests {
 
         // Verify only one transaction exists
         let lp = ListTransactionParams::default();
-        let count = count_transactions(
-            &Company::bind(db.read(), "acme".parse()?).expect("bind fixture company"),
-            &lp,
-        )?;
+        let count = count_transactions(&Company::bind(db.read(), "acme".parse()?)?, &lp)?;
         assert_eq!(count, 1);
         Ok(())
     }

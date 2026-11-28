@@ -1,4 +1,4 @@
-//! Numeric ledger identifiers shared by SQLite, the terminal, and MCP.
+//! Numeric ledger identifiers shared by `SQLite`, the terminal, and MCP.
 
 use std::{borrow::Cow, fmt, num::NonZeroI64, str::FromStr};
 
@@ -15,7 +15,7 @@ macro_rules! row_ids {
         pub struct $name(NonZeroI64);
 
         impl $name {
-            /// Positive numeric identifier stored in SQLite.
+            /// Positive numeric identifier stored in `SQLite`.
             #[must_use]
             pub const fn get(self) -> i64 {
                 self.0.get()
@@ -137,6 +137,6 @@ impl From<TransactionId> for PartnerTransactionId {
 }
 
 #[cfg(test)]
-pub(crate) fn fixture_id<T: TryFrom<i64, Error = CliError>>(id: i64) -> T {
-    id.try_into().expect("positive fixture identifier")
+pub(crate) fn fixture_id<T: TryFrom<i64, Error = CliError>>(id: i64) -> Result<T, CliError> {
+    id.try_into()
 }

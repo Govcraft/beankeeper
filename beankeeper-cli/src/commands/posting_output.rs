@@ -149,7 +149,7 @@ mod tests {
         let proposal = Proposal {
             payload_json: serde_json::Value::Null,
             id: "proposal_01h455vb4pex5vsknk084sn02q".parse()?,
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             state: ProposalState::Approved {
                 resolution: Resolution {
                     at: "2026-02-01T00:00:00Z".into(),
@@ -158,7 +158,7 @@ mod tests {
                         jti: "review-token".into(),
                     },
                 },
-                transaction_id: crate::db::ids::fixture_id(12),
+                transaction_id: crate::db::ids::fixture_id(12)?,
             },
             payload: PostingPayload {
                 description: "Expense".into(),

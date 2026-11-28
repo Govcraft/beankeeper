@@ -153,7 +153,7 @@ impl LedgerTargets {
     ///
     /// # Errors
     /// Returns an error if the target is absent, the registry is unavailable,
-    /// or closing the SQLite connection fails.
+    /// or closing the `SQLite` connection fails.
     pub async fn detach(&self, target: &NamedLedgerTarget) -> Result<DetachedLedger, CliError> {
         let RegisteredLedger { ledger, drained } = self
             .named

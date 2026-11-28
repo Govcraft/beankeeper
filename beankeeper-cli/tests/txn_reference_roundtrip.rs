@@ -108,7 +108,7 @@ fn posted_reference_is_stored_verbatim() {
 
 /// `txn list --reference KEY` must return the transaction posted with `-r KEY`.
 #[test]
-fn list_filter_matches_posted_reference() {
+fn list_filter_matches_posted_reference() -> Result<(), Box<dyn std::error::Error>> {
     let (_dir, db_path) = setup();
 
     let (ok, stdout) = run_bk(
@@ -136,11 +136,12 @@ fn list_filter_matches_posted_reference() {
             let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
             digits.parse::<u64>().ok()
         })
-        .expect("count field present in JSON output");
+        .ok_or("count field present in JSON output")?;
 
     assert_eq!(
         count, 1,
         "txn list --reference {USER_KEY:?} should match the posted transaction, \
          but matched {count} (the user key is unfindable because a txnref_ token was stored)"
     );
+    Ok(())
 }

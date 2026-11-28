@@ -780,38 +780,44 @@ mod tests {
     }
 
     #[test]
-    fn with_correlate_wraps_and_splices() {
+    fn with_correlate_wraps_and_splices() -> Result<(), CliError> {
         assert_eq!(
-            with_correlate(None, crate::db::ids::fixture_id(3))
+            with_correlate(None, crate::db::ids::fixture_id(3)?)
                 .ok()
                 .as_deref(),
             Some(r#"{"correlate":3}"#)
         );
         assert_eq!(
-            with_correlate(Some("memo text"), crate::db::ids::fixture_id(3))
+            with_correlate(Some("memo text"), crate::db::ids::fixture_id(3)?)
                 .ok()
                 .as_deref(),
             Some(r#"{"memo":"memo text","correlate":3}"#)
         );
         assert_eq!(
-            with_correlate(Some(r#"{"ref":"X"}"#), crate::db::ids::fixture_id(3))
+            with_correlate(Some(r#"{"ref":"X"}"#), crate::db::ids::fixture_id(3)?)
                 .ok()
                 .as_deref(),
             Some(r#"{"ref":"X","correlate":3}"#)
         );
         assert_eq!(
-            with_correlate(Some("{}"), crate::db::ids::fixture_id(3))
+            with_correlate(Some("{}"), crate::db::ids::fixture_id(3)?)
                 .ok()
                 .as_deref(),
             Some(r#"{"correlate":3}"#)
         );
         assert_eq!(
-            with_correlate(Some(r#"{"correlate":null}"#), crate::db::ids::fixture_id(3))
-                .ok()
-                .as_deref(),
+            with_correlate(
+                Some(r#"{"correlate":null}"#),
+                crate::db::ids::fixture_id(3)?
+            )
+            .ok()
+            .as_deref(),
             Some(r#"{"correlate":3}"#)
         );
-        assert!(with_correlate(Some(r#"{"correlate":1}"#), crate::db::ids::fixture_id(3)).is_err());
+        assert!(
+            with_correlate(Some(r#"{"correlate":1}"#), crate::db::ids::fixture_id(3)?).is_err()
+        );
+        Ok(())
     }
 
     #[test]

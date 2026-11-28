@@ -2153,7 +2153,7 @@ pub enum TxnPageLimit {
 }
 
 impl TxnPageLimit {
-    /// Convert to the limit parameter used by SQLite.
+    /// Convert to the limit parameter used by `SQLite`.
     #[must_use]
     pub fn sql_limit(self) -> i64 {
         match self {

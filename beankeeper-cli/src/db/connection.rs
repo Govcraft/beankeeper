@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use rusqlite::{Connection, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
@@ -206,6 +206,7 @@ impl Db {
     ///
     /// Returns `CliError::Sqlite` on connection or schema errors.
     pub fn open_in_memory() -> Result<Self, CliError> {
+        initialize_sqlcipher();
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
@@ -241,7 +242,7 @@ impl Db {
         self.admit_write(kind, |grant| AuditedTx::run(grant, name, run))
     }
 
-    /// Give a sequence of authorized mutations one reserved SQLite writer.
+    /// Give a sequence of authorized mutations one reserved `SQLite` writer.
     pub(crate) fn in_write_batch<T>(
         &self,
         run: impl FnOnce() -> Result<T, CliError>,
@@ -279,7 +280,7 @@ impl Db {
             .is_ok_and(|salt| !salt.is_empty())
     }
 
-    /// Borrows this ledger for query-only access without exposing its SQLite connection.
+    /// Borrows this ledger for query-only access without exposing its `SQLite` connection.
     ///
     /// ```compile_fail
     /// use beankeeper_cli::db::Db;
@@ -292,7 +293,7 @@ impl Db {
         ReadConn::for_db(self)
     }
 
-    /// Run queries against one SQLite snapshot.
+    /// Run queries against one `SQLite` snapshot.
     ///
     /// Values can be returned from the callback. Its reader and prepared
     /// statements borrow the snapshot for the duration of the callback.
@@ -336,11 +337,31 @@ pub(super) fn require_existing_file(path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Finish `SQLite` and `SQLCipher` global setup before any ledger connection opens.
+///
+/// `sqlite3_initialize` marks `SQLite` initialized and releases its mutex before
+/// it runs `SQLCipher`'s extra initialization. A second thread that opens a
+/// connection in that window skips initialization and its `PRAGMA key` fails
+/// with "An error occurred with PRAGMA key or rekey" because `SQLCipher` is not
+/// ready yet. The thread that first initializes `SQLite` completes both steps
+/// before its open returns, so performing that first open under a [`Once`]
+/// makes every other opener in this crate wait until setup has finished.
+///
+/// Embedding hosts that open `SQLite` through other code must not race that
+/// code against their first beankeeper ledger open.
+fn initialize_sqlcipher() {
+    static SQLCIPHER: Once = Once::new();
+    // A failure here leaves SQLite uninitialized; the caller's own open then
+    // initializes it and reports the error.
+    SQLCIPHER.call_once(|| drop(Connection::open_in_memory()));
+}
+
 pub(super) fn open_keyed(
     path: &Path,
     passphrase: Option<&SecretString>,
     flags: OpenFlags,
 ) -> Result<Connection, CliError> {
+    initialize_sqlcipher();
     let conn = Connection::open_with_flags(path, flags)?;
     if let Some(pp) = passphrase {
         conn.pragma_update(None, "key", pp.expose_secret())?;

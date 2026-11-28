@@ -451,9 +451,9 @@ mod tests {
     }
 
     #[test]
-    fn render_accounts_has_normal_balance() {
+    fn render_accounts_has_normal_balance() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![AccountRow {
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             code: "1000".into(),
             name: "Cash".into(),
             account_type: beankeeper::types::AccountType::Asset,
@@ -464,12 +464,13 @@ mod tests {
         let csv_str = render_accounts(&rows).unwrap_or_default();
         assert!(csv_str.contains("code,name,type,normal_balance"));
         assert!(csv_str.contains("1000,Cash,asset,debit"));
+        Ok(())
     }
 
     #[test]
-    fn render_accounts_revenue_credit() {
+    fn render_accounts_revenue_credit() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![AccountRow {
-            company_slug: "acme".parse().expect("fixture company"),
+            company_slug: "acme".parse()?,
             code: "4000".into(),
             name: "Revenue".into(),
             account_type: beankeeper::types::AccountType::Revenue,
@@ -479,6 +480,7 @@ mod tests {
         }];
         let csv_str = render_accounts(&rows).unwrap_or_default();
         assert!(csv_str.contains("4000,Revenue,revenue,credit"));
+        Ok(())
     }
 
     #[test]
@@ -491,10 +493,10 @@ mod tests {
     }
 
     #[test]
-    fn render_transactions_with_metadata() {
+    fn render_transactions_with_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".parse().expect("fixture company"),
+            id: crate::db::ids::fixture_id(1)?,
+            company_slug: "acme".parse()?,
             description: "Sale".into(),
             metadata: Some("INV-001".into()),
             currency: beankeeper::types::Currency::USD,
@@ -510,13 +512,14 @@ mod tests {
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
         assert!(csv_str.contains("1,2025-03-15,Sale,INV-001,USD"));
+        Ok(())
     }
 
     #[test]
-    fn render_transactions_without_metadata() {
+    fn render_transactions_without_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let rows = vec![TransactionRow {
-            id: crate::db::ids::fixture_id(1),
-            company_slug: "acme".parse().expect("fixture company"),
+            id: crate::db::ids::fixture_id(1)?,
+            company_slug: "acme".parse()?,
             description: "Sale".into(),
             metadata: None,
             currency: beankeeper::types::Currency::USD,
@@ -532,6 +535,7 @@ mod tests {
         }];
         let csv_str = render_transactions(&rows).unwrap_or_default();
         assert!(csv_str.contains("1,2025-03-15,Sale,,USD"));
+        Ok(())
     }
 
     #[test]

@@ -166,7 +166,7 @@ pub fn get_schema_version(reader: ReadConn<'_>) -> Result<i64, CliError> {
     Ok(version)
 }
 
-/// Read and validate the SQLite schema version of an initialized ledger.
+/// Read and validate the `SQLite` schema version of an initialized ledger.
 pub(super) fn stored_schema(reader: ReadConn<'_>) -> Result<SchemaVersion, CliError> {
     get_schema_version(reader)?.try_into()
 }
@@ -192,7 +192,7 @@ fn create_schema(conn: &Connection) -> Result<(), CliError> {
     ensure_schema_at(conn, INITIAL_SCHEMA_VERSION)
 }
 
-/// Initialize an empty database while holding SQLite's writer reservation.
+/// Initialize an empty database while holding `SQLite`'s writer reservation.
 pub(super) fn initialize(conn: &Connection) -> Result<(), CliError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let reader = ReadConn::physical(&tx);
@@ -2520,7 +2520,7 @@ mod tests {
             description: "Review".into(),
             metadata: None,
             currency: beankeeper::types::Currency::USD,
-            date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("fixture date"),
+            date: fixture_date(2026, 1, 1)?,
             entries: Vec::new(),
             correlate: None,
             reference: None,
@@ -2716,6 +2716,12 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    fn fixture_date(year: i32, month: u32, day: u32) -> Result<chrono::NaiveDate, CliError> {
+        chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| {
+            CliError::Validation(format!("invalid fixture date {year}-{month}-{day}"))
+        })
     }
 
     fn v17_connection() -> Result<Connection, CliError> {
@@ -2931,9 +2937,11 @@ mod tests {
             "DROP TRIGGER protect_audit_update;
              UPDATE audit_log SET related_posting = 1 WHERE action = 'reverse';",
         )?;
-        let error = crate::db::audit::verify_hash_chain(reader)
-            .expect_err("changing a legacy typed link must invalidate the commitment");
-        assert!(error.to_string().contains("receipt links"));
+        let result = crate::db::audit::verify_hash_chain(reader);
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("receipt links")),
+            "changing a legacy typed link must invalidate the commitment: {result:?}"
+        );
         Ok(())
     }
 
@@ -2996,7 +3004,8 @@ mod tests {
         assert_eq!(tail()?, v26_tail);
         let scope = Company::bind(ReadConn::physical(&conn), company)?;
         let active = rules::list_rules(&scope)?;
-        let rule = rules::matching_rule(&active, "Retail SALE").expect("migrated match");
+        let rule = rules::matching_rule(&active, "Retail SALE")
+            .ok_or_else(|| CliError::NotFound("migrated match".into()))?;
         assert_eq!(rule.id(), &id);
         assert_eq!(rule.supersedes(), None);
         assert_eq!(i32::from(rule.priority()), -7);
@@ -3722,7 +3731,11 @@ mod tests {
                 &"legacy".parse()?,
                 (
                     "sale".parse()?,
-                    "4000".parse().expect("fixture account code"),
+                    "4000"
+                        .parse()
+                        .map_err(|error: beankeeper::types::AccountCodeError| {
+                            CliError::Validation(error.to_string())
+                        })?,
                     None,
                 )
                     .into(),
@@ -3734,7 +3747,7 @@ mod tests {
                 grant,
                 &"legacy".parse()?,
                 rule.id(),
-                crate::confirmation::Confirmed::forced(true).expect("forced confirmation"),
+                crate::confirmation::Confirmed::forced(true)?,
             )
         })?;
         assert_eq!(&hashes(&conn)?[..2], before.as_slice());
@@ -3834,7 +3847,7 @@ mod tests {
                 &identity::IssueRequest {
                     name: "restore",
                     capabilities: &["ledger/admin".into()],
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },

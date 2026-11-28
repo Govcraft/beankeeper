@@ -118,7 +118,7 @@ impl Ledger {
                 &IssueRequest {
                     name: "tester",
                     capabilities: &grants.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     public_key: None,
                     generate_key: true,
                 },
@@ -436,7 +436,7 @@ fn reject_bare_namespace(namespace: &str) -> TestResult {
             &IssueRequest {
                 name: "legacy",
                 capabilities: &[format!("{namespace}/read")],
-                ttl: Duration::from_secs(3600),
+                ttl: Duration::from_hours(1),
                 public_key: None,
                 generate_key: true,
             },
@@ -454,19 +454,15 @@ fn reject_bare_namespace(namespace: &str) -> TestResult {
         .agent_key(&SigningKey::generate().verifying_key())
         .capabilities(vec![namespace.into()])
         .issuer(&root)
-        .ttl(Duration::from_secs(3600))
+        .ttl(Duration::from_hours(1))
         .build()?;
     // Make the registry agree with this legacy token so only the bare grant rejects it.
     ledger.raw()?.execute(
         "UPDATE agent_tokens SET agent_key = ?1 WHERE jti = ?2",
         params![claims.agent_key, claims.jti],
     )?;
-    let token = Issuer::new(
-        root,
-        SigningKey::from_bytes(seed)?,
-        Duration::from_secs(3600),
-    )
-    .issue_claims(&claims)?;
+    let token = Issuer::new(root, SigningKey::from_bytes(seed)?, Duration::from_hours(1))
+        .issue_claims(&claims)?;
     denied(
         &ledger.call(&["company", "list"], Some(&token))?,
         "UNAUTHORIZED",

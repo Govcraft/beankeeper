@@ -209,7 +209,7 @@ fn fifo_and_lifo_relieve_different_acquisition_costs() -> TestResult {
         let gain = entries
             .iter()
             .find(|entry| entry.account_code == "4000")
-            .unwrap();
+            .ok_or_else(|| CliError::NotFound("gain entry".into()))?;
         assert_eq!(gain.amount.minor_units(), 50);
         assert_eq!(
             gain.direction,
@@ -496,10 +496,14 @@ fn aggregate_basis_overflow_rejects_reports_and_sales_without_changes() -> TestR
     buy(&db, &actor, "acme", &purchase("1", i64::MAX, "2026-01-01")?)?;
     buy(&db, &actor, "acme", &purchase("1", 1, "2026-01-02")?)?;
     let before = state(&db)?;
-    let report_error =
-        investments::holdings(&db, &"acme".parse()?, date("2026-01-03")?).unwrap_err();
+    let Err(report_error) = investments::holdings(&db, &"acme".parse()?, date("2026-01-03")?)
+    else {
+        return Err(CliError::Validation("expected holdings to overflow".into()));
+    };
     assert!(report_error.to_string().contains("overflow"));
-    let sell_error = sell(&db, &actor, "acme", &sale("2", 0, "2026-01-03")?).unwrap_err();
+    let Err(sell_error) = sell(&db, &actor, "acme", &sale("2", 0, "2026-01-03")?) else {
+        return Err(CliError::Validation("expected the sale to overflow".into()));
+    };
     assert!(sell_error.to_string().contains("overflow"));
     assert_eq!(state(&db)?, before);
     verify(&db)
@@ -523,9 +527,8 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
     let before = state(&db)?;
     assert!(
         investments::holdings(&db, &"acme".parse()?, date("2026-01-01")?)
-            .unwrap_err()
-            .to_string()
-            .contains("overflow")
+            .err()
+            .is_some_and(|error| error.to_string().contains("overflow"))
     );
     assert_eq!(state(&db)?, before);
     let maximum =
@@ -538,9 +541,8 @@ fn valuation_and_quantity_overflow_are_reported_explicitly() -> TestResult {
     }
     assert!(
         investments::holdings(&db, &"other".parse()?, date("2026-01-02")?)
-            .unwrap_err()
-            .to_string()
-            .contains("overflow")
+            .err()
+            .is_some_and(|error| error.to_string().contains("overflow"))
     );
     verify(&db)
 }
@@ -659,21 +661,26 @@ fn generic_reversals_reject_linked_trades_after_metadata_annotations() -> TestRe
             )
         })?;
         let before = state(&db)?;
-        let error = Granted::<beankeeper_cli::identity::Reverse>::with_db(&db, &actor, |grant| {
-            audit::reverse_transaction(
-                grant,
-                &audit::ReverseTransactionParams {
-                    company_slug: &"acme".parse()?,
-                    id,
-                    date: "2026-01-03".parse().map_err(|error: chrono::ParseError| {
-                        CliError::Validation(error.to_string())
-                    })?,
-                    description: None,
-                    reference: None,
-                },
-            )
-        })
-        .unwrap_err();
+        let reversal =
+            Granted::<beankeeper_cli::identity::Reverse>::with_db(&db, &actor, |grant| {
+                audit::reverse_transaction(
+                    grant,
+                    &audit::ReverseTransactionParams {
+                        company_slug: &"acme".parse()?,
+                        id,
+                        date: "2026-01-03".parse().map_err(|error: chrono::ParseError| {
+                            CliError::Validation(error.to_string())
+                        })?,
+                        description: None,
+                        reference: None,
+                    },
+                )
+            });
+        let Err(error) = reversal else {
+            return Err(CliError::Validation(
+                "expected a generic reversal of a trade to fail".into(),
+            ));
+        };
         assert!(
             error
                 .to_string()

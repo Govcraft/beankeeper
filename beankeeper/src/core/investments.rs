@@ -339,23 +339,25 @@ mod tests {
             .unwrap_or_else(|error| panic!("test money: {error}"))
     }
 
-    fn quantity(value: &str) -> Quantity {
-        value.parse().unwrap()
+    fn quantity(value: &str) -> Result<Quantity, InvestmentError> {
+        value.parse()
     }
 
     #[test]
-    fn quantities_preserve_eight_decimal_places_and_format_canonically() {
+    fn quantities_preserve_eight_decimal_places_and_format_canonically()
+    -> Result<(), Box<dyn std::error::Error>> {
         for (input, output, atoms) in [
             ("1", "1", 100_000_000),
             ("0001.2500", "1.25", 125_000_000),
             ("0.00000001", "0.00000001", 1),
             ("12.34567890", "12.3456789", 1_234_567_890),
         ] {
-            let shares = quantity(input);
+            let shares = quantity(input)?;
             assert_eq!(shares.atoms(), atoms);
             assert_eq!(shares.to_string(), output);
-            assert_eq!(quantity(&shares.to_string()), shares);
+            assert_eq!(quantity(&shares.to_string())?, shares);
         }
+        Ok(())
     }
 
     #[test]
@@ -383,9 +385,9 @@ mod tests {
     }
 
     #[test]
-    fn quantity_limits_are_checked() {
-        let maximum = Quantity::from_atoms(i128::MAX).unwrap();
-        assert_eq!(quantity(&maximum.to_string()), maximum);
+    fn quantity_limits_are_checked() -> Result<(), Box<dyn std::error::Error>> {
+        let maximum = Quantity::from_atoms(i128::MAX)?;
+        assert_eq!(quantity(&maximum.to_string())?, maximum);
         assert_eq!(
             "1701411834604692317316873037158.84105728".parse::<Quantity>(),
             Err(InvestmentError::Overflow)
@@ -399,51 +401,58 @@ mod tests {
             Err(InvestmentError::InvalidQuantity)
         );
         assert_eq!(
-            maximum.checked_add(Quantity::from_atoms(1).unwrap()),
+            maximum.checked_add(Quantity::from_atoms(1)?),
             Err(InvestmentError::Overflow)
         );
+        Ok(())
     }
 
     #[test]
-    fn quantity_arithmetic_preserves_zero_and_rejects_overselling() {
+    fn quantity_arithmetic_preserves_zero_and_rejects_overselling()
+    -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            quantity("1.25").checked_add(quantity("0.75")),
-            Ok(quantity("2"))
+            quantity("1.25")?.checked_add(quantity("0.75")?),
+            Ok(quantity("2")?)
         );
-        assert_eq!(quantity("1").checked_sub(quantity("1")), Ok(Quantity::ZERO));
+        assert_eq!(
+            quantity("1")?.checked_sub(quantity("1")?),
+            Ok(Quantity::ZERO)
+        );
         assert!(Quantity::ZERO.is_zero());
         assert_eq!(Quantity::ZERO.to_string(), "0");
         assert_eq!(
-            quantity("1").checked_sub(quantity("2")),
+            quantity("1")?.checked_sub(quantity("2")?),
             Err(InvestmentError::InsufficientQuantity)
         );
+        Ok(())
     }
 
     #[test]
-    fn market_values_round_half_up_and_retain_currency() {
-        assert_eq!(market_value(quantity("1.25"), usd(1234)), Ok(usd(1543)));
-        assert_eq!(market_value(quantity("0.49999999"), usd(1)), Ok(usd(0)));
-        assert_eq!(market_value(quantity("0.5"), usd(1)), Ok(usd(1)));
-        assert_eq!(market_value(quantity("0.50000001"), usd(1)), Ok(usd(1)));
+    fn market_values_round_half_up_and_retain_currency() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(market_value(quantity("1.25")?, usd(1234)), Ok(usd(1543)));
+        assert_eq!(market_value(quantity("0.49999999")?, usd(1)), Ok(usd(0)));
+        assert_eq!(market_value(quantity("0.5")?, usd(1)), Ok(usd(1)));
+        assert_eq!(market_value(quantity("0.50000001")?, usd(1)), Ok(usd(1)));
         assert_eq!(market_value(Quantity::ZERO, usd(i128::MAX)), Ok(usd(0)));
-        assert_eq!(market_value(quantity("1"), usd(0)), Ok(usd(0)));
+        assert_eq!(market_value(quantity("1")?, usd(0)), Ok(usd(0)));
         let euro = NonNegativeMoney::new(Money::eur(100))
             .unwrap_or_else(|error| panic!("test valuation currency: {error}"));
-        assert_eq!(market_value(quantity("1"), euro), Ok(euro));
+        assert_eq!(market_value(quantity("1")?, euro), Ok(euro));
         assert!(matches!(
             euro.checked_add(usd(100)),
             Err(MoneyError::CurrencyMismatch { .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn only_out_of_range_results_overflow() {
+    fn only_out_of_range_results_overflow() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            market_value(quantity("1"), usd(i128::MAX)),
+            market_value(quantity("1")?, usd(i128::MAX)),
             Ok(usd(i128::MAX))
         );
         assert_eq!(
-            market_value(quantity("2"), usd(i128::MAX)),
+            market_value(quantity("2")?, usd(i128::MAX)),
             Err(InvestmentError::Overflow)
         );
         let maximum = PositiveQuantity::from_atoms(i128::MAX)
@@ -454,6 +463,7 @@ mod tests {
             allocate_cost(maximum, usd(i128::MAX), half),
             Ok(usd(i128::MAX / 2))
         );
+        Ok(())
     }
 
     #[test]
@@ -473,7 +483,7 @@ mod tests {
     fn partial_disposals_conserve_basis_and_close_the_residual()
     -> Result<(), Box<dyn std::error::Error>> {
         let one = positive("1");
-        let mut shares = quantity("3");
+        let mut shares = quantity("3")?;
         let mut basis = usd(100);
         let mut relieved = Vec::new();
         for _ in 0..3 {

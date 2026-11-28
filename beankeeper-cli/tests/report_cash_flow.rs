@@ -431,7 +431,8 @@ fn rejects_inverted_range() {
 }
 
 #[test]
-fn typed_cash_classes_include_wallets_and_equivalents_independently_of_names() {
+fn typed_cash_classes_include_wallets_and_equivalents_independently_of_names()
+-> Result<(), Box<dyn std::error::Error>> {
     let (_dir, db) = empty_ledger();
     for (code, name, class, amount) in [
         ("1020", "Travel wallet", "cash", "125"),
@@ -463,20 +464,20 @@ fn typed_cash_classes_include_wallets_and_equivalents_independently_of_names() {
     assert_eq!(before["data"]["closing_cash"], 20_000);
     let codes: Vec<_> = before["data"]["cash_accounts"]
         .as_array()
-        .expect("cash accounts")
+        .ok_or("cash accounts")?
         .iter()
         .filter_map(|account| account["code"].as_str())
         .collect();
     assert_eq!(codes, ["1000", "1010", "1020", "1030"]);
     let summary: Value =
-        serde_json::from_str(&ok(&db, &["summary", "--json", "--to", "2025-03-31"]))
-            .expect("summary JSON");
+        serde_json::from_str(&ok(&db, &["summary", "--json", "--to", "2025-03-31"]))?;
     assert_eq!(summary["data"]["standing"]["cash_on_hand"], 20_000);
     // Explicit selection still replaces the typed default set.
     assert_eq!(
         cash_flow_json(&db, &["--cash-account", "1040"])["data"]["closing_cash"],
         9_000
     );
+    Ok(())
 }
 
 #[test]
